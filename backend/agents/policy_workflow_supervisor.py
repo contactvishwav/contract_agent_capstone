@@ -3,25 +3,26 @@
 from typing import Dict, Any, List
 from backend.agents.supervisor.supervisor_agent import SupervisorAgent
 from backend.agents.supervisor.agent_registry import AgentRegistry
+from backend.agents.supervisor.quality_manager import QualityManager
 from backend.agents.supervisor.interfaces import AgentContext, AgentResult
 from backend.agents.policy_agents import PolicyChunkingAgent, PolicyExtractionAgent, PolicyComplianceAgent
-from backend.infrastructure.audit_logger import AuditLogger, AuditEvent
+from backend.infrastructure.audit_logger import AuditLogger, AuditEventType
 from backend.infrastructure.error_tracker import ErrorTracker, ErrorCategory
-from backend.infrastructure.content_validator import ContentValidator
+from backend.infrastructure.content_validator import ContentValidationService
 from backend.shared.monitoring.performance_monitor import track_performance
 from backend.shared.cache.redis_cache import cache_result
 
 
 class PolicyWorkflowSupervisor:
     """Orchestrates policy processing using existing supervisor infrastructure."""
-    
+
     def __init__(self):
-        self.supervisor = SupervisorAgent()
         self.registry = AgentRegistry()
+        self.supervisor = SupervisorAgent(self.registry, QualityManager())
         self.audit_logger = AuditLogger()
         self.error_tracker = ErrorTracker()
-        self.content_validator = ContentValidator()
-        
+        self.content_validator = ContentValidationService()
+
         # Register policy agents using existing registry
         self.registry.register_agent('policy_validation', PolicyValidationAgent())
         self.registry.register_agent('policy_chunking', PolicyChunkingAgent())
@@ -33,12 +34,13 @@ class PolicyWorkflowSupervisor:
         """Orchestrate complete policy processing workflow."""
         try:
             # Log policy processing start
-            self.audit_logger.log_event(AuditEvent(
-                event_type="policy_processing_started",
-                entity_id=policy_data.get('policy_name', 'unknown'),
+            self.audit_logger.log_event(
+                event_type=AuditEventType.ANALYSIS_REQUEST,
+                resource_id=policy_data.get('policy_name', 'unknown'),
+                action="policy_processing_started",
                 tenant_id=policy_data.get('tenant_id'),
-                details={'policy_size': len(policy_data.get('policy_text', ''))}
-            ))
+                metadata={'policy_size': len(policy_data.get('policy_text', ''))}
+            )
             
             # Define workflow steps using existing supervisor patterns
             workflow_steps = [
@@ -93,12 +95,13 @@ class PolicyWorkflowSupervisor:
                 previous_result = result
             
             # Log completion
-            self.audit_logger.log_event(AuditEvent(
-                event_type="policy_processing_completed",
-                entity_id=policy_data.get('policy_name', 'unknown'),
+            self.audit_logger.log_event(
+                event_type=AuditEventType.ANALYSIS_REQUEST,
+                resource_id=policy_data.get('policy_name', 'unknown'),
+                action="policy_processing_completed",
                 tenant_id=policy_data.get('tenant_id'),
-                details={'steps_completed': len(results)}
-            ))
+                metadata={'steps_completed': len(results)}
+            )
             
             return {
                 'success': all(r['status'] == 'success' for r in results),
@@ -127,25 +130,27 @@ class PolicyValidationAgent:
     """Policy validation agent using existing content validator."""
     
     def __init__(self):
-        self.content_validator = ContentValidator()
+        self.content_validator = ContentValidationService()
     
     def execute(self, context: AgentContext) -> AgentResult:
         """Validate policy document using existing validation infrastructure."""
         try:
             policy_text = context.input_data['policy_text']
-            tenant_id = context.input_data['tenant_id']
-            
-            # Use existing content validation patterns
-            validation_result = self.content_validator.validate_file_upload(
-                file_content=policy_text.encode(),
-                file_name="policy.txt",
-                tenant_id=tenant_id
-            )
-            
-            if not validation_result['valid']:
+
+            # Use existing content validation patterns.
+            # ContentValidationService.validate_file_upload takes a single data
+            # dict (file_size/filename), not discrete kwargs, and returns
+            # "is_valid"/"results" keys, not "valid"/"errors".
+            validation_result = self.content_validator.validate_file_upload({
+                "file_size": len(policy_text.encode()),
+                "filename": "policy.txt"
+            })
+
+            if not validation_result['is_valid']:
+                failed_checks = [r for r in validation_result['results'] if not r['is_valid']]
                 return AgentResult(
                     status='error',
-                    data={'validation_errors': validation_result['errors']},
+                    data={'validation_errors': failed_checks},
                     confidence=0.0
                 )
             

@@ -3,17 +3,18 @@
 from typing import Dict, Any, List
 from backend.agents.supervisor.supervisor_agent import SupervisorAgent
 from backend.agents.supervisor.agent_registry import AgentRegistry
+from backend.agents.supervisor.quality_manager import QualityManager
 from backend.agents.supervisor.interfaces import AgentContext, WorkflowContext
 from backend.agents.policy_agents import PolicyChunkingAgent, PolicyExtractionAgent, PolicyComplianceAgent
 
 
 class PolicyWorkflowOrchestrator:
     """Orchestrates policy workflows using existing supervisor infrastructure."""
-    
+
     def __init__(self):
-        self.supervisor = SupervisorAgent()
         self.registry = AgentRegistry()
-        
+        self.supervisor = SupervisorAgent(self.registry, QualityManager())
+
         # Register policy agents with existing registry
         self.registry.register_agent('policy_chunking', PolicyChunkingAgent())
         self.registry.register_agent('policy_extraction', PolicyExtractionAgent())
