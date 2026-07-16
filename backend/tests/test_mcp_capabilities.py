@@ -1,7 +1,7 @@
 import unittest
 import json
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 # Mock Neo4j and Gemini BEFORE importing backend modules that instantiate them at module level
 with patch("langchain_neo4j.Neo4jGraph"), \
@@ -66,11 +66,19 @@ class TestMCPCapabilities(unittest.IsolatedAsyncioTestCase):
         """Verify metadata fetching"""
         mock_repo = MagicMock()
         mock_get_repo.return_value = mock_repo
-        mock_repo.get_contract_by_id.return_value = {"file_id": "CNT1", "parties": []}
-        
+        # get_contract_by_id is `async def` on Neo4jContractRepository (see
+        # backend/infrastructure/contract_repository.py:19), so it must be mocked
+        # with AsyncMock, not MagicMock. MagicMock().return_value makes the call
+        # return a plain dict synchronously, which previously masked a missing
+        # `await` in fetch_contract_metadata (backend/mcp_server.py:122): the
+        # unawaited coroutine object is truthy, so the "not found" branch never
+        # fires, and json.dumps() on a coroutine used to raise TypeError in
+        # production while this MagicMock-based test stayed green.
+        mock_repo.get_contract_by_id = AsyncMock(return_value={"file_id": "CNT1", "parties": []})
+
         result_json = await fetch_contract_metadata(contract_id="CNT1", tenant_id="test_tenant")
         result = json.loads(result_json)
-        
+
         self.assertTrue(result["success"])
         self.assertEqual(result["metadata"]["file_id"], "CNT1")
 
@@ -79,14 +87,40 @@ class TestMCPCapabilities(unittest.IsolatedAsyncioTestCase):
         """Verify that accessing a contract with the wrong tenant_id fails (Data Isolation)"""
         mock_repo = MagicMock()
         mock_get_repo.return_value = mock_repo
-        # Simulate repository returning None when tenant_id doesn't match
-        mock_repo.get_contract_by_id.return_value = None
-        
+        # Simulate repository returning None when tenant_id doesn't match.
+        # AsyncMock required here too, see comment in test_fetch_metadata_success.
+        mock_repo.get_contract_by_id = AsyncMock(return_value=None)
+
         result_json = await fetch_contract_metadata(contract_id="CNT1", tenant_id="wrong_tenant")
         result = json.loads(result_json)
-        
+
         self.assertFalse(result["success"])
         self.assertIn("not found for tenant wrong_tenant", result["error"])
+
+    @patch("backend.mcp_server.get_contract_repo")
+    async def test_fetch_metadata_awaits_async_repo_call(self, mock_get_repo):
+        """
+        Regression test for the missing `await` bug: fetch_contract_metadata must
+        actually await get_contract_by_id() rather than treating its return value
+        as already-resolved data. A MagicMock stand-in for the async repo method
+        would return an unawaited coroutine that is truthy (so the "not found"
+        error path never triggers) and isn't JSON-serializable, so this test uses
+        AsyncMock specifically to exercise the real async call path end to end.
+        """
+        mock_repo = MagicMock()
+        mock_get_repo.return_value = mock_repo
+        mock_repo.get_contract_by_id = AsyncMock(return_value={"file_id": "CNT_ASYNC", "parties": []})
+
+        result_json = await fetch_contract_metadata(contract_id="CNT_ASYNC", tenant_id="test_tenant")
+        result = json.loads(result_json)
+
+        # If the `await` were missing, `metadata` would be a coroutine object:
+        # truthy (masking the "not found" branch) and unserializable, so this
+        # call would raise TypeError inside json.dumps and be caught by the
+        # tool's own except-block, surfacing success=False here instead.
+        self.assertTrue(result["success"])
+        self.assertEqual(result["metadata"]["file_id"], "CNT_ASYNC")
+        mock_repo.get_contract_by_id.assert_awaited_once_with("CNT_ASYNC", tenant_id="test_tenant")
 
 if __name__ == "__main__":
     unittest.main()

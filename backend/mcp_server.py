@@ -119,7 +119,7 @@ async def fetch_contract_metadata(contract_id: str, tenant_id: str) -> str:
         tenant_id: Mandatory tenant identifier for data isolation.
     """
     try:
-        metadata = get_contract_repo().get_contract_by_id(contract_id, tenant_id=tenant_id)
+        metadata = await get_contract_repo().get_contract_by_id(contract_id, tenant_id=tenant_id)
         if not metadata:
             return json.dumps({"success": False, "error": f"Contract {contract_id} not found for tenant {tenant_id}"})
             
