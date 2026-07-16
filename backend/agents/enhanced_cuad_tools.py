@@ -351,7 +351,7 @@ class EnhancedPrecedentMatcherTool(PrecedentMatcherTool):
             
             # Query similar clauses from Neo4j - Multi-tenant enabled
             query = """
-            MATCH (c:Contract {tenant_id: $tenant_id})-[:CONTAINS]->(cl:Clause)
+            MATCH (c:Contract {tenant_id: $tenant_id})-[:CONTAINS_CLAUSE]->(cl:Clause)
             WHERE toLower(cl.clause_type) CONTAINS $clause_type
             AND c.intelligence_status = 'completed'
             RETURN cl.clause_type as type,
