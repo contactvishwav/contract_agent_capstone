@@ -1,3 +1,10 @@
 .venv
 .env
 __pycache__/
+
+# Benchmark run artifacts — regeneratable, not source
+research/benchmark/cuad_contract_texts.json
+research/benchmark/*checkpoint*.jsonl
+# Benchmark run artifacts — regeneratable, not source
+research/benchmark/cuad_contract_texts.json
+research/benchmark/*checkpoint*.jsonl

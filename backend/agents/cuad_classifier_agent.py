@@ -9,23 +9,16 @@ from dataclasses import dataclass
 import re
 import logging
 
+from backend.agents.llm_extraction_service import LLMExtractionService, CUADClauseType
 from backend.shared.utils.logger import get_logger
 logger = get_logger(__name__)
 
-# 41 CUAD Clause Types
-CUAD_CLAUSE_TYPES = [
-    "Document Name", "Parties", "Agreement Date", "Effective Date", "Expiration Date",
-    "Renewal Term", "Notice Period To Terminate Renewal", "Governing Law", "Most Favored Nation",
-    "Non-Compete", "Exclusivity", "No-Solicit Of Customers", "Competitive Restriction Exception",
-    "No-Solicit Of Employees", "Non-Disparagement", "Termination For Convenience", "Rofr/Rofo/Rofn",
-    "Change Of Control", "Anti-Assignment", "Revenue/Customer Sharing", "Price Restrictions",
-    "Minimum Commitment", "Volume Restriction", "Ip Ownership Assignment", "Joint Ip Ownership",
-    "License Grant", "Non-Transferable License", "Affiliate License-Licensor", "Affiliate License-Licensee",
-    "Unlimited/All-You-Can-Eat-License", "Irrevocable Or Perpetual License", "Source Code Escrow",
-    "Post-Termination Services", "Audit Rights", "Uncapped Liability", "Cap On Liability",
-    "Liquidated Damages", "Warranty Duration", "Insurance", "Covenant Not To Sue",
-    "Third Party Beneficiary", "Irrevocable Or Perpetual License"
-]
+# 41 CUAD Clause Types - derived from the canonical CUADClauseType enum
+# (llm_extraction_service.py) so there is a single source of truth. This list
+# previously had a duplicate entry ("Irrevocable Or Perpetual License" twice)
+# and a misnamed category ("Revenue/Customer Sharing" instead of the correct
+# "Revenue/Profit Sharing"), fixed by deriving from the verified taxonomy.
+CUAD_CLAUSE_TYPES = [t.value for t in CUADClauseType]
 
 @dataclass
 class CUADClassification:
@@ -112,38 +105,36 @@ class RegexCUADClassifier(ICUADClassifier):
         return classifications
 
 class LLMCUADClassifier(ICUADClassifier):
-    """LLM-based CUAD classification"""
-    
+    """LLM-based CUAD classification - delegates to LLMExtractionService"""
+
     def __init__(self, llm):
         self.llm = llm
-    
+        self._service = LLMExtractionService(llm)
+
     def classify_clause(self, clause: Dict[str, Any]) -> List[CUADClassification]:
-        """Classify using LLM analysis"""
+        """Classify using LLM analysis via the shared extraction service"""
         content = clause["content"]
         clause_id = clause["clause_id"]
-        
-        # Select relevant CUAD types for this clause
-        relevant_types = self._select_relevant_types(content)
-        
-        prompt = f"""
-        Classify this contract clause into CUAD categories:
-        
-        Clause: {content}
-        
-        Possible CUAD types: {', '.join(relevant_types)}
-        
-        Return JSON: [{{"cuad_type": "type", "confidence": 0.0-1.0, "reasoning": "explanation"}}]
-        
-        Only return matches with confidence > 0.7.
-        """
-        
-        try:
-            response = self.llm.invoke(prompt)
-            return self._parse_llm_response(response.content, clause_id)
-        except Exception as e:
-            logger.error(f"LLM CUAD classification failed: {e}")
-            return []
-    
+
+        # Narrow the taxonomy to keyword-relevant types when possible, so the
+        # LLM isn't asked about all 41 categories for a single short clause.
+        relevant_type_names = self._select_relevant_types(content)
+        candidate_types = [CUADClauseType(t) for t in relevant_type_names] if relevant_type_names else None
+
+        extracted = self._service.extract_clauses(content, candidate_types=candidate_types)
+
+        return [
+            CUADClassification(
+                clause_id=clause_id,
+                cuad_type=e.clause_type.value,
+                confidence=e.confidence,
+                detected_by="llm",
+                reasoning=f"LLM-identified match within clause text (confidence {e.confidence:.2f})",
+            )
+            for e in extracted
+            if e.confidence > 0.7
+        ]
+
     def _select_relevant_types(self, content: str) -> List[str]:
         """Select relevant CUAD types based on content keywords"""
         content_lower = content.lower()
@@ -164,11 +155,6 @@ class LLMCUADClassifier(ICUADClassifier):
                 relevant.extend(types)
         
         return relevant[:5]  # Limit to 5 most relevant
-    
-    def _parse_llm_response(self, response: str, clause_id: str) -> List[CUADClassification]:
-        """Parse LLM response into classifications"""
-        # Simplified - would need proper JSON parsing
-        return []
 
 def cuad_confidence_decorator(func):
     """Decorator to adjust CUAD confidence scores"""

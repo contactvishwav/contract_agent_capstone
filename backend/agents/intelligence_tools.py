@@ -1,7 +1,8 @@
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
-from typing import Type, Dict, Any, List
+from typing import Type, Dict, Any, List, Optional
 from backend.domain.entities import ContractClause, PolicyViolation, RiskAssessment, RedlineRecommendation
+from backend.agents.llm_extraction_service import LLMExtractionService, get_default_llm
 import json
 import logging
 
@@ -56,58 +57,42 @@ class ClauseDetectorTool(BaseTool):
     name: str = "clause_detector"
     description: str = "Detect and extract key contract clauses"
     args_schema: Type[BaseModel] = ClauseDetectorInput
-    
+
+    def __init__(self, llm: Optional[Any] = None):
+        super().__init__()
+        # Use object.__setattr__ to bypass Pydantic validation (existing
+        # convention in this codebase, e.g. EnhancedPrecedentMatcherTool)
+        object.__setattr__(self, '_llm', llm)
+
     def _run(self, contract_text: str) -> str:
-        """Extract clauses from contract text"""
+        """Extract clauses from contract text using real LLM-based extraction"""
         try:
-            # Truncate for LLM processing
-            text = contract_text[:6000] if len(contract_text) > 6000 else contract_text
-            
-            prompt = f"""
-            Extract key contract clauses from this text. Return ONLY a JSON array of clauses.
-            
-            Text: {text}
-            
-            Return exactly this format:
-            [
-                {{
-                    "clause_type": "Payment Terms",
-                    "content": "extracted clause text",
-                    "risk_level": "MEDIUM",
-                    "confidence_score": 0.9,
-                    "location": "Section 3.1"
-                }}
-            ]
-            
-            Focus on these clause types:
-            - Payment Terms
-            - Liability
-            - Confidentiality  
-            - Termination
-            - IP Ownership
-            """
-            
-            # This would use the LLM - simplified for prototype
+            # No truncation: gemini-2.5-flash supports over 1M input tokens,
+            # and clauses like Expiration Date often appear late in long
+            # contracts - an arbitrary character cap here would silently
+            # drop them before the model ever sees them.
+
+            # Resolve the LLM lazily so construction never requires credentials
+            # (this tool is constructed eagerly in several places regardless
+            # of whether extraction is ever actually invoked).
+            llm = self._llm or get_default_llm()
+            service = LLMExtractionService(llm)
+            extracted = service.extract_clauses(contract_text)
+
             clauses = [
                 {
-                    "clause_type": "Payment Terms",
-                    "content": "Payment due within 30 days of invoice",
-                    "risk_level": "LOW",
-                    "confidence_score": 0.8,
-                    "location": "Section 3"
-                },
-                {
-                    "clause_type": "Liability",
-                    "content": "Liability limited to $50,000",
-                    "risk_level": "HIGH", 
-                    "confidence_score": 0.9,
-                    "location": "Section 8"
+                    "clause_type": e.clause_type.value,
+                    "content": e.extracted_text,
+                    "confidence_score": e.confidence,
+                    "start_offset": e.start_offset,
+                    "end_offset": e.end_offset,
                 }
+                for e in extracted
             ]
-            
+
             logger.info(f"Extracted {len(clauses)} clauses")
             return json.dumps(clauses)
-            
+
         except Exception as e:
             logger.error(f"Clause detection failed: {e}")
             return json.dumps([])

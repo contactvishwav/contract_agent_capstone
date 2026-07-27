@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import re
 import logging
 
+from backend.agents.llm_extraction_service import LLMExtractionService
 from backend.shared.utils.logger import get_logger
 logger = get_logger(__name__)
 
@@ -64,34 +65,27 @@ class RegexClauseExtractor(IClauseExtractionStrategy):
         return clauses
 
 class LLMClauseExtractor(IClauseExtractionStrategy):
-    """LLM-based intelligent clause extraction"""
-    
+    """LLM-based intelligent clause extraction - delegates to LLMExtractionService"""
+
     def __init__(self, llm):
         self.llm = llm
-    
+        self._service = LLMExtractionService(llm)
+
     def extract_clauses(self, section_content: str, section_id: str) -> List[Clause]:
-        """Extract clauses using LLM analysis"""
-        prompt = f"""
-        Extract individual clauses from this contract section:
-        
-        {section_content[:2000]}
-        
-        Return JSON array: [{{"content": "clause text", "type": "obligation|right|condition|definition|general", "confidence": 0.0-1.0}}]
-        
-        Focus on distinct legal obligations, rights, or conditions.
-        """
-        
-        try:
-            response = self.llm.invoke(prompt)
-            return self._parse_llm_response(response.content, section_id)
-        except Exception as e:
-            logger.error(f"LLM clause extraction failed: {e}")
-            return []
-    
-    def _parse_llm_response(self, response: str, section_id: str) -> List[Clause]:
-        """Parse LLM response into Clause objects"""
-        # Simplified - would need proper JSON parsing
-        return []
+        """Extract clauses using LLM analysis via the shared extraction service"""
+        extracted = self._service.extract_clauses(section_content)
+        return [
+            Clause(
+                content=e.extracted_text,
+                clause_type=e.clause_type.value,
+                order=i,
+                start_position=e.start_offset,
+                end_position=e.end_offset,
+                confidence=e.confidence,
+                section_id=section_id,
+            )
+            for i, e in enumerate(extracted)
+        ]
 
 class ClauseExtractionHandler(ABC):
     """Chain of Responsibility handler for clause processing"""

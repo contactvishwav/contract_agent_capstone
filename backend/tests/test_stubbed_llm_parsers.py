@@ -1,98 +1,209 @@
 """
-Regression tests documenting known-broken (stubbed) LLM parsing paths.
+Tests for real LLM-based CUAD clause extraction (Phase 1).
 
-Three separate code paths build a real LLM prompt, call the LLM, and then
-discard the response instead of parsing it:
-  - LLMClauseExtractor._parse_llm_response  (backend/agents/clause_extraction_agent.py:91-94)
-  - LLMCUADClassifier._parse_llm_response   (backend/agents/cuad_classifier_agent.py:168-171)
-  - ClauseDetectorTool._run                 (backend/agents/intelligence_tools.py:90-106,
-                                              doesn't even call the LLM - returns
-                                              hard-coded clauses regardless of input)
+Formerly this file documented three broken stubs that discarded the LLM's
+response and returned []/hard-coded data:
+  - LLMClauseExtractor._parse_llm_response  (backend/agents/clause_extraction_agent.py)
+  - LLMCUADClassifier._parse_llm_response   (backend/agents/cuad_classifier_agent.py)
+  - ClauseDetectorTool._run                 (backend/agents/intelligence_tools.py)
 
-These tests intentionally assert the CURRENT broken behavior (empty / hard-
-coded output) so that a future fix is forced to update this file, rather than
-silently leaving stale expectations behind.
-
-TODO(Phase 1): implement real JSON parsing of the LLM response in
-LLMClauseExtractor._parse_llm_response and LLMCUADClassifier._parse_llm_response,
-and make ClauseDetectorTool._run actually invoke the LLM instead of returning
-static data. When that lands, replace the assertions below with ones that
-verify real parsed output, and remove this TODO.
+All three now delegate to LLMExtractionService (backend/agents/
+llm_extraction_service.py), which uses Gemini structured output to produce
+real, schema-validated ExtractedClause results. These tests assert on that
+real behavior using a mocked LLM - no live API calls / no GOOGLE_API_KEY
+required to run this file. See research/benchmark/evaluate_extraction.py for
+the real-data precision/recall/F1 benchmark against CUAD ground truth.
 """
 
 import json
+import os
 import unittest
 from unittest.mock import MagicMock
 
-from backend.agents.clause_extraction_agent import LLMClauseExtractor
-from backend.agents.cuad_classifier_agent import LLMCUADClassifier
+from backend.agents.llm_extraction_service import (
+    LLMExtractionService,
+    CUADClauseType,
+    ExtractedClause,
+    _LLMExtractedClause,
+    _LLMExtractionResponse,
+)
+from backend.agents.clause_extraction_agent import LLMClauseExtractor, Clause
+from backend.agents.cuad_classifier_agent import LLMCUADClassifier, CUADClassification
 from backend.agents.intelligence_tools import ClauseDetectorTool
 
 
-class TestLLMClauseExtractorStub(unittest.TestCase):
-    """TODO(Phase 1): fix LLMClauseExtractor._parse_llm_response to actually parse JSON."""
-
-    def test_parse_llm_response_discards_a_well_formed_response(self):
-        fake_llm = MagicMock()
-        fake_llm.invoke.return_value = MagicMock(content=json.dumps([
-            {"content": "Client shall pay within 30 days.", "type": "obligation", "confidence": 0.9}
-        ]))
-
-        extractor = LLMClauseExtractor(fake_llm)
-        clauses = extractor.extract_clauses("Some contract section text.", section_id="sec_1")
-
-        # The LLM *was* called with a valid, parseable response...
-        fake_llm.invoke.assert_called_once()
-        # ...but _parse_llm_response unconditionally returns [], discarding it.
-        self.assertEqual(clauses, [])
+def make_fake_llm(response: _LLMExtractionResponse):
+    """
+    A fake LangChain chat model exposing just enough of the interface
+    LLMExtractionService relies on: with_structured_output(...).invoke(...).
+    Returns (fake_llm, structured_mock) so callers can assert on/reconfigure
+    the structured mock's invoke() behavior.
+    """
+    structured = MagicMock()
+    structured.invoke.return_value = response
+    fake_llm = MagicMock()
+    fake_llm.with_structured_output.return_value = structured
+    return fake_llm, structured
 
 
-class TestLLMCUADClassifierStub(unittest.TestCase):
-    """TODO(Phase 1): fix LLMCUADClassifier._parse_llm_response to actually parse JSON."""
+class TestLLMExtractionService(unittest.TestCase):
+    """Core service: schema call + offset resolution."""
 
-    def test_parse_llm_response_discards_a_well_formed_response(self):
-        fake_llm = MagicMock()
-        fake_llm.invoke.return_value = MagicMock(content=json.dumps([
-            {"cuad_type": "Governing Law", "confidence": 0.95, "reasoning": "Explicit governing law clause"}
-        ]))
+    def test_extract_clauses_returns_real_parsed_results(self):
+        source_text = "This Agreement is governed by the laws of the State of Delaware. Other text follows."
+        response = _LLMExtractionResponse(clauses=[
+            _LLMExtractedClause(
+                clause_type=CUADClauseType.GOVERNING_LAW,
+                extracted_text="governed by the laws of the State of Delaware",
+                confidence=0.95,
+            )
+        ])
+        fake_llm, structured = make_fake_llm(response)
 
-        classifier = LLMCUADClassifier(fake_llm)
+        service = LLMExtractionService(fake_llm)
+        result = service.extract_clauses(source_text)
+
+        structured.invoke.assert_called_once()
+        self.assertEqual(len(result), 1)
+        clause = result[0]
+        self.assertIsInstance(clause, ExtractedClause)
+        self.assertEqual(clause.clause_type, CUADClauseType.GOVERNING_LAW)
+        self.assertEqual(clause.confidence, 0.95)
+
+        # Offsets are computed by searching the source text, not hallucinated
+        # by the LLM (the LLM-facing schema has no offset fields at all).
+        expected_start = source_text.find(clause.extracted_text)
+        self.assertNotEqual(expected_start, -1)
+        self.assertEqual(clause.start_offset, expected_start)
+        self.assertEqual(clause.end_offset, expected_start + len(clause.extracted_text))
+
+    def test_extract_clauses_offset_fallback_for_whitespace_mismatch(self):
+        # Extra internal whitespace vs. what the model "recalls" - exact
+        # substring search fails, whitespace-insensitive fallback succeeds.
+        source_text = "Clause:   Payment   is due   within 30 days of invoice."
+        response = _LLMExtractionResponse(clauses=[
+            _LLMExtractedClause(
+                clause_type=CUADClauseType.MINIMUM_COMMITMENT,
+                extracted_text="Payment is due within 30 days of invoice.",
+                confidence=0.8,
+            )
+        ])
+        fake_llm, _ = make_fake_llm(response)
+
+        result = LLMExtractionService(fake_llm).extract_clauses(source_text)
+
+        self.assertEqual(len(result), 1)
+        self.assertNotEqual(result[0].start_offset, -1)
+        self.assertGreater(result[0].end_offset, result[0].start_offset)
+
+    def test_extract_clauses_returns_empty_without_llm(self):
+        self.assertEqual(LLMExtractionService(None).extract_clauses("some contract text"), [])
+
+    def test_extract_clauses_returns_empty_on_llm_error(self):
+        fake_llm, structured = make_fake_llm(_LLMExtractionResponse(clauses=[]))
+        structured.invoke.side_effect = RuntimeError("API error")
+
+        self.assertEqual(LLMExtractionService(fake_llm).extract_clauses("some contract text"), [])
+
+
+class TestLLMClauseExtractorRealExtraction(unittest.TestCase):
+    def test_extract_clauses_returns_real_clause_objects(self):
+        source_text = "Either party may terminate this agreement with 30 days written notice."
+        response = _LLMExtractionResponse(clauses=[
+            _LLMExtractedClause(
+                clause_type=CUADClauseType.TERMINATION_FOR_CONVENIENCE,
+                extracted_text=source_text,
+                confidence=0.9,
+            )
+        ])
+        fake_llm, structured = make_fake_llm(response)
+
+        clauses = LLMClauseExtractor(fake_llm).extract_clauses(source_text, section_id="sec_1")
+
+        structured.invoke.assert_called_once()
+        self.assertEqual(len(clauses), 1)
+        clause = clauses[0]
+        self.assertIsInstance(clause, Clause)
+        self.assertEqual(clause.clause_type, "Termination For Convenience")
+        self.assertEqual(clause.content, source_text)
+        self.assertEqual(clause.section_id, "sec_1")
+        self.assertGreaterEqual(clause.start_position, 0)
+
+
+class TestLLMCUADClassifierRealExtraction(unittest.TestCase):
+    def test_classify_clause_returns_real_classifications(self):
+        response = _LLMExtractionResponse(clauses=[
+            _LLMExtractedClause(
+                clause_type=CUADClauseType.GOVERNING_LAW,
+                extracted_text="governed by the laws of Delaware",
+                confidence=0.92,
+            )
+        ])
+        fake_llm, structured = make_fake_llm(response)
+
         clause = {"clause_id": "clause_1", "content": "This agreement is governed by the laws of Delaware."}
-        classifications = classifier.classify_clause(clause)
+        classifications = LLMCUADClassifier(fake_llm).classify_clause(clause)
 
-        fake_llm.invoke.assert_called_once()
+        structured.invoke.assert_called_once()
+        self.assertEqual(len(classifications), 1)
+        result = classifications[0]
+        self.assertIsInstance(result, CUADClassification)
+        self.assertEqual(result.clause_id, "clause_1")
+        self.assertEqual(result.cuad_type, "Governing Law")
+        self.assertEqual(result.detected_by, "llm")
+
+    def test_classify_clause_filters_low_confidence_matches(self):
+        response = _LLMExtractionResponse(clauses=[
+            _LLMExtractedClause(
+                clause_type=CUADClauseType.GOVERNING_LAW,
+                extracted_text="governed by the laws of Delaware",
+                confidence=0.5,  # below the > 0.7 threshold
+            )
+        ])
+        fake_llm, _ = make_fake_llm(response)
+
+        clause = {"clause_id": "clause_1", "content": "This agreement is governed by the laws of Delaware."}
+        classifications = LLMCUADClassifier(fake_llm).classify_clause(clause)
+
         self.assertEqual(classifications, [])
 
 
-class TestClauseDetectorToolStub(unittest.TestCase):
-    """TODO(Phase 1): make ClauseDetectorTool._run actually invoke the LLM."""
+class TestClauseDetectorToolRealExtraction(unittest.TestCase):
+    def test_run_returns_real_extraction_reflecting_input(self):
+        contract_a_text = "Contract A: governed by the laws of California."
+        contract_b_text = "Contract B: a completely different indemnification-heavy MSA."
 
-    def test_output_is_identical_regardless_of_input_text(self):
-        tool = ClauseDetectorTool()
-
-        result_a = json.loads(tool._run("Contract A: a totally unrelated confidentiality agreement."))
-        result_b = json.loads(tool._run("Contract B: a completely different indemnification-heavy MSA."))
-
-        # Two unrelated contracts produce byte-for-byte identical "extracted"
-        # clauses, because _run never inspects contract_text - it returns a
-        # hard-coded list regardless of input.
-        self.assertEqual(result_a, result_b)
-        self.assertEqual(result_a, [
-            {
-                "clause_type": "Payment Terms",
-                "content": "Payment due within 30 days of invoice",
-                "risk_level": "LOW",
-                "confidence_score": 0.8,
-                "location": "Section 3"
-            },
-            {
-                "clause_type": "Liability",
-                "content": "Liability limited to $50,000",
-                "risk_level": "HIGH",
-                "confidence_score": 0.9,
-                "location": "Section 8"
-            }
+        response_a = _LLMExtractionResponse(clauses=[
+            _LLMExtractedClause(
+                clause_type=CUADClauseType.GOVERNING_LAW,
+                extracted_text="governed by the laws of California",
+                confidence=0.9,
+            )
         ])
+        response_b = _LLMExtractionResponse(clauses=[])
+
+        fake_llm, structured = make_fake_llm(response_a)
+        structured.invoke.side_effect = [response_a, response_b]
+
+        tool = ClauseDetectorTool(llm=fake_llm)
+        result_a = json.loads(tool._run(contract_a_text))
+        result_b = json.loads(tool._run(contract_b_text))
+
+        # Unlike the old stub, output now genuinely differs based on input.
+        self.assertNotEqual(result_a, result_b)
+        self.assertEqual(len(result_a), 1)
+        self.assertEqual(result_a[0]["clause_type"], "Governing Law")
+        self.assertEqual(result_a[0]["content"], "governed by the laws of California")
+        self.assertEqual(result_b, [])
+
+    def test_run_returns_empty_list_without_llm_or_api_key(self):
+        # No llm passed in, and get_default_llm() returns None unless a real
+        # key is configured in this process's environment.
+        if os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"):
+            self.skipTest("A real API key is configured in this environment")
+
+        result = json.loads(ClauseDetectorTool()._run("Some contract text."))
+        self.assertEqual(result, [])
 
 
 if __name__ == "__main__":
