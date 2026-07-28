@@ -1,0 +1,2160 @@
+{
+  "model": "gemini-2.5-flash",
+  "run_name": "gemini-2.5-flash-stratified",
+  "sample_size": 90,
+  "contracts_evaluated": 40,
+  "newly_evaluated_this_run": 1,
+  "contracts_remaining": 50,
+  "contracts_skipped_no_text": 0,
+  "skipped_filenames": [],
+  "stopped_early": true,
+  "per_type": {
+    "Document Name": {
+      "tp": 40,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "Parties": {
+      "tp": 40,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "Agreement Date": {
+      "tp": 27,
+      "fp": 3,
+      "fn": 7,
+      "precision": 0.9,
+      "recall": 0.794,
+      "f1": 0.844
+    },
+    "Effective Date": {
+      "tp": 25,
+      "fp": 7,
+      "fn": 3,
+      "precision": 0.781,
+      "recall": 0.893,
+      "f1": 0.833
+    },
+    "Expiration Date": {
+      "tp": 14,
+      "fp": 4,
+      "fn": 16,
+      "precision": 0.778,
+      "recall": 0.467,
+      "f1": 0.583
+    }
+  },
+  "per_contract": [
+    {
+      "filename": "NANOPHASETECHNOLOGIESCORP_11_01_2005-EX-99.1-DISTRIBUTOR AGREEMENT.PDF",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "DISTRIBUTOR AGREEMENT"
+          ],
+          "predicted": [
+            "DISTRIBUTOR AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "NTC",
+            "Nanophase Technologies Corporation",
+            "JOHNSON MATTHEY CATALOG COMPANY, INC.",
+            "d/b/a ALFA AESAR",
+            "ALFA AESAR"
+          ],
+          "predicted": [
+            "JOHNSON MATTHEY CATALOG COMPANY, INC., a Delaware corporation, d/b/a ALFA AESAR (hereinafter referred to as \"ALFA AESAR\"), having a mailing address of 30 Bond Street, Ward Hill, MA 01835-8099 and Nanophase Technologies Corporation, a Delaware corporation (\"NTC\"), having its principal offices at 1319 Marquette Drive, Romeoville, IL 60446."
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "10/24/05"
+          ],
+          "predicted": [
+            "THIS AGREEMENT, dated as of October 24, 2005"
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [],
+          "predicted": [
+            "THIS AGREEMENT, dated as of October 24, 2005"
+          ],
+          "outcome": "FP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "10/24/10"
+          ],
+          "predicted": [],
+          "outcome": "FN"
+        }
+      }
+    },
+    {
+      "filename": "ZogenixInc_20190509_10-Q_EX-10.2_11663313_EX-10.2_Distributor Agreement.pdf",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "DISTRIBUTORSHIP AGREEMENT"
+          ],
+          "predicted": [
+            "Distributorship Agreement"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "Zogenix",
+            "Distributor",
+            "Zogenix and Distributor may be referred to individually as a \"Party\" and collectively as the \"Parties\".",
+            "ZOGENIX, INC.",
+            "Nippon Shinyaku Company, Ltd."
+          ],
+          "predicted": [
+            "ZOGENIX, INC., having a place of business at 5959 Horton Street, Suite 500, Emeryville, California 94608( \"Zogenix\") and Nippon Shinyaku Company, Ltd., having a place of business at 14, Nishinosho-Monguchi-cho, Kisshoin, Minami-ku, Kyoto 601-8550, Japan (\"Distributor\"). Zogenix and Distributor may be referred to individually as a \"Party\" and collectively as the \"Parties\"."
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "3/18/19"
+          ],
+          "predicted": [
+            "March 18, 2019"
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "3/18/19"
+          ],
+          "predicted": [
+            "March 18, 2019 (the \"Effective Date\")"
+          ],
+          "outcome": "TP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "9/1/45"
+          ],
+          "predicted": [
+            "This Agreement shall commence on the Effective Date and shall remain in effect until September 1, 2045, unless earlier terminated by either Party pursuant to this Article 12 (the \"Term\")."
+          ],
+          "outcome": "TP"
+        }
+      }
+    },
+    {
+      "filename": "NUVEEN - REMARKETING AGREEMENT.PDF",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "REMARKETING AGREEMENT"
+          ],
+          "predicted": [
+            "REMARKETING AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "Fund",
+            "Nuveen AMT-Free Municipal Credit Income Fund",
+            "Investment Adviser",
+            "Remarketing Agent",
+            "Nuveen Fund Advisors, LLC",
+            "[\u25cf]"
+          ],
+          "predicted": [
+            "Nuveen AMT-Free Municipal Credit Income Fund, a closed-end investment company organized as a Massachusetts business trust (the \"Fund\"), Nuveen Fund Advisors, LLC, a registered investment adviser and wholly-owned subsidiary of Nuveen Investments, Inc. (the \"Investment Adviser\"), and [\u25cf] (the \"Remarketing Agent\")."
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [],
+          "predicted": [
+            "Dated as of [\u25cf]"
+          ],
+          "outcome": "FP"
+        },
+        "Effective Date-Answer": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "perpetual"
+          ],
+          "predicted": [],
+          "outcome": "FN"
+        }
+      }
+    },
+    {
+      "filename": "NETGEAR,INC_04_21_2003-EX-10.16-DISTRIBUTOR AGREEMENT.pdf",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "DISTRIBUTOR AGREEMENT"
+          ],
+          "predicted": [
+            "DISTRIBUTOR AGREEMENT",
+            "AMENDMENT TO THE DISTRIBUTOR AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "Distributor",
+            "Ingram Micro",
+            "NETGEAR, Inc.",
+            "NETGEAR"
+          ],
+          "predicted": [
+            "INGRAM MICRO",
+            "NETGEAR",
+            "Ingram Micro, a corporation organized under the laws of the State of California, having a place of business located at 1600 E. St. Andrew Place, Santa Ana, California, USA, (\"Distributor\") and NETGEAR, Inc. (\"NETGEAR\"), a wholly owned subsidiary of Bay Networks, Inc., organized under the laws of the State of Delaware, having a place of business at 4401 Great America Parkway, Santa Clara, California, USA, agree that the following terms govern the purchase, sale, and licensing of Products (as defined below) between the parties."
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "11/5/96"
+          ],
+          "predicted": [
+            "Date: October 16, 1996",
+            "Date: November 5, 1996"
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "3/1/96"
+          ],
+          "predicted": [
+            "Effective Date: March 1, 1996"
+          ],
+          "outcome": "TP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "3/1/97"
+          ],
+          "predicted": [
+            "Term: 1 Year",
+            "This Agreement will be in effect for one year from the Effective Date"
+          ],
+          "outcome": "TP"
+        }
+      }
+    },
+    {
+      "filename": "BellringBrandsInc_20190920_S-1_EX-10.12_11817081_EX-10.12_Manufacturing Agreement3.pdf",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "MANUFACTURING AGREEMENT",
+            "AMENDMENT NO. 2"
+          ],
+          "predicted": [
+            "AMENDMENT NO. 2 TO STREMICK'S HERITAGE FOODS, LLC and PREMIER NUTRITION CORPORATION MANUFACTURING AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "Premier",
+            "Stremick's Heritage Foods, LLC",
+            "Premier Nutrition Corporation",
+            "Heritage and Premier are each referred to herein as a \"Party\" and collectively as the \"Parties\".",
+            "Heritage"
+          ],
+          "predicted": [
+            "This Second Amendment (\"Second Amendment\"), entered into by and between Stremick's Heritage Foods, LLC, (\"Heritage\"), Premier Nutrition Corporation (\"Premier\") is effective as of October 1, 2018 (\"Second Amendment Effective Date\") and amends that certain Manufacturing Agreement between Heritage and Premier dated July 1, 2017 (\"Agreement\"). Heritage and Premier are each referred to herein as a \"Party\" and collectively as the \"Parties\"."
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "10/1/18"
+          ],
+          "predicted": [
+            "amends that certain Manufacturing Agreement between Heritage and Premier dated July 1, 2017 (\"Agreement\")."
+          ],
+          "outcome": "FN"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "10/1/18"
+          ],
+          "predicted": [
+            "is effective as of October 1, 2018 (\"Second Amendment Effective Date\")"
+          ],
+          "outcome": "TP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "12/31/21"
+          ],
+          "predicted": [
+            "This Second Amendment shall be effective from The Second Amendment Effective Date and shall expire on December 31, 2021."
+          ],
+          "outcome": "TP"
+        }
+      }
+    },
+    {
+      "filename": "ATENTOSA_07_06_2020-EX-99.1-JOINT FILING AGREEMENT.PDF",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "JOINT FILING AGREEMENT"
+          ],
+          "predicted": [
+            "JOINT FILING AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "HPS MEZZANINE PARTNERS II GP, L.P.",
+            "MEZZANINE PARTNERS II OFFSHORE LUX S.\u00c0 R.L II",
+            "HPS MEZZANINE PARTNERS II, LLC",
+            "MEZZANINE PARTNERS II ONSHORE LUX S.\u00c0 R.L",
+            "MEZZANINE PARTNERS II OFFSHORE LUX S.\u00c0 R.L",
+            "HPS INVESTMENT PARTNERS, LLC",
+            "MEZZANINE PARTNERS II ONSHORE LUX S.\u00c0 R.L II",
+            "MEZZANINE PARTNERS II, L.P.",
+            "MEZZANINE PARTNERS - OFFSHORE INVESTMENT MASTER FUND II, L.P.",
+            "HPS MEZZANINE PARTNERS II OFFSHORE GP, L.P."
+          ],
+          "predicted": [
+            "HPS INVESTMENT PARTNERS, LLC",
+            "HPS MEZZANINE PARTNERS II, LLC",
+            "HPS MEZZANINE PARTNERS II OFFSHORE GP, L.P.",
+            "HPS Partners Holdings II, LLC",
+            "MEZZANINE PARTNERS - OFFSHORE INVESTMENT MASTER FUND II, L.P.",
+            "MEZZANINE PARTNERS II OFFSHORE LUX S.\u00c0 R.L",
+            "MEZZANINE PARTNERS II OFFSHORE LUX S.\u00c0 R.L II",
+            "HPS MEZZANINE PARTNERS II GP, L.P.",
+            "MEZZANINE PARTNERS II, L.P.",
+            "MEZZANINE PARTNERS II ONSHORE LUX S.\u00c0 R.L",
+            "MEZZANINE PARTNERS II ONSHORE LUX S.\u00c0 R.L II"
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "7/6/20"
+          ],
+          "predicted": [
+            "Dated: July 6, 2020"
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Expiration Date-Answer": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        }
+      }
+    },
+    {
+      "filename": "NEXSTARFINANCEHOLDINGSINC_03_27_2002-EX-10.26-OUTSOURCING AGREEMENT.PDF",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "OUTSOURCING AGREEMENT"
+          ],
+          "predicted": [
+            "OUTSOURCING AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "WYZZ Licensee, Inc.",
+            "WYZZ",
+            "WYZZ and Nexstar are sometimes referred to herein individually as a \"Party\" and collectively as the \"Parties\".",
+            "NEXSTAR",
+            "Nexstar Broadcasting of Peoria, L.L.C.",
+            "WYZZ, Inc."
+          ],
+          "predicted": [
+            "WYZZ, Inc. and WYZZ Licensee, Inc. (collectively \"WYZZ\") and Nexstar Broadcasting of Peoria, L.L.C. (\"NEXSTAR\") hereby enter into this Agreement (this \"Agreement\") dated November 28, 2001. WYZZ and Nexstar are sometimes referred to herein individually as a \"Party\" and collectively as the \"Parties\"."
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "11/28/01"
+          ],
+          "predicted": [
+            "dated November 28, 2001."
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "12/1/01"
+          ],
+          "predicted": [
+            "The term of this Agreement (the \"Term\") shall commence on December 1, 2001, which date shall be deemed the effective date of this Agreement (the \"Effective Date\")."
+          ],
+          "outcome": "TP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "11/28/08"
+          ],
+          "predicted": [
+            "Unless earlier terminated in accordance with the terms hereof, the term of this Agreement shall end on the seventh anniversary of the date hereof."
+          ],
+          "outcome": "TP"
+        }
+      }
+    },
+    {
+      "filename": "IOVANCEBIOTHERAPEUTICS,INC_08_03_2017-EX-10.1-STRATEGIC ALLIANCE AGREEMENT.PDF",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "STRATEGIC ALLIANCE AGREEMENT"
+          ],
+          "predicted": [
+            "STRATEGIC ALLIANCE AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "The University of Texas M. D. Anderson Cancer Center",
+            "Lion Biotechnologies, Inc.",
+            "LBIO",
+            "MD Anderson",
+            "MD Anderson and LBIO are hereinafter individually referred to as a \"Party\" and are collectively known as the \"Parties\"."
+          ],
+          "predicted": [
+            "Lion Biotechnologies, Inc., with a place of business located at 999 Skyway Road, Suite 150, San Carlos, CA 94070 (\"LBIO\"), and The University of Texas M. D. Anderson Cancer Center, with a place of business located at 1515 Holcombe Blvd., Houston, TX 77030 (\"MD Anderson\"), a member institution of The University of Texas System (\"System\")"
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "4/17/17"
+          ],
+          "predicted": [
+            "Effective Date: April 17, 2017"
+          ],
+          "outcome": "TP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "4/17/21"
+          ],
+          "predicted": [
+            "The term of this Agreement commences on the Effective Date and shall continue in effect until the later of (a) the fourth (4th) anniversary of the Effective Date, or (b) the completion or termination of the Research and receipt by LBIO of all deliverables due from MD Anderson hereunder, unless sooner terminated in accordance with the provisions of Section 2.2 or Section 9.14."
+          ],
+          "outcome": "FN"
+        }
+      }
+    },
+    {
+      "filename": "KitovPharmaLtd_20190326_20-F_EX-4.15_11584449_EX-4.15_Manufacturing Agreement.pdf",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "PRODUCT MANUFACTURING AGREEMENT"
+          ],
+          "predicted": [
+            "PRODUCT MANUFACTURING AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "DEXCEL LTD.",
+            "Dexcel and Kitov are hereinafter jointly the \"Parties\" and individually a \"Party.\"",
+            "Kitov",
+            "Dexcel",
+            "KITOV Pharma Ltd."
+          ],
+          "predicted": [
+            "DEXCEL LTD., with its registered address at ****, Israel (\"Dexcel\") and KITOV Pharma Ltd., with its registered office at 132 Menachem Begin Road, Azrieli Center, Tel Aviv, 6701101, Israel (\"Kitov\"). Dexcel and Kitov are hereinafter jointly the \"Parties\" and individually a \"Party.\""
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [],
+          "predicted": [
+            "This Product Manufacturing Agreement (\"Agreement\") is made as of the Effective Date"
+          ],
+          "outcome": "FP"
+        },
+        "Effective Date-Answer": {
+          "gold": [],
+          "predicted": [
+            "1.13 \"Effective Date\" shall mean the date of signature of the last Party to execute this Agreement."
+          ],
+          "outcome": "FP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        }
+      }
+    },
+    {
+      "filename": "BORROWMONEYCOM,INC_06_11_2020-EX-10.1-JOINT VENTURE AGREEMENT.PDF",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "JOINT VENTURE AGREEMENT"
+          ],
+          "predicted": [
+            "JOINT VENTURE AGREEMENT THIS JOINT VENTURE AGREEMENT (the \"Agreement\")"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "BorrowMoney.com, inc",
+            "(individually the \"Member\" and collectively the \"Members\"",
+            "JVLS, LLC"
+          ],
+          "predicted": [
+            "BorrowMoney.com, inc of 512 Bayshore DR, suite 201 Fort Lauderdale FL 33304, and JVLS, LLC dba Vaccines 2Go of 4060 Johns Creek Parkway Suite H Suwanee, GA 30024 (individually the \"Member\" and collectively the \"Members\")."
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "3/20/20"
+          ],
+          "predicted": [
+            "this 20th day of Friday, March 2020 (the \"Execution Date\")"
+          ],
+          "outcome": "FN"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "3/1/20"
+          ],
+          "predicted": [
+            "begin on March 1, 2020"
+          ],
+          "outcome": "TP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "2/28/25"
+          ],
+          "predicted": [
+            "continue in full force and effect until February 28, 2025"
+          ],
+          "outcome": "TP"
+        }
+      }
+    },
+    {
+      "filename": "ETELOS,INC_03_09_2004-EX-10.8-DISTRIBUTOR AGREEMENT.PDF",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "DISTRIBUTOR AGREEMENT"
+          ],
+          "predicted": [
+            "DISTRIBUTOR AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "Tripath",
+            "Uniquest Corporation",
+            "Distributor",
+            "Tripath Technology, Inc."
+          ],
+          "predicted": [
+            "This Agreement is effective 7/1/98 (\"Effective Date\") between Tripath Technology, Inc. (\"Tripath\"), and Uniquest Corporation 780 Montague Expressway Suite 406 Santa Jose, CA 95131"
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "7/7/98"
+          ],
+          "predicted": [
+            "Date: 7/1/98"
+          ],
+          "outcome": "FN"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "7/1/98"
+          ],
+          "predicted": [
+            "This Agreement is effective 7/1/98 (\"Effective Date\")"
+          ],
+          "outcome": "TP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "perpetual"
+          ],
+          "predicted": [],
+          "outcome": "FN"
+        }
+      }
+    },
+    {
+      "filename": "NmfSlfIInc_20200115_10-12GA_EX-10.5_11946987_EX-10.5_Trademark License Agreement.pdf",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "TRADEMARK LICENSE AGREEMENT"
+          ],
+          "predicted": [
+            "TRADEMARK LICENSE AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "the \"Licensee\"",
+            "NMF Senior Loan Fund I, Inc.",
+            "New Mountain Capital, L.L.C.",
+            "the \"Licensor\"",
+            "The Licensor and the Licensee are sometimes referred to herein separately as a \"party\" and collectively as the \"parties.\""
+          ],
+          "predicted": [
+            "New Mountain Capital, L.L.C., a Delaware limited liability company (the \"Licensor\"), and NMF Senior Loan Fund I, Inc., a Maryland corporation (the \"Licensee\")."
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "[]/[]/2019"
+          ],
+          "predicted": [
+            "effective as of [\u00b7], 2019"
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "[]/[]/2019"
+          ],
+          "predicted": [
+            "effective as of [\u00b7], 2019 (the \"Effective Date\")"
+          ],
+          "outcome": "TP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "perpetual"
+          ],
+          "predicted": [
+            "Notwithstanding the foregoing, this Agreement shall expire if the Investment Advisor or one of its affiliates ceases to serve as investment adviser to the Licensee."
+          ],
+          "outcome": "FN"
+        }
+      }
+    },
+    {
+      "filename": "ArmstrongFlooringInc_20190107_8-K_EX-10.2_11471795_EX-10.2_Intellectual Property Agreement.pdf",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "INTELLECTUAL PROPERTY AGREEMENT"
+          ],
+          "predicted": [
+            "INTELLECTUAL PROPERTY AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "Armstrong Flooring, Inc.",
+            "Buyer",
+            "\"Licensing\" and together with Seller, \"Arizona\")",
+            "AHF Holding, Inc.",
+            "AFI Licensing LLC",
+            "Seller",
+            "formerly known as Tarzan HoldCo, Inc.)",
+            "Armstrong Hardwood Flooring Company",
+            "each of Arizona on the one hand and the Buyer Entities on the other hand, a \"Party\" and collectively, the \"Parties\").",
+            "(the \"Company\" and together with Buyer the \"Buyer Entities\""
+          ],
+          "predicted": [
+            "Armstrong Flooring, Inc., a Delaware corporation (\"Seller\") and AFI Licensing LLC, a Delaware limited liability company (\"Licensing\" and together with Seller, \"Arizona\") and AHF Holding, Inc. (formerly known as Tarzan HoldCo, Inc.), a Delaware corporation (\"Buyer\") and Armstrong Hardwood Flooring Company, a Tennessee corporation (the \"Company\" and together with Buyer the \"Buyer Entities\") (each of Arizona on the one hand and the Buyer Entities on the other hand, a \"Party\" and collectively, the \"Parties\")."
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "12/31/18"
+          ],
+          "predicted": [
+            "December 31, 2018"
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "12/31/18"
+          ],
+          "predicted": [
+            "December 31, 2018 (the \"Effective Date\")"
+          ],
+          "outcome": "TP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "Perpetual"
+          ],
+          "predicted": [
+            "Unless earlier terminated pursuant to the provisions hereof, the term of this Agreement and the licenses and other grants of rights (and related obligations) under this Agreement shall (i) with respect to the Arizona Licensed Trademarks, be for the Arizona Trademark License Term, (ii) with respect to the Diamond Licensed Trademarks, be for the Diamond Trademark License Term, (iii) with respect to the Phase- Out Marks, be for the term set forth in Section 6.6, and (iv) with respect to Copyrights, Know-How and Patents, be in perpetuity."
+          ],
+          "outcome": "FN"
+        }
+      }
+    },
+    {
+      "filename": "IMAGEWARESYSTEMSINC_12_20_1999-EX-10.22-MAINTENANCE AGREEMENT.PDF",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "MAINTENANCE AGREEMENT"
+          ],
+          "predicted": [
+            "MAINTENANCE AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "SAGEM S.A.",
+            "XIMAGE corporation",
+            "MORPHO",
+            "XIMAGE"
+          ],
+          "predicted": [
+            "SAGEM S.A., Departement MORPHO Systemes whose address is 33, route de la Bonne Dame, 77300 FONTAINEBLEAU, FRANCE (hereinafter referred to as MORPHO) and XIMAGE corporation whose address is 1050 North Fifth Street, SAN JOSE, California 95112 (hereinafter referred to as XIMAGE)"
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "1/31/94"
+          ],
+          "predicted": [
+            "31 January, 1994"
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "12/10/93"
+          ],
+          "predicted": [
+            "EFFECTIVE DATE shall mean the Date of Installation of the PSS in Kuwait, i.e. December 10, 1993."
+          ],
+          "outcome": "TP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "12/10/94"
+          ],
+          "predicted": [],
+          "outcome": "FN"
+        }
+      }
+    },
+    {
+      "filename": "ScansourceInc_20190822_10-K_EX-10.38_11793958_EX-10.38_Distributor Agreement2.pdf",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "Software License Agreement [v.08.05.03]"
+          ],
+          "predicted": [
+            "Software License Agreement [v.08.05.03]"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "Cisco",
+            "Customer",
+            "Cisco Systems, Inc. or its subsidiary licensing the Software instead of Cisco Systems, Inc. (\"Cisco\"),"
+          ],
+          "predicted": [
+            "The following terms of this Software License Agreement (\"Agreement') govern Customer's access and use of the Software, except to the extent (a) there is a separate signed agreement between Customer and Cisco governing Customer's use of the Software or (b) the Software includes a separate \"click-accept\" license agreement as part of the installation and/or download process."
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Effective Date-Answer": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "perpetual"
+          ],
+          "predicted": [],
+          "outcome": "FN"
+        }
+      }
+    },
+    {
+      "filename": "EmmisCommunicationsCorp_20191125_8-K_EX-10.6_11906433_EX-10.6_Marketing Agreement.pdf",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "LOCAL PROGRAMMING AND MARKETING AGREEMENT (WQHT HD2)"
+          ],
+          "predicted": [
+            "LOCAL PROGRAMMING AND MARKETING AGREEMENT (WQHT HD2)"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "MediaCo Holding Inc.",
+            "Programmer",
+            "Licensee",
+            "WBLS-WLIB LLC"
+          ],
+          "predicted": [
+            "MediaCo Holding Inc., an Indiana corporation (the \"Licensee\"), and WBLS-WLIB LLC, an Indiana limited liability company (\"Programmer\")."
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "11/25/19"
+          ],
+          "predicted": [
+            "November 25, 2019"
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "11/25/19"
+          ],
+          "predicted": [
+            "The term of this Agreement (the \"Term\") will begin on the date hereof (the \"Commencement Date\")"
+          ],
+          "outcome": "FN"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "12/31/22"
+          ],
+          "predicted": [
+            "The term of this Agreement (the \"Term\") will begin on the date hereof (the \"Commencement Date\"), and will continue until the earlier of (i) December 31, 2022, (ii) the termination or expiration of the Studio Lease (defined below), (iii) election to terminate and notice thereof given by Programmer to Licensee, and (iv) mutual written consent of Licensee and Programmer (the \"Term\"), unless extended or earlier terminated pursuant to Section 11 hereof."
+          ],
+          "outcome": "TP"
+        }
+      }
+    },
+    {
+      "filename": "Apollo Endosurgery - Manufacturing and Supply Agreement.PDF",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "Manufacturing and Supply Agreement"
+          ],
+          "predicted": [
+            "MANUFACTURING AND SUPPLY AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "APOLLO",
+            "Apollo Endosurgery",
+            "Establishment Labs, S.A",
+            "APOLLO and ESTABLISHMENT shall hereinafter be individually referred to as a \"Party\" and collectively as the \"Parties.\"",
+            "ESTABLISHMENT"
+          ],
+          "predicted": [
+            "by and between (1) Apollo Endosurgery, Delaware corporation having offices at 1120 S Capital of Texas Highway #300, Austin, TX 78746 (\"APOLLO\"), and (2) Establishment Labs, S.A a corporation organized under the laws of Costa Rica and having a principal place of business at Coyol Free Zone, B15, Alajuela, 20113, Costa Rica (\"ESTABLISHMENT\"). APOLLO and ESTABLISHMENT shall hereinafter be individually referred to as a \"Party\" and collectively as the \"Parties.\""
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "12/5/14"
+          ],
+          "predicted": [
+            "This Manufacturing and Supply Agreement (this \"Agreement\") is entered into as of the Effective Date (as defined below)"
+          ],
+          "outcome": "FN"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "12/5/14"
+          ],
+          "predicted": [
+            "\"Effective Date\" shall mean December 5, 2014."
+          ],
+          "outcome": "TP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "12/5/19"
+          ],
+          "predicted": [
+            "This Agreement shall commence on the Effective Date and shall be valid for a period of five (5) years with automatic renewal of one year thereafter until terminated by either party with one (1) year written notice prior to the expiration of the initial period or any extension period thereof."
+          ],
+          "outcome": "FN"
+        }
+      }
+    },
+    {
+      "filename": "SUNTRONCORP_05_17_2006-EX-10.22-MAINTENANCE AGREEMENT.PDF",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "MAINTENANCE AGREEMENT"
+          ],
+          "predicted": [
+            "MAINTENANCE AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "SUNTRON-IOWA, INC.",
+            "U.S. BANK NATIONAL ASSOCIATION",
+            "Agent",
+            "K*TEC OPERATING CORP.",
+            "CURRENT ELECTRONICS, INC.",
+            "SUNTRON CORPORATION",
+            "RM ELECTRONICS, INC.",
+            "THAYER EQUITY INVESTORS IV, L.P.",
+            "SUNTRON GCO, L.P.",
+            "Investor",
+            "SUNTRON-KANSAS, INC.",
+            "collectively, the \"Borrowers\"",
+            "in such capacity and together with its successors and assigns in such capacity, the \"Agent\"",
+            "EFTC OPERATING CORP.",
+            "collectively and together with their respective successors and assigns, the \"Lenders\""
+          ],
+          "predicted": [
+            "THAYER EQUITY INVESTORS IV, L.P. (the \"Investor\"), in favor of U.S. BANK NATIONAL ASSOCIATION, a national banking association in its capacity as administrative agent (in such capacity and together with its successors and assigns in such capacity, the \"Agent\"), for itself and the lending institutions from time to time party to the Financing Agreement (defined below) (collectively and together with their respective successors and assigns, the \"Lenders\").\n\nA. The Agent, Lenders and SUNTRON CORPORATION, a Delaware corporation, K*TEC OPERATING CORP., a Delaware corporation, SUNTRON GCO, L.P., a Texas limited partnership, EFTC OPERATING CORP., a Delaware corporation, SUNTRON-IOWA, INC., a Delaware corporation, CURRENT ELECTRONICS, INC., an Oregon corporation, RM ELECTRONICS, INC., a New Hampshire corporation, and SUNTRON-KANSAS, INC., a Delaware corporation (collectively, the \"Borrowers\")"
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "3/28/06"
+          ],
+          "predicted": [
+            "as of the 28th day of March 2006"
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [],
+          "predicted": [
+            "as of the 28th day of March 2006"
+          ],
+          "outcome": "FP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [],
+          "predicted": [
+            "This Agreement shall terminate upon the earliest to occur of: (i) the date on which the aggregate Required Capital Contributions paid by the Investor, and received by the Borrowers, in accordance with the terms of this Agreement equal $5,000,000; (ii) the Release Date (as defined in Section 19) or (iii) payment in full, in cash, of all Obligations and the termination of the Financing Agreement"
+          ],
+          "outcome": "FP"
+        }
+      }
+    },
+    {
+      "filename": "GopageCorp_20140221_10-K_EX-10.1_8432966_EX-10.1_Content License Agreement.pdf",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "WEBSITE CONTENT LICENSE AGREEMENT"
+          ],
+          "predicted": [
+            "WEBSITE CONTENT LICENSE AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "PSiTech Corporation",
+            "Licensor",
+            "Licensee",
+            "Empirical Ventures, Inc."
+          ],
+          "predicted": [
+            "PSiTech Corporation, a BVI Corporation, with offices located at 303, 3rdFl, St. Georges Bldg, 2 Ice House St, Central, Hong Kong(\"Licensor\"), and Empirical Ventures, Inc., a Nevada corporation with offices located at 100, 40 Lake Bellevue Dr, Bellevue, WA(\"Licensee\")."
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "2/10/14"
+          ],
+          "predicted": [
+            "Feb 10, 2014"
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "2/10/14"
+          ],
+          "predicted": [
+            "Feb 10, 2014 (the \"Effective Date\")"
+          ],
+          "outcome": "TP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "2/10/19"
+          ],
+          "predicted": [],
+          "outcome": "FN"
+        }
+      }
+    },
+    {
+      "filename": "Antares Pharma, Inc. - Manufacturing Agreement.PDF",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "Manufacturing Agreement"
+          ],
+          "predicted": [
+            "Manufacturing Agreement"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "Antares and AMAG are sometimes referred to herein individually as a \"Party\" and collectively as the \"Parties\".",
+            "Antares Pharma, Inc.",
+            "AMAG Pharmaceuticals, Inc.",
+            "Antares",
+            "AMAG"
+          ],
+          "predicted": [
+            "Antares Pharma, Inc., a Delaware corporation, with offices located at 100 Princeton South, Suite 300, Ewing, NJ 08628 (\"Antares\"), and AMAG Pharmaceuticals, Inc., a Delaware corporation, with a corporate address at 1100 Winter Street, Waltham, MA 02451 (\"AMAG\"). Antares and AMAG are sometimes referred to herein individually as a \"Party\" and collectively as the \"Parties\"."
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "3/20/18"
+          ],
+          "predicted": [
+            "as of the 20th day of March, 2018"
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "3/20/18"
+          ],
+          "predicted": [
+            "the 20th day of March, 2018 (the \"Effective Date\")"
+          ],
+          "outcome": "TP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "Perpetual"
+          ],
+          "predicted": [
+            "this Agreement shall become effective as of the Effective Date and shall continue until the expiration or earlier termination of the Development and License Agreement (the \"Term\")."
+          ],
+          "outcome": "FN"
+        }
+      }
+    },
+    {
+      "filename": "AIRTECHINTERNATIONALGROUPINC_05_08_2000-EX-10.4-FRANCHISE AGREEMENT.PDF",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "FRANCHISE AGREEMENT"
+          ],
+          "predicted": [
+            "AIRSOPURE                                FRANCHISE AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "hereinafter \"AIRSOPURE\" or by reference \"we\", \"us\", \"our\"",
+            "Airsopure International Group, Inc.",
+            "(hereinafter \"You\" or by reference \"Franchisee\", or \"Your\")"
+          ],
+          "predicted": [
+            "THIS AGREEMENT is entered into on this ____ day of ___________, 2000, by and between Airsopure International Group, Inc., a Nevada corporation whose principal place of business is located at 15400 Knoll Trail, Suite 200, Dallas, Texas 75248 (hereinafter \"AIRSOPURE\" or by reference \"we\", \"us\", \"our\"), and You:                                    ,     ------------------------------------ whose address is:\n\n- ----------------------------------------\n\n- ---------------------------------------- (hereinafter \"You\" or by reference \"Franchisee\", or \"Your\"). Either Party or both Parties respectively may be referred to as \"Party\" or \"Parties.\""
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "[]/[]/2000"
+          ],
+          "predicted": [
+            "THIS AGREEMENT is entered into on this ____ day of ___________, 2000"
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "[]/[]/2000"
+          ],
+          "predicted": [
+            "The term of this Agreement shall be for 10 years commencing on the date of execution of this Agreement by AIRSOPURE."
+          ],
+          "outcome": "FN"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "[]/[]/2010"
+          ],
+          "predicted": [
+            "The term of this Agreement shall be for 10 years commencing on the date of execution of this Agreement by AIRSOPURE."
+          ],
+          "outcome": "FN"
+        }
+      }
+    },
+    {
+      "filename": "MphaseTechnologiesInc_20030911_10-K_EX-10.15_1560667_EX-10.15_Co-Branding Agreement.pdf",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "CO-BRANDING AGREEMENT"
+          ],
+          "predicted": [
+            "CO-BRANDING AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "Lucent Technologies Inc.",
+            "Lucent",
+            "mPhase Technologies Inc.",
+            "(each individually, \"a Party\" and, collectively, \"the Parties\"}.",
+            "mPhase"
+          ],
+          "predicted": [
+            "Lucent Technologies Inc., a Delaware corporation having a principal place of business at 600 Mountain Avenue, Murray Hill, New Jersey 07974 (\"Lucent\") and mPhase Technologies Inc., a New Jersey corporation located at 587 Connecticut Avenue, Norwalk, Connecticut 068545 (\"mPhase\") (each individually, \"a Party\" and, collectively, \"the Parties\"}"
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "1/21/03"
+          ],
+          "predicted": [
+            "this 21st day of January 2003"
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [],
+          "predicted": [
+            "The Term of this Agreement will commence on the date above"
+          ],
+          "outcome": "FP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "1/21/04"
+          ],
+          "predicted": [
+            "shall continue for a term of one (1) year."
+          ],
+          "outcome": "TP"
+        }
+      }
+    },
+    {
+      "filename": "MusclepharmCorp_20170208_10-KA_EX-10.38_9893581_EX-10.38_Co-Branding Agreement.pdf",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "ENDORSEMENT LICENSING AND CO-BRANDING AGREEMENT"
+          ],
+          "predicted": [
+            "ENDORSEMENT LICENSING AND CO-BRANDING AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "Endorser",
+            "collectively, Lender, Endorser, and Fitness are referred to as the \"AS Parties\"",
+            "MusclePharm Corporation",
+            "Lender",
+            "Marine MP, LLC",
+            "Arnold Schwarzenegger",
+            "Fitness",
+            "collectively, \"MusclePharm\" or the \"Company\"",
+            "Fitness Publications, Inc."
+          ],
+          "predicted": [
+            "by and between Marine MP, LLC (\"Lender\"), for services of Arnold Schwarzenegger (\"Endorser\"), and Fitness Publications, Inc. (\"Fitness\") (collectively, Lender, Endorser, and Fitness are referred to as the \"AS Parties\") and MusclePharm Corporation with its principal place of business in Denver, Colorado and its subsidiaries, (collectively, \"MusclePharm\" or the \"Company\")."
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "7/26/13"
+          ],
+          "predicted": [
+            "July 26, 2013"
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "7/26/13"
+          ],
+          "predicted": [
+            "July 26, 2013 (the \"Effective Date\")"
+          ],
+          "outcome": "TP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "7/22/16"
+          ],
+          "predicted": [
+            "The Term shall commence on July 23, 2013 and shall expire on July 22, 2016, unless otherwise terminated earlier pursuant to Section 9 of this Agreement.",
+            "If this Agreement is renewed for the First Additional Term, then the First Additional Term shall commence on July 23, 2016, and the Agreement shall expire and terminate automatically without further notice on July 22, 2019.",
+            "If this Agreement is renewed for the Second Additional Term, then the Second Additional Term shall commence on July 23, 2019 and the Agreement shall expire and terminate automatically without further notice on July 22, 2022."
+          ],
+          "outcome": "TP"
+        }
+      }
+    },
+    {
+      "filename": "Freecook_20180605_S-1_EX-10.3_11233807_EX-10.3_Hosting Agreement.pdf",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "Website Design, Development and Hosting Agreement"
+          ],
+          "predicted": [
+            "Website Design, Development and Hosting Agreement"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "Mitchell's Web Advance, PLC",
+            "Client",
+            "FreeCook",
+            "Company"
+          ],
+          "predicted": [
+            "Natalija Tunevic, director of FreeCook (hereinafter referred to as \"Client\") and Mitchell Vitalis, director of Mitchell's Web Advance, PLC (hereinafter referred to as \"Company\")"
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "1/11/18"
+          ],
+          "predicted": [
+            "January 11, 2018"
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "5/3/18"
+          ],
+          "predicted": [],
+          "outcome": "FN"
+        }
+      }
+    },
+    {
+      "filename": "LIMEENERGYCO_09_09_1999-EX-10-DISTRIBUTOR AGREEMENT.PDF",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "DISTRIBUTOR AGREEMENT"
+          ],
+          "predicted": [
+            "DISTRIBUTOR AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "Distributor",
+            "Electric City of Illinois LLC",
+            "Electric City of Illinois L.L.C.",
+            "Electric City Corp.",
+            "Company"
+          ],
+          "predicted": [
+            "Electric City Corp., a Delaware corporation (\"Company\") and Electric City of Illinois LLC (\"Distributor\")"
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "7/7/99"
+          ],
+          "predicted": [
+            "this 7th day of September, 1999"
+          ],
+          "outcome": "FN"
+        },
+        "Effective Date-Answer": {
+          "gold": [],
+          "predicted": [
+            "which shall commence on the date upon which the Company delivers to Distributor the last Sample, as defined hereinafter."
+          ],
+          "outcome": "FP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [],
+          "predicted": [
+            "The term of this Agreement shall be ten (10) years (the \"Term\")"
+          ],
+          "outcome": "FP"
+        }
+      }
+    },
+    {
+      "filename": "CENTRACKINTERNATIONALINC_10_29_1999-EX-10.3-WEB SITE HOSTING AGREEMENT.PDF",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "WEB SITE HOSTING AGREEMENT"
+          ],
+          "predicted": [
+            "WEB SITE HOSTING AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "the Customer",
+            "Centrack International",
+            "I-ON INTERACTIVE, INC.",
+            "i-on interactive",
+            "CENTRACK INTERNATIONAL, INC.",
+            "i-on"
+          ],
+          "predicted": [
+            "by and between Centrack International, a Florida corporation (\"the Customer\"), and i-on interactive, a Florida corporation (\"i-on\")."
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "4/6/99"
+          ],
+          "predicted": [
+            "entered into this 6th day of April, 1999"
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "4/1/99"
+          ],
+          "predicted": [
+            "The term of this Agreement for the Hosted Site shall commence upon April 1, 1999"
+          ],
+          "outcome": "TP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "10/1/99"
+          ],
+          "predicted": [
+            "shall continue for a period of six (6) months"
+          ],
+          "outcome": "FN"
+        }
+      }
+    },
+    {
+      "filename": "AtnInternationalInc_20191108_10-Q_EX-10.1_11878541_EX-10.1_Maintenance Agreement.pdf",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "Network Build and Maintenance Agreement"
+          ],
+          "predicted": [
+            "Network Build and Maintenance Agreement"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "AT&T Mobility LLC",
+            "Commnet Wireless, LLC",
+            "each of which may be referred to in the singular as a \"Party\" or in the plural as the \"Parties.\"",
+            "Vendor",
+            "AT&T"
+          ],
+          "predicted": [
+            "Commnet Wireless, LLC, a Delaware limited liability company (hereinafter referred to as \"Vendor\"), and AT&T Mobility LLC, a Delaware limited liability company on behalf of itself and its Affiliates (as such term is defined herein) (collectively and hereinafter referred to as \"AT&T\")"
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "7/31/19"
+          ],
+          "predicted": [
+            "as of the 31st day of July, 2019"
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "7/31/19"
+          ],
+          "predicted": [
+            "the 31st day of July, 2019 (the \"Effective Date\")"
+          ],
+          "outcome": "TP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [],
+          "predicted": [
+            "The \"Term\" of this Agreement shall commence on the Effective Date and shall continue in full force and effect until the expiration or earlier termination of the last Addendum to expire or be terminated, at which time this Agreement will expire, unless this Agreement is sooner terminated in accordance with the terms and provisions of this Agreement."
+          ],
+          "outcome": "FP"
+        }
+      }
+    },
+    {
+      "filename": "PHLVARIABLEINSURANCECOCT_08_17_2009-EX-10.1-STRATEGIC ALLIANCE AGREEMENT.PDF",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "STRATEGIC ALLIANCE AGREEMENT"
+          ],
+          "predicted": [
+            "STRATEGIC ALLIANCE AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "together with PHLVIC and PLIC,  the \"PHL Parties\"",
+            "together with PHLVIC, \"PHL Variable\"",
+            "PEPCO",
+            "INVESTORS CAPITAL CORPORATION",
+            "PLIC",
+            "ICC",
+            "PHL VARIABLE INSURANCE COMPANY",
+            "PHOENIX EQUITY PLANNING CORPORATION",
+            "PHOENIX LIFE INSURANCE COMPANY",
+            "PHLVIC"
+          ],
+          "predicted": [
+            "PHL VARIABLE INSURANCE COMPANY (\"PHLVIC\"), PHOENIX LIFE INSURANCE COMPANY, (\"PLIC\" and, together with PHLVIC, \"PHL Variable\"), PHOENIX EQUITY PLANNING CORPORATION (\"PEPCO\" and, together with PHLVIC and PLIC, the \"PHL Parties\"), and INVESTORS CAPITAL CORPORATION (\"ICC\")"
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [],
+          "predicted": [
+            "as of the date on which the Registration Statement is declared effective by the SEC (the \"Effective Date\")"
+          ],
+          "outcome": "FP"
+        },
+        "Effective Date-Answer": {
+          "gold": [],
+          "predicted": [
+            "the date on which the Registration Statement is declared effective by the SEC (the \"Effective Date\")"
+          ],
+          "outcome": "FP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "perpetual"
+          ],
+          "predicted": [],
+          "outcome": "FN"
+        }
+      }
+    },
+    {
+      "filename": "PcquoteComInc_19990721_S-1A_EX-10.11_6377149_EX-10.11_Co-Branding Agreement2.pdf",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "AMENDMENT TO SECTION 2, PART B OF THE CO-BRANDING AGREEMENT"
+          ],
+          "predicted": [
+            "AMENDMENT TO SECTION 2, PART B OF THE CO-BRANDING AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "PC Quote, Inc.",
+            "A.B. Watley, Inc.",
+            "ABW",
+            "PCQ"
+          ],
+          "predicted": [
+            "PC Quote, Inc. (hereinafter referred to as \"PCQ\") and A.B. Watley, Inc. (hereinafter referred to as \"ABW\")",
+            "This Amendment shall apply to said PCQ and ABW and all of their subsidiaries and related companies."
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "12/9/96"
+          ],
+          "predicted": [
+            "Date:  12/5/96",
+            "Date:   12/12/96"
+          ],
+          "outcome": "FN"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "12/9/96"
+          ],
+          "predicted": [
+            "effective December 9, 1996"
+          ],
+          "outcome": "TP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        }
+      }
+    },
+    {
+      "filename": "TomOnlineInc_20060501_20-F_EX-4.46_749700_EX-4.46_Co-Branding Agreement.pdf",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "CO-BRANDING AGREEMENT"
+          ],
+          "predicted": [
+            "CO-BRANDING AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "Skype, Online BVI and the Company may be referred to individually as \"Party\" and collectively as \"Parties.\" Skype, Online BVI, the Company, Skype Holding and Tom Holding may be referred to individually as \"party to this Agreement\" and collectively as \"parties to this Agreement.\"",
+            "Skype",
+            "Tel-Online Limited",
+            "Online BVI",
+            "Skype Technologies, S.A.",
+            "TOM Online (BVI) Limited",
+            "Skype Communications, S.A.",
+            "Tom Holding",
+            "Company",
+            "TOM Online Inc.",
+            "Skype Holding"
+          ],
+          "predicted": [
+            "THIS CO-BRANDING AGREEMENT (this \"Agreement\"), entered into on the 22nd day of August 2005 and effective as of the 22nd day of August 2005 (\"Effective Date\"), by and among (a) Skype Communications, S.A. (\"Skype\"), a limited company (soci\u00e9t\u00e9 anonyme) incorporated in Luxembourg, with its principal place of business at 6 rue Adolphe Fischer, L-1520 Luxembourg, Luxembourg, (b) Skype Technologies, S.A. (\"Skype Holding\"), a limited company (soci\u00e9t\u00e9 anonyme) incorporated in Luxembourg, with its principal place of business at 6 rue Adolphe Fischer, L-1520 Luxembourg; (c) TOM Online (BVI) Limited (\"Online BVI\"), a company incorporated in the British Virgin Islands with limited liability, whose correspondence address is at 8th Floor, Tower W3, Oriental Plaza No.1 Dong Changan Avenue, Dong Chang District, Beijing 100738, PRC; (d) TOM Online Inc. (\"Tom Holding\"), a company incorporated in the Cayman Islands with limited liability and listed on the NASDAQ National Market in the United States of America and the Growth Enterprise Market of The Stock Exchange of Hong Kong Limited, whose correspondence address is at 8th Floor, Tower W3, Oriental Plaza No.1 Dong Changan Avenue, Dong Chang District, Beijing 100738, PRC; and (e) Tel-Online Limited (\"Company\"), a company incorporated in the Cayman Islands, whose correspondence address is at 8th Floor, Tower W3, Oriental Plaza No.1 Dong Changan Avenue, Dong Chang District, Beijing 100738, PRC. Skype, Online BVI and the Company may be referred to individually as \"Party\" and collectively as \"Parties.\" Skype, Online BVI, the Company, Skype Holding and Tom Holding may be referred to individually as \"party to this Agreement\" and collectively as \"parties to this Agreement.\""
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "8/22/05"
+          ],
+          "predicted": [
+            "22nd day of August 2005"
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "8/22/05"
+          ],
+          "predicted": [
+            "effective as of the 22nd day of August 2005 (\"Effective Date\")"
+          ],
+          "outcome": "TP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "8/22/10"
+          ],
+          "predicted": [
+            "The term of this Agreement shall continue for a period of five years following the initial date of execution of the Memorandum, unless terminated earlier pursuant to Section 6.2 or Section 2.8 (\"Initial Term\")."
+          ],
+          "outcome": "TP"
+        }
+      }
+    },
+    {
+      "filename": "WARNINGMANAGEMENTSERVICESINC_12_10_1999-EX-10-ENDORSEMENT AGREEMENT.PDF",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "ENDORSEMENT AGREEMENT"
+          ],
+          "predicted": [
+            "ENDORSEMENT AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "FAMOUS FIXINS, INC.",
+            "Pey Dirt",
+            "Company",
+            "PEY DIRT, INC."
+          ],
+          "predicted": [
+            "FAMOUS FIXINS, INC., 250 West 57th Street, Suite 2501, New York, New York 10107 (\"Company\") and PEY DIRT, INC. (\"Pey Dirt\")."
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "5/31/99"
+          ],
+          "predicted": [
+            "as of May 31, 1999"
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "5/31/99"
+          ],
+          "predicted": [
+            "commencing as of May 31, 1999"
+          ],
+          "outcome": "TP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "5/31/00"
+          ],
+          "predicted": [
+            "concluding May 31, 2000"
+          ],
+          "outcome": "TP"
+        }
+      }
+    },
+    {
+      "filename": "NETZEEINC_11_14_2002-EX-10.3-MAINTENANCE AGREEMENT.PDF",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "MAINTENANCE AGREEMENT"
+          ],
+          "predicted": [
+            "MAINTENANCE AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "Bankers Bank",
+            "Netzee",
+            "THE BANKERS BANK",
+            "NETZEE, INC."
+          ],
+          "predicted": [
+            "NETZEE, INC.",
+            "THE BANKERS BANK, a Georgia banking corporation"
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "3/1/01"
+          ],
+          "predicted": [
+            "COMMENCEMENT DATE FOR MAINTENANCE UNDER THIS ADDENDUM:  MARCH 1, 2001"
+          ],
+          "outcome": "FN"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "3/1/02"
+          ],
+          "predicted": [],
+          "outcome": "FN"
+        }
+      }
+    },
+    {
+      "filename": "FerroglobePlc_20150624_F-4A_EX-10.20_9154746_EX-10.20_Outsourcing Agreement.pdf",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "OUTSOURCING AGREEMENT"
+          ],
+          "predicted": [
+            "(TRANSLATION) OUTSOURCING AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "the Customer",
+            "ESPACIO INFORMATION TECHNOLOGY, SA.",
+            "EIT",
+            "SILICON SMELTERS << Pty >> Ltd"
+          ],
+          "predicted": [
+            "SILICON SMELTERS << Pty >> Ltd, registration nr 1998/019036/07, VAT n\u00b0 4310178506, Registered office at Beyersnek Road, PO Box 657 Polokwane - South Africa, represented by Benoit Emile Norbert Ollivier, Managing Director, acting pursuant to the powers granted to him by the Board on the 22nd of May, 2008 (hereinafter referred to as \"the Customer\"),\n\nAND\n\nESPACIO INFORMATION TECHNOLOGY, SA., a public limited company with place of business in P\u00b0 de la Castellana, N\u00b0 259, 28046, Madrid, SPAIN, and represented by Mr. Carlos Lafitte as Chief Executive, in virtue of his powers, currently in force, conferred to him the 23rd of January of 1996 (Protocol No. 134), before Mr. Jose Maria Lucena Conde, Notary Public in Madrid, (hereinafter referred to as \"EIT\")."
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "1/1/09"
+          ],
+          "predicted": [
+            "This Outsourcing Agreement (hereinafter \"Agreement\") is effective as from the 1st day of January, 2009"
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "1/1/09"
+          ],
+          "predicted": [
+            "This Outsourcing Agreement (hereinafter \"Agreement\") is effective as from the 1st day of January, 2009"
+          ],
+          "outcome": "TP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        }
+      }
+    },
+    {
+      "filename": "EmeraldHealthBioceuticalsInc_20200218_1-A_EX1A-6 MAT CTRCT_11987205_EX1A-6 MAT CTRCT_Development Agreement.pdf",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "Consulting and Product Development Agreement"
+          ],
+          "predicted": [
+            "Consulting and Product Development Agreement"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "Emerald Health Nutraceuticals Inc.",
+            "EHS",
+            "EHN",
+            "Michael T. Murray, N.D",
+            "Dr. Murray",
+            "Emerald Health Sciences Inc."
+          ],
+          "predicted": [
+            "by and between Emerald Health Sciences Inc. (\"EHS\"), Emerald Health Nutraceuticals Inc. (\"EHN\"), and Michael T. Murray, N.D. (\"Dr. Murray\")"
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "9/1/16"
+          ],
+          "predicted": [
+            "entered into this 1st day of September 2016"
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "9/1/16"
+          ],
+          "predicted": [
+            "this 1st day of September 2016 (\"Effective Date\")"
+          ],
+          "outcome": "TP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "12/31/18"
+          ],
+          "predicted": [
+            "Dr. Murray's obligations set out herein shall be performed from the Effective Date until December 31, 2018 (the initial \"Services Term\"). The Services Term of this Agreement shall be automatically renewed for successive two-year terms thereafter unless written notice is given by either party to the other, indicating that party's intention not to renew the Services Term of this Agreement, at least ninety (90) days prior to the end of the initial Services Term or any renewed Services Term. (b) Except as otherwise stated herein as pertaining only to a Services Term, this Agreement shall remain in effect for ten years, unless terminated in accordance with Sections 6.1 (a) or 6.2(b)."
+          ],
+          "outcome": "TP"
+        }
+      }
+    },
+    {
+      "filename": "BerkshireHillsBancorpInc_20120809_10-Q_EX-10.16_7708169_EX-10.16_Endorsement Agreement.pdf",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "ENDORSEMENT AGREEMENT"
+          ],
+          "predicted": [
+            "ENDORSEMENT AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "Berkshire",
+            "BERKSHIRE BANK",
+            "Auriemma",
+            "GENO AURIEMMA",
+            "(Each or both of which shall  hereinafter be referred to as the \"PARTY\" or \"PARTIES,\" respectively)."
+          ],
+          "predicted": [
+            "GENO AURIEMMA (\"Auriemma\") and BERKSHIRE BANK, a Massachusetts savings bank with its principal place of business at 24 North Street, Pittsfield, MA 01210 (\"Berkshire\")"
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "5/17/12"
+          ],
+          "predicted": [
+            "5/17/12",
+            "5/14/12"
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [],
+          "predicted": [
+            "commencing upon the full execution of this Agreement by both Parties"
+          ],
+          "outcome": "FP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "5/31/16"
+          ],
+          "predicted": [
+            "terminating on May 31, 2016 unless sooner terminated under this Agreement.",
+            "terminating on May 31, 2014 unless sooner terminated under this Agreement."
+          ],
+          "outcome": "TP"
+        }
+      }
+    },
+    {
+      "filename": "XENCORINC_10_25_2013-EX-10.24-COLLABORATION AGREEMENT (3).PDF",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "COLLABORATION AGREEMENT"
+          ],
+          "predicted": [
+            "Collaboration Agreement, BII/ XENCOR",
+            "COLLABORATION AGREEMENT   This Collaboration Agreement (\"Agreement\")"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "XENCOR",
+            "Boehringer Ingelheim International GmbH",
+            "Xencor, Inc",
+            "BII",
+            "hereinafter BII an XENCOR each shall also be called \"Party\" and collectively \"Parties\" as the case may be)."
+          ],
+          "predicted": [
+            "Xencor, Inc.  111 W. Lemon Ave. Monrovia, CA 91016 USA\n\n(hereinafter called \"XENCOR\"),   and   Boehringer Ingelheim International GmbH   Binger Stra\u00dfe 173 55216 Ingelheim Germany   (hereinafter called \"BII\")   (hereinafter BII an XENCOR each shall also be called \"Party\" and collectively \"Parties\" as the case may be)."
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "2/10/12"
+          ],
+          "predicted": [
+            "Monrovia, February 16 2012",
+            "Biberach, February 13, 2012"
+          ],
+          "outcome": "FN"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "2/10/12"
+          ],
+          "predicted": [
+            "EFFECTIVE DATE: February 10, 2012",
+            "1.18 \"Effective Date\"   shall mean the date of commencement of this Agreement as mentioned on the cover page above."
+          ],
+          "outcome": "TP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [],
+          "predicted": [
+            "10.1 Term   This Agreement shall take effect as of the Effective Date and shall expire upon completion of the Project as set forth in the Project Plan and after payment of all payments due and payable according to this Agreement, unless terminated earlier in accordance with this Agreement."
+          ],
+          "outcome": "FP"
+        }
+      }
+    },
+    {
+      "filename": "STAMPSCOMINC_06_24_1999-EX-10.18-SPONSORSHIP AGREEMENT.PDF",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "Sponsorship Agreement"
+          ],
+          "predicted": [
+            "SPONSORSHIP AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "Client",
+            "Intuit",
+            "Stamps.com Inc.",
+            "Intuit Inc."
+          ],
+          "predicted": [
+            "Intuit Inc. a Delaware corporation, located at 2550 Garcia Ave., Mountain View, California 94043 (\"Intuit\"), and Stamps.com Inc., a Delaware corporation, located at 2900 31st Street, Suite 150, Santa Monica, CA 90405-3035 (\"Client\")."
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "5/14/99"
+          ],
+          "predicted": [
+            "as of the 14th day of May, 1999"
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "5/14/99"
+          ],
+          "predicted": [
+            "14th day of May, 1999 (\"Effective Date\")"
+          ],
+          "outcome": "TP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        }
+      }
+    },
+    {
+      "filename": "DeltathreeInc_19991102_S-1A_EX-10.19_6227850_EX-10.19_Co-Branding Agreement_ Service Agreement.pdf",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "CO-BRANDING AND SERVICES AGREEMENT"
+          ],
+          "predicted": [
+            "CO-BRANDING AND SERVICES AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "PrimeCall",
+            "deltathree.com, Inc. (formerly known as Delta Three, Inc.)",
+            "RSL COM PrimeCall, Inc.",
+            "DeltaThree"
+          ],
+          "predicted": [
+            "RSL COM PrimeCall, Inc., a Delaware corporation (\"PrimeCall\"), and deltathree.com, Inc. (formerly known as Delta Three, Inc.), a Delaware corporation (\"DeltaThree\")."
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "10/1/99"
+          ],
+          "predicted": [
+            "effective as of October 1, 1999"
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "10/1/99"
+          ],
+          "predicted": [
+            "effective as of October 1, 1999"
+          ],
+          "outcome": "TP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "10/1/02"
+          ],
+          "predicted": [
+            "shall continue for a term of three (3) years, unless terminated earlier in accordance with the provisions of this Agreement (the \"Term\")"
+          ],
+          "outcome": "TP"
+        }
+      }
+    },
+    {
+      "filename": "PapaJohnsInternationalInc_20190617_8-K_EX-10.1_11707365_EX-10.1_Endorsement Agreement.pdf",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "ENDORSEMENT AGREEMENT"
+          ],
+          "predicted": [
+            "ENDORSEMENT AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "Papa John's Marketing Fund, Inc",
+            "Papa John's International, Inc.",
+            "ABG-Shaq, LLC",
+            "ABG",
+            "PJI",
+            "PJMF",
+            "PJMF and PJI are, individually and collectively, \"PAPA JOHN'S\""
+          ],
+          "predicted": [
+            "ABG-Shaq, LLC, a Delaware limited liability company (\"ABG\") for the personal services of Shaquille O'Neal, (\"CELEBRITY\"), and, on the other hand, Papa John's Marketing Fund, Inc., a Kentucky corporation (\"PJMF\"), and Papa John's International, Inc. (\"PJI\") (PJMF and PJI are, individually and collectively, \"PAPA JOHN'S\"). ABG and PAPA JOHN'S may hereinafter be referred to individually as a \"Party\" or collectively as the \"Parties\"."
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "3/15/19"
+          ],
+          "predicted": [
+            "THIS ENDORSEMENT AGREEMENT (\"Agreement\") is made and entered into effective March 15, 2019"
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "3/15/19"
+          ],
+          "predicted": [
+            "effective March 15, 2019 (the \"Effective Date\")"
+          ],
+          "outcome": "TP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "3/15/22"
+          ],
+          "predicted": [
+            "the initial term of this Agreement (\"Term\") is the Effective Date through March 15, 2022."
+          ],
+          "outcome": "TP"
+        }
+      }
+    },
+    {
+      "filename": "NELNETINC_04_08_2020-EX-1-JOINT FILING AGREEMENT.PDF",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "JOINT FILING AGREEMENT"
+          ],
+          "predicted": [
+            "JOINT FILING AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "Shelby J. Butterfield",
+            "Co-Trustee"
+          ],
+          "predicted": [
+            "Shelby J. Butterfield",
+            "BUTTERFIELD FAMILY TRUST"
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "3/27/20"
+          ],
+          "predicted": [
+            "Dated: March 27, 2020."
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Expiration Date-Answer": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        }
+      }
+    }
+  ]
+}
