@@ -113,8 +113,15 @@ class ChainOfThoughtAgent(BasePatternAgent):
         )
         
         # Step 5: Final assessment
+        # Overall risk is driven by the most severe violation found (a single
+        # CRITICAL violation should dominate the assessment, not be averaged
+        # away by unrelated LOW-severity ones). No violations -> baseline risk.
+        overall_risk = max(
+            (self._severity_to_risk_score(v['severity']) for v in violations),
+            default=1,
+        )
         final_confidence = sum(step.confidence for step in self.thought_chain) / len(self.thought_chain)
-        
+
         step5 = await self._add_thought_step(
             5, "Final Risk Assessment",
             {'overall_risk': overall_risk, 'recommendations_count': len(recommendations)},
@@ -125,6 +132,7 @@ class ChainOfThoughtAgent(BasePatternAgent):
         
         return {
             'success': True,
+            'pattern': self.get_pattern_name(),
             'thought_chain': [self._step_to_dict(step) for step in self.thought_chain],
             'final_result': {
                 'risk_score': overall_risk,
@@ -199,6 +207,7 @@ class ChainOfThoughtAgent(BasePatternAgent):
         
         return {
             'success': True,
+            'pattern': self.get_pattern_name(),
             'thought_chain': [self._step_to_dict(step) for step in self.thought_chain],
             'final_result': {
                 'extracted_clauses': extracted_clauses,
