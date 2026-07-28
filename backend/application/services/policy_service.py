@@ -92,7 +92,7 @@ class PolicyService:
             # Try cache first if enabled
             if use_cache:
                 try:
-                    cached_result = self.cache_service.get_cached_policy_document(f"tenant_{tenant_id}")
+                    cached_result = self.cache_service.get_cached_policy_document(f"tenant_{tenant_id}", tenant_id)
                     if cached_result:
                         policies = cached_result if isinstance(cached_result, list) else [cached_result]
                         source = 'cache'

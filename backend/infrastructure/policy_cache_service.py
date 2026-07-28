@@ -41,12 +41,12 @@ class PolicyCacheService:
         return repo.search_policies_semantic(query, tenant_id, limit)
     
     @cache_result("policy_document", ttl=7200)  # 2 hours cache
-    def get_cached_policy_document(self, policy_id: str) -> Optional[Dict[str, Any]]:
+    def get_cached_policy_document(self, policy_id: str, tenant_id: str) -> Optional[Dict[str, Any]]:
         """Get cached policy document."""
         from backend.infrastructure.policy_repository import PolicyRepository
-        
+
         repo = PolicyRepository()
-        policy = repo.get_policy_by_id(policy_id)
+        policy = repo.get_policy_by_id(policy_id, tenant_id)
         
         if not policy:
             return None

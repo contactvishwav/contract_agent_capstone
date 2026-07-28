@@ -63,11 +63,11 @@ class PolicyRepository:
         except Exception as e:
             raise Exception(f"Failed to store policy document: {e}")
     
-    def get_policy_by_id(self, policy_id: str) -> Optional[PolicyDocument]:
-        """Get policy document by ID."""
+    def get_policy_by_id(self, policy_id: str, tenant_id: str) -> Optional[PolicyDocument]:
+        """Get policy document by ID - Enforces multi-tenant isolation."""
         try:
             query = """
-            MATCH (p:PolicyDocument {id: $policy_id})-[:HAS_RULE]->(r:PolicyRule)
+            MATCH (p:PolicyDocument {id: $policy_id, tenant_id: $tenant_id})-[:HAS_RULE]->(r:PolicyRule)
             RETURN p.id as id, p.name as name, p.tenant_id as tenant_id,
                    p.version as version, p.created_at as created_at,
                    p.updated_at as updated_at, p.checksum as checksum,
@@ -80,8 +80,8 @@ class PolicyRepository:
                        section_reference: r.section_reference
                    }) as rules
             """
-            
-            result = self.graph.query(query, {'policy_id': policy_id})
+
+            result = self.graph.query(query, {'policy_id': policy_id, 'tenant_id': tenant_id})
             
             if result:
                 record = result[0]
@@ -129,7 +129,7 @@ class PolicyRepository:
             policies = []
             for record in result:
                 # Get rules separately for each policy
-                rules = self._get_policy_rules(record['id'])
+                rules = self._get_policy_rules(record['id'], tenant_id)
                 
                 policy = PolicyDocument(
                     id=record['id'],
@@ -217,16 +217,16 @@ class PolicyRepository:
         except Exception as e:
             raise Exception(f"Failed to search policies: {e}")
     
-    def _get_policy_rules(self, policy_id: str) -> List[PolicyRule]:
-        """Get rules for a specific policy."""
+    def _get_policy_rules(self, policy_id: str, tenant_id: str) -> List[PolicyRule]:
+        """Get rules for a specific policy - Enforces multi-tenant isolation."""
         query = """
-        MATCH (p:PolicyDocument {id: $policy_id})-[:HAS_RULE]->(r:PolicyRule)
+        MATCH (p:PolicyDocument {id: $policy_id, tenant_id: $tenant_id})-[:HAS_RULE]->(r:PolicyRule)
         RETURN r.id as id, r.rule_text as rule_text, r.rule_type as rule_type,
                r.applies_to as applies_to, r.severity as severity,
                r.section_reference as section_reference
         """
-        
-        result = self.graph.query(query, {'policy_id': policy_id})
+
+        result = self.graph.query(query, {'policy_id': policy_id, 'tenant_id': tenant_id})
         
         rules = []
         for record in result:
@@ -242,23 +242,28 @@ class PolicyRepository:
         
         return rules
     
-    def update_policy_version(self, policy_id: str, new_version: str, updated_rules: List[PolicyRule]) -> bool:
-        """Update policy version with new rules."""
+    def update_policy_version(self, policy_id: str, tenant_id: str, new_version: str, updated_rules: List[PolicyRule]) -> bool:
+        """Update policy version with new rules - Enforces multi-tenant isolation."""
         try:
-            # Archive current version
+            # Archive current version - scoped to this tenant. If nothing
+            # matches (wrong tenant, or doesn't exist), stop here rather than
+            # creating an orphaned "new version" of a policy that isn't ours.
             archive_query = """
-            MATCH (p:PolicyDocument {id: $policy_id})
+            MATCH (p:PolicyDocument {id: $policy_id, tenant_id: $tenant_id})
             SET p.archived_at = datetime(),
                 p.active = false
+            RETURN p.id as matched_id
             """
-            self.graph.query(archive_query, {'policy_id': policy_id})
-            
+            archived = self.graph.query(archive_query, {'policy_id': policy_id, 'tenant_id': tenant_id})
+            if not archived:
+                return False
+
             # Create new version
             new_policy_id = f"{policy_id}_v{new_version}"
-            
+
             # Copy policy document with new version
             copy_query = """
-            MATCH (old:PolicyDocument {id: $old_policy_id})
+            MATCH (old:PolicyDocument {id: $old_policy_id, tenant_id: $tenant_id})
             CREATE (new:PolicyDocument {
                 id: $new_policy_id,
                 name: old.name,
@@ -272,20 +277,21 @@ class PolicyRepository:
                 active: true
             })
             """
-            
+
             new_checksum = hashlib.md5(json.dumps([r.__dict__ for r in updated_rules]).encode()).hexdigest()
-            
+
             self.graph.query(copy_query, {
                 'old_policy_id': policy_id,
+                'tenant_id': tenant_id,
                 'new_policy_id': new_policy_id,
                 'new_version': new_version,
                 'new_checksum': new_checksum
             })
-            
+
             # Add updated rules
             for rule in updated_rules:
                 rule_query = """
-                MATCH (p:PolicyDocument {id: $policy_id})
+                MATCH (p:PolicyDocument {id: $policy_id, tenant_id: $tenant_id})
                 CREATE (r:PolicyRule {
                     id: $rule_id,
                     rule_text: $rule_text,
@@ -297,9 +303,10 @@ class PolicyRepository:
                 })
                 CREATE (p)-[:HAS_RULE]->(r)
                 """
-                
+
                 self.graph.query(rule_query, {
                     'policy_id': new_policy_id,
+                    'tenant_id': tenant_id,
                     'rule_id': rule.id,
                     'rule_text': rule.rule_text,
                     'rule_type': rule.rule_type,
@@ -307,22 +314,23 @@ class PolicyRepository:
                     'severity': rule.severity,
                     'section_reference': rule.section_reference
                 })
-            
+
             return True
-            
+
         except Exception as e:
             raise Exception(f"Failed to update policy version: {e}")
     
-    def delete_policy(self, policy_id: str) -> bool:
-        """Soft delete policy by marking as inactive."""
+    def delete_policy(self, policy_id: str, tenant_id: str) -> bool:
+        """Soft delete policy by marking as inactive - Enforces multi-tenant isolation."""
         try:
             query = """
-            MATCH (p:PolicyDocument {id: $policy_id})
+            MATCH (p:PolicyDocument {id: $policy_id, tenant_id: $tenant_id})
             SET p.active = false, p.deleted_at = datetime()
+            RETURN p.id as matched_id
             """
-            
-            self.graph.query(query, {'policy_id': policy_id})
-            return True
-            
+
+            result = self.graph.query(query, {'policy_id': policy_id, 'tenant_id': tenant_id})
+            return bool(result)
+
         except Exception as e:
             raise Exception(f"Failed to delete policy: {e}")

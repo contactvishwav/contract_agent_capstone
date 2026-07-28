@@ -72,7 +72,7 @@ async def get_tenant_policies(tenant_id: str):
         
         # Try cache first
         try:
-            cached_policies = cache_service.get_cached_policy_document(f"tenant_{tenant_id}")
+            cached_policies = cache_service.get_cached_policy_document(f"tenant_{tenant_id}", tenant_id)
             if cached_policies:
                 return {
                     'success': True,
@@ -112,11 +112,11 @@ async def get_tenant_policies(tenant_id: str):
 
 
 @router.get("/{policy_id}", dependencies=[Depends(requires_permission(Permission.VIEW_REPORTS))])
-async def get_policy_details(policy_id: str):
+async def get_policy_details(policy_id: str, tenant_id: str):
     """Get detailed policy information."""
     try:
         repository = PolicyRepository()
-        policy = repository.get_policy_by_id(policy_id)
+        policy = repository.get_policy_by_id(policy_id, tenant_id)
         
         if not policy:
             raise HTTPException(status_code=404, detail="Policy not found")
@@ -232,14 +232,14 @@ async def get_applicable_policies(tenant_id: str, contract_type: str):
 
 
 @router.delete("/{policy_id}", dependencies=[Depends(requires_permission(Permission.MANAGE_POLICIES))])
-async def delete_policy(policy_id: str):
+async def delete_policy(policy_id: str, tenant_id: str):
     """Soft delete policy."""
     try:
         repository = PolicyRepository()
-        success = repository.delete_policy(policy_id)
-        
+        success = repository.delete_policy(policy_id, tenant_id)
+
         if not success:
-            raise HTTPException(status_code=500, detail="Failed to delete policy")
+            raise HTTPException(status_code=404, detail="Policy not found")
         
         return {
             'success': True,
