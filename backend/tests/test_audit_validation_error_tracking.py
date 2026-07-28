@@ -3,9 +3,73 @@ Test Suite for Audit Logging, Content Validation, and Error Tracking
 """
 
 import pytest
+from collections import Counter
+from unittest.mock import patch
 from backend.infrastructure.audit_logger import AuditLogger, AuditEventType
 from backend.infrastructure.content_validator import ContentValidationService, ValidationSeverity
 from backend.infrastructure.error_tracker import ErrorTracker, ErrorCategory, ErrorSeverity, ErrorContext, error_tracking_context
+
+
+class FakeGraph:
+    """
+    Minimal in-memory stand-in for Neo4jGraph, understanding just the
+    MERGE/SET/MATCH/RETURN shapes AuditLogger and ErrorTracker use.
+
+    test_audit_trail_retrieval and test_error_tracker_statistics previously
+    passed or failed depending on whichever Neo4jGraph mock happened to
+    already be cached in sys.modules by an unrelated test file collected
+    earlier in the same pytest session - typically a bare MagicMock(),
+    whose default __iter__ silently yields nothing. That meant these two
+    tests were not reliably exercising get_audit_trail/get_error_statistics's
+    real retrieval logic at all (log_event/track_error still "succeeded"
+    against a MagicMock, since subscripting one just returns another
+    MagicMock). This fake makes both tests deterministic and actually
+    exercise that logic, regardless of what else is cached elsewhere in the
+    session.
+    """
+
+    def __init__(self):
+        self.audit_logs = []
+        self.error_logs = []
+
+    def query(self, cypher, params=None):
+        params = params or {}
+
+        if "MERGE (a:AuditLog" in cypher:
+            self.audit_logs.append(dict(params))
+            return [{"audit_id": params["audit_id"]}]
+
+        if "MATCH (a:AuditLog" in cypher:
+            matches = [r for r in self.audit_logs if r["resource_id"] == params["resource_id"]]
+            matches = matches[-params.get("limit", 100):][::-1]
+            return [
+                {
+                    "audit_id": r["audit_id"], "event_type": r["event_type"], "action": r["action"],
+                    "user_id": r["user_id"], "status": r["status"], "timestamp": r["audit_id"],
+                    "metadata": r["metadata"],
+                }
+                for r in matches
+            ]
+
+        if "MERGE (e:ErrorLog" in cypher:
+            self.error_logs.append(dict(params))
+            return [{"error_id": params["error_id"]}]
+
+        if "MATCH (e:ErrorLog)" in cypher and "count(*)" in cypher:
+            counts = Counter((r["category"], r["severity"]) for r in self.error_logs)
+            return [{"category": cat, "severity": sev, "count": n} for (cat, sev), n in counts.items()]
+
+        if "MATCH (e:ErrorLog)" in cypher:
+            return list(reversed(self.error_logs))[:params.get("limit", 50)]
+
+        return []
+
+
+def _with_fake_graph(obj):
+    """Attach a fresh FakeGraph to an AuditLogger/ErrorTracker instance,
+    overriding whatever its constructor happened to wire up."""
+    obj.repository.graph = FakeGraph()
+    return obj
 
 def test_audit_logger_basic():
     """Test basic audit logging functionality"""
@@ -24,8 +88,10 @@ def test_audit_logger_basic():
 
 def test_audit_trail_retrieval():
     """Test audit trail retrieval"""
-    audit_logger = AuditLogger()
-    
+    with patch("langchain_neo4j.Neo4jGraph"), \
+         patch("backend.shared.utils.gemini_embedding_service.embedding"):
+        audit_logger = _with_fake_graph(AuditLogger())
+
     # Log multiple events
     for i in range(3):
         audit_logger.log_event(
@@ -166,8 +232,10 @@ def test_error_tracker_basic():
 
 def test_error_tracker_statistics():
     """Test error statistics retrieval"""
-    error_tracker = ErrorTracker()
-    
+    with patch("langchain_neo4j.Neo4jGraph"), \
+         patch("backend.shared.utils.gemini_embedding_service.embedding"):
+        error_tracker = _with_fake_graph(ErrorTracker())
+
     # Track multiple errors
     for i in range(3):
         context = ErrorContext(operation=f"test_op_{i}")
