@@ -112,9 +112,12 @@ async def analyze_contract_intelligence(
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 @router.get("/contracts/{contract_id}/status")
-async def get_intelligence_status(contract_id: str):
+async def get_intelligence_status(
+    contract_id: str,
+    tenant_id: str = Query(default="default-tenant", description="Tenant ID for data isolation"),
+):
     """Get the current intelligence analysis status for a contract"""
-    
+
     try:
         # Query contract intelligence status
         query = """
@@ -128,8 +131,8 @@ async def get_intelligence_status(contract_id: str):
                c.processing_time as processing_time,
                c.intelligence_updated as updated
         """
-        
-        result = repository.graph.query(query, {"contract_id": contract_id, "tenant_id": "default-tenant"})
+
+        result = repository.graph.query(query, {"contract_id": contract_id, "tenant_id": tenant_id})
         
         if not result:
             raise HTTPException(status_code=404, detail=f"Contract {contract_id} not found")
@@ -200,15 +203,17 @@ async def batch_analyze_contracts(
         raise HTTPException(status_code=500, detail=f"Batch analysis failed: {str(e)}")
 
 @router.get("/dashboard/summary", dependencies=[Depends(requires_permission(Permission.VIEW_REPORTS))])
-async def get_intelligence_dashboard():
+async def get_intelligence_dashboard(
+    tenant_id: str = Query(default="default-tenant", description="Tenant ID for data isolation"),
+):
     """Get summary statistics for intelligence dashboard"""
-    
+
     try:
         # Query aggregate intelligence statistics
         query = """
         MATCH (c:Contract {tenant_id: $tenant_id})
         WHERE c.intelligence_status = 'completed'
-        RETURN 
+        RETURN
             count(c) as total_analyzed,
             avg(c.risk_score) as avg_risk_score,
             sum(CASE WHEN c.risk_level = 'HIGH' OR c.risk_level = 'CRITICAL' THEN 1 ELSE 0 END) as high_risk_count,
@@ -216,8 +221,8 @@ async def get_intelligence_dashboard():
             sum(c.clauses_count) as total_clauses,
             sum(c.redlines_count) as total_redlines
         """
-        
-        result = repository.graph.query(query, {"tenant_id": "default-tenant"})
+
+        result = repository.graph.query(query, {"tenant_id": tenant_id})
         
         if result:
             stats = result[0]
