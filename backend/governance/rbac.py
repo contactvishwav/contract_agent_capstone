@@ -55,8 +55,8 @@ async def get_current_user_role(x_user_role: Optional[str] = Header(None)) -> Us
     """
     if not x_user_role:
         logger.warning("Access attempted without user role header")
-        # Default to VIEWER for safety, or raise 401
-        return UserRole.ADMIN
+        # Default to VIEWER for safety - matches test_missing_role_defaults_to_viewer
+        return UserRole.VIEWER
         
     try:
         role = UserRole(x_user_role.upper())
