@@ -89,7 +89,7 @@ async def debug_contract_types():
 async def upload_pdf(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    tenant_id: str = Query(default="default-tenant", description="Tenant ID for data isolation"),
+    tenant_id: str = Query(..., description="Tenant ID for data isolation (required)"),
     model: str = Query(default="gemini-2.5-flash", description="LLM model to use for processing"),
     enable_enhanced: bool = Query(default=False, description="Enable enhanced processing with sections/clauses"),
     llm_mgr: LLMManager = Depends(get_llm_manager)
@@ -406,7 +406,7 @@ async def upload_pdf(
 @router.post("/upload-stream", dependencies=[Depends(requires_permission(Permission.UPLOAD))])
 async def upload_pdf_stream(
     file: UploadFile = File(...),
-    tenant_id: str = Query(default="default-tenant", description="Tenant ID for data isolation"),
+    tenant_id: str = Query(..., description="Tenant ID for data isolation (required)"),
     model: str = Query(default="gemini-2.5-flash", description="LLM model to use for processing"),
     llm_mgr: LLMManager = Depends(get_llm_manager)
 ):

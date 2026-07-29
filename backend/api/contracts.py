@@ -24,7 +24,7 @@ def get_llm_manager(request: Request):
 async def upload_contract(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    tenant_id: str = Query(default="default-tenant", description="Tenant ID for data isolation"),
+    tenant_id: str = Query(..., description="Tenant ID for data isolation (required)"),
     model: str = Query(default="gemini-2.5-flash", description="LLM model to use for processing"),
     llm_mgr: LLMManager = Depends(get_llm_manager)
 ):

@@ -21,7 +21,7 @@ def get_llm_manager(request: Request):
 @router.post("/upload", dependencies=[Depends(requires_permission(Permission.UPLOAD))])
 async def upload_pdf_enhanced(
     file: UploadFile = File(...),
-    tenant_id: str = Query(default="default-tenant", description="Tenant ID for data isolation"),
+    tenant_id: str = Query(..., description="Tenant ID for data isolation (required)"),
     model: str = Query(default="gemini-2.5-flash", description="LLM model to use for processing"),
     enable_embeddings: bool = Query(default=True, description="Enable multi-level embeddings processing"),
     llm_mgr: LLMManager = Depends(get_llm_manager)
