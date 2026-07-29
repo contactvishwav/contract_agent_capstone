@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
-Migration runner script for multi-level embeddings
+Migration runner script.
 Usage: python run_migration.py [command]
-Commands: upgrade, downgrade, sample, migrate_contracts
+Commands: upgrade, downgrade, sample, migrate_contracts, rollback,
+          migrate_all (all 8 schema migrations, versioned/idempotent -
+          see backend/migrations/run_all_migrations.py), status
 """
 
 import sys
@@ -27,7 +29,7 @@ logger = get_logger(__name__)
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python run_migration.py [upgrade|downgrade|sample|migrate_contracts]")
+        print("Usage: python run_migration.py [upgrade|downgrade|sample|migrate_contracts|migrate_all|status]")
         sys.exit(1)
     
     command = sys.argv[1].lower()
@@ -77,10 +79,22 @@ def main():
             migrator = EmbeddingMigrator()
             migrator.rollback_migration()
             logger.info("Rollback completed!")
-            
+
+        elif command == "migrate_all":
+            from migrations.run_all_migrations import MigrationRunner
+            logger.info("Running all pending schema migrations (versioned, idempotent)...")
+            result = MigrationRunner().run_pending()
+            logger.info(f"Applied: {result['applied']}")
+            logger.info(f"Already applied (skipped): {result['skipped_already_applied']}")
+
+        elif command == "status":
+            from migrations.run_all_migrations import MigrationRunner
+            for name, is_applied in MigrationRunner().status().items():
+                print(f"{'[applied]' if is_applied else '[pending]'} {name}")
+
         else:
             logger.error(f"Unknown command: {command}")
-            print("Available commands: upgrade, downgrade, sample, migrate_contracts, rollback")
+            print("Available commands: upgrade, downgrade, sample, migrate_contracts, rollback, migrate_all, status")
             sys.exit(1)
             
     except Exception as e:
