@@ -11,6 +11,7 @@ from backend.agents.intelligence_tools import (
     RiskCalculatorTool, RedlineGeneratorTool
 )
 from backend.agents.agent_workflow_tracker import workflow_tracker
+from google.api_core.exceptions import ResourceExhausted
 import json
 
 from backend.shared.utils.logger import get_logger
@@ -105,11 +106,29 @@ class StepExecutor:
                     confidence_score=0.9
                 )
                 
+            except ResourceExhausted as e:
+                # Rate limit / quota exceeded - each attempt re-sends the
+                # full contract text (or full clause set) to the LLM, so
+                # blindly retrying into a fresh 429 up to max_retries times
+                # would silently triple the cost of a single failure with
+                # no realistic chance of success (a per-day quota wall in
+                # particular cannot be waited out within one request's
+                # lifetime). Fail fast instead of retrying.
+                execution_time = int((datetime.now() - start_time).total_seconds() * 1000)
+                workflow_tracker.error_agent(execution, f"Rate limit/quota exceeded: {e}")
+                return ExecutionResult(
+                    step_id=step.step_id,
+                    success=False,
+                    output_data=None,
+                    execution_time_ms=execution_time,
+                    confidence_score=0.0,
+                    error_message=f"Rate limit or quota exceeded - not retrying: {e}"
+                )
             except Exception as e:
                 if attempt == max_retries:  # Last attempt failed
                     execution_time = int((datetime.now() - start_time).total_seconds() * 1000)
                     workflow_tracker.error_agent(execution, str(e))
-                    
+
                     return ExecutionResult(
                         step_id=step.step_id,
                         success=False,

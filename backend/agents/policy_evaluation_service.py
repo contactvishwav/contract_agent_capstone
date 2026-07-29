@@ -16,6 +16,7 @@ from typing import Any, Dict, List
 from pydantic import BaseModel, Field
 
 from backend.domain.policies.entities import PolicyRule
+from backend.shared.utils.llm_concurrency import llm_call_semaphore
 from backend.shared.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -66,7 +67,8 @@ class PolicyEvaluationService:
         prompt = self._build_prompt(clause_type, clause_text, rules)
 
         try:
-            response = self._structured_llm.invoke(prompt)
+            with llm_call_semaphore:
+                response = self._structured_llm.invoke(prompt)
         except Exception as e:
             logger.error(f"Policy evaluation failed: {e}")
             return []

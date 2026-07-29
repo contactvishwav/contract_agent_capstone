@@ -17,6 +17,7 @@ from typing import List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
+from backend.shared.utils.llm_concurrency import llm_call_semaphore
 from backend.shared.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -170,7 +171,8 @@ class LLMExtractionService:
         prompt = self._build_prompt(text, candidate_types)
 
         try:
-            response = self._structured_llm.invoke(prompt)
+            with llm_call_semaphore:
+                response = self._structured_llm.invoke(prompt)
         except Exception as e:
             logger.error(f"LLM clause extraction failed: {e}")
             if raise_on_error:
