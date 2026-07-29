@@ -38,13 +38,16 @@ def get_precedent_matcher():
 
 @mcp.tool()
 @mcp_tool_wrapper
-async def search_clause_library(query: str, tenant_id: str) -> str:
+async def search_clause_library(query: str, tenant_id: str, correlation_id: Optional[str] = None) -> str:
     """
     Search the centralized clause library for legal language matching the query.
-    
+
     Args:
         query: Semantic search query for the clause library.
         tenant_id: Mandatory tenant identifier for data isolation.
+        correlation_id: Optional caller-supplied id (e.g. the originating HTTP
+            request's X-Correlation-ID) to link this call's logs/audit trail
+            back to that request. Omit to get a fresh, unrelated trace id.
     """
     try:
         results = get_policy_repo().search_policies_semantic(query, tenant_id)
@@ -58,13 +61,16 @@ async def search_clause_library(query: str, tenant_id: str) -> str:
 
 @mcp.tool()
 @mcp_tool_wrapper
-async def get_playbook_rule(tenant_id: str, contract_type: str = "general") -> str:
+async def get_playbook_rule(tenant_id: str, contract_type: str = "general", correlation_id: Optional[str] = None) -> str:
     """
     Retrieve applicable legal playbook rules and corporate policies for a specific contract type.
-    
+
     Args:
         tenant_id: Mandatory tenant identifier for data isolation.
         contract_type: The type of contract (e.g., 'MSA', 'SOW', 'NDA', 'general').
+        correlation_id: Optional caller-supplied id (e.g. the originating HTTP
+            request's X-Correlation-ID) to link this call's logs/audit trail
+            back to that request. Omit to get a fresh, unrelated trace id.
     """
     try:
         rules = get_policy_repo().get_applicable_policies(tenant_id, contract_type)
@@ -86,14 +92,17 @@ async def get_playbook_rule(tenant_id: str, contract_type: str = "general") -> s
 
 @mcp.tool()
 @mcp_tool_wrapper
-async def search_prior_approved_clauses(clause_text: str, tenant_id: str) -> str:
+async def search_prior_approved_clauses(clause_text: str, tenant_id: str, correlation_id: Optional[str] = None) -> str:
     """
     Search historical metadata for previously approved clauses that match the provided text.
     Helpful for finding standard language and approval rates.
-    
+
     Args:
         clause_text: The content of the clause to find precedents for.
         tenant_id: Mandatory tenant identifier for data isolation.
+        correlation_id: Optional caller-supplied id (e.g. the originating HTTP
+            request's X-Correlation-ID) to link this call's logs/audit trail
+            back to that request. Omit to get a fresh, unrelated trace id.
     """
     try:
         clauses_input = json.dumps([{"clause_type": "unknown", "content": clause_text}])
@@ -110,13 +119,16 @@ async def search_prior_approved_clauses(clause_text: str, tenant_id: str) -> str
 
 @mcp.tool()
 @mcp_tool_wrapper
-async def fetch_contract_metadata(contract_id: str, tenant_id: str) -> str:
+async def fetch_contract_metadata(contract_id: str, tenant_id: str, correlation_id: Optional[str] = None) -> str:
     """
     Retrieve structured metadata for a specific contract by its ID.
-    
+
     Args:
         contract_id: The unique identifier for the contract (e.g., UPLOADED_XXXX).
         tenant_id: Mandatory tenant identifier for data isolation.
+        correlation_id: Optional caller-supplied id (e.g. the originating HTTP
+            request's X-Correlation-ID) to link this call's logs/audit trail
+            back to that request. Omit to get a fresh, unrelated trace id.
     """
     try:
         metadata = await get_contract_repo().get_contract_by_id(contract_id, tenant_id=tenant_id)

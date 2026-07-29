@@ -14,11 +14,17 @@ def mcp_tool_wrapper(func: Callable) -> Callable:
     """
     @functools.wraps(func)
     async def async_wrapper(*args, **kwargs) -> Any:
-        # 1. Initialize Trace ID if not present
-        tid = trace_id_var.get()
+        # 1. Initialize Trace ID - prefer an explicitly-passed correlation_id
+        # (threaded through by a caller that already has the HTTP side's
+        # X-Correlation-ID) over generating a fresh, disconnected one. The
+        # MCP server runs as a separate stdio process with no other
+        # mechanism linking its logs back to the originating HTTP request,
+        # so this is what lets one identifier span both sides when a caller
+        # has it to give.
+        tid = kwargs.get("correlation_id") or trace_id_var.get()
         if not tid:
             tid = str(uuid.uuid4())
-            trace_id_var.set(tid)
+        trace_id_var.set(tid)
             
         # 2. Validate tenant_id (Mandatory requirement per implementation plan)
         tenant_id = kwargs.get("tenant_id")
