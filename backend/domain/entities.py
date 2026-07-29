@@ -53,6 +53,7 @@ class ContractClause:
     risk_level: str  # LOW, MEDIUM, HIGH
     confidence_score: float
     location: str = ""
+    clause_id: str = ""
 
 @dataclass
 class PolicyViolation:
@@ -61,6 +62,7 @@ class PolicyViolation:
     severity: str  # LOW, MEDIUM, HIGH, CRITICAL
     suggested_fix: str
     clause_content: str = ""
+    clause_id: str = ""
 
 @dataclass
 class RiskAssessment:
@@ -68,6 +70,11 @@ class RiskAssessment:
     risk_level: str  # LOW, MEDIUM, HIGH, CRITICAL
     critical_issues: List[str]
     recommendations: List[str]
+    critical_issue_details: List[Dict[str, Any]] = None
+
+    def __post_init__(self):
+        if self.critical_issue_details is None:
+            self.critical_issue_details = []
 
 @dataclass
 class RedlineRecommendation:
@@ -88,7 +95,12 @@ class ContractIntelligence:
     cuad_deviations: List[Dict[str, Any]] = None
     jurisdiction_info: Dict[str, Any] = None
     precedent_matches: List[Dict[str, Any]] = None
-    
+
+    # Per-node success/failure status, so callers can distinguish a real
+    # result from one masked by a silent partial failure.
+    node_status: Dict[str, str] = None
+    processing_complete: bool = True
+
     def __post_init__(self):
         if self.cuad_deviations is None:
             self.cuad_deviations = []
@@ -96,6 +108,8 @@ class ContractIntelligence:
             self.jurisdiction_info = {}
         if self.precedent_matches is None:
             self.precedent_matches = []
+        if self.node_status is None:
+            self.node_status = {}
 
 @dataclass
 class AgentMessage:

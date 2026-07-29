@@ -126,29 +126,29 @@ class StepExecutor:
         """Execute clause extraction with enhanced planning context"""
         contract_text = context.get("contract_text", "")
         tool = self.tools[StepType.EXTRACT_CLAUSES]
-        result_json = tool._run(contract_text)
+        result_json = tool._run(contract_text, contract_id=context.get("contract_id"), tenant_id=context.get("tenant_id"))
         return json.loads(result_json)
-    
+
     async def _execute_policy_check(self, step: ExecutionStep, context: Dict[str, Any]) -> List[Dict]:
         """Execute policy checking with dependency results"""
         clauses = context.get("extracted_clauses", [])
         tool = self.tools[StepType.CHECK_POLICIES]
-        result_json = tool._run(json.dumps(clauses))
+        result_json = tool._run(json.dumps(clauses), contract_id=context.get("contract_id"), tenant_id=context.get("tenant_id"))
         return json.loads(result_json)
-    
+
     async def _execute_risk_assessment(self, step: ExecutionStep, context: Dict[str, Any]) -> Dict:
         """Execute risk assessment with enhanced analysis"""
         clauses = context.get("extracted_clauses", [])
         violations = context.get("policy_violations", [])
         tool = self.tools[StepType.ASSESS_RISK]
-        result_json = tool._run(json.dumps(clauses), json.dumps(violations))
+        result_json = tool._run(json.dumps(clauses), json.dumps(violations), contract_id=context.get("contract_id"), tenant_id=context.get("tenant_id"))
         return json.loads(result_json)
-    
+
     async def _execute_redline_generation(self, step: ExecutionStep, context: Dict[str, Any]) -> List[Dict]:
         """Execute redline generation with comprehensive context"""
         violations = context.get("policy_violations", [])
         tool = self.tools[StepType.GENERATE_REDLINES]
-        result_json = tool._run(json.dumps(violations))
+        result_json = tool._run(json.dumps(violations), contract_id=context.get("contract_id"), tenant_id=context.get("tenant_id"))
         return json.loads(result_json)
     
     async def _execute_validation(self, step: ExecutionStep, context: Dict[str, Any]) -> Dict:
@@ -309,14 +309,16 @@ class PlanExecutionEngine:
         self.step_executor = StepExecutor()
         self.execution_context: Dict[str, Any] = {}
     
-    async def execute_plan(self, plan: ExecutionPlan, contract_text: str) -> Dict[str, Any]:
+    async def execute_plan(self, plan: ExecutionPlan, contract_text: str, contract_id: Optional[str] = None, tenant_id: Optional[str] = None) -> Dict[str, Any]:
         """Execute the complete analysis plan"""
         logger.info(f"🚀 EXEC STEP 1: Starting plan execution {plan.plan_id} with {len(plan.steps)} steps")
         logger.info(f"🚀 EXEC STEP 2: Contract text length: {len(contract_text)} characters")
-        
+
         # Initialize execution context
         self.execution_context = {
             "contract_text": contract_text,
+            "contract_id": contract_id,
+            "tenant_id": tenant_id,
             "plan_id": plan.plan_id,
             "execution_start": datetime.now()
         }
@@ -325,23 +327,25 @@ class PlanExecutionEngine:
         # workflow_tracker.start_workflow()
         
         step_results: Dict[str, ExecutionResult] = {}
-        
+        step_status: Dict[str, str] = {}
+
         try:
             # Execute steps respecting dependencies
             logger.info(f"🚀 EXEC STEP 3: Starting step execution loop")
             for i, step in enumerate(plan.steps):
                 logger.info(f"🚀 EXEC STEP 4.{i+1}: Processing step {step.step_id} ({step.step_type})")
-                
+
                 # Wait for dependencies
                 await self._wait_for_dependencies(step, step_results)
                 logger.info(f"🚀 EXEC STEP 4.{i+1}a: Dependencies satisfied for {step.step_id}")
-                
+
                 # Execute step
                 logger.info(f"🚀 EXEC STEP 4.{i+1}b: Executing step {step.step_id}")
                 result = await self.step_executor.execute_step(step, self.execution_context)
                 step_results[step.step_id] = result
+                step_status[step.step_type.value] = "success" if result.success else "failed"
                 logger.info(f"🚀 EXEC STEP 4.{i+1}c: Step {step.step_id} completed, success: {result.success}")
-                
+
                 # Update context with results
                 if result.success:
                     self._update_context_with_result(step, result)
@@ -349,17 +353,17 @@ class PlanExecutionEngine:
                 else:
                     logger.error(f"🚀 EXEC ERROR: Step {step.step_id} failed: {result.error_message}")
                     # Continue execution for non-critical failures
-            
+
             # Complete workflow tracking
             workflow_tracker.complete_workflow()
-            
+
             # Return final results in expected format
-            return self._format_final_results()
-            
+            return self._format_final_results(step_status)
+
         except Exception as e:
             logger.error(f"Plan execution failed: {e}")
             workflow_tracker.complete_workflow()
-            return self._format_error_results(str(e))
+            return self._format_error_results(str(e), step_status)
     
     async def _wait_for_dependencies(self, step: ExecutionStep, step_results: Dict[str, ExecutionResult]):
         """Wait for step dependencies to complete"""
@@ -388,8 +392,10 @@ class PlanExecutionEngine:
             self.execution_context["jurisdiction_info"] = cuad_data.get("jurisdiction_info", {})
             self.execution_context["precedent_matches"] = cuad_data.get("precedent_matches", [])
     
-    def _format_final_results(self) -> Dict[str, Any]:
+    def _format_final_results(self, step_status: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """Format results in the expected contract intelligence format"""
+        step_status = step_status or {}
+        any_failed = any(s == "failed" for s in step_status.values())
         return {
             "clauses": self.execution_context.get("extracted_clauses", []),
             "violations": self.execution_context.get("policy_violations", []),
@@ -399,17 +405,19 @@ class PlanExecutionEngine:
             "jurisdiction_info": self.execution_context.get("jurisdiction_info", {}),
             "precedent_matches": self.execution_context.get("precedent_matches", []),
             "validation": self.execution_context.get("validation_results", {}),
-            "processing_complete": True,
+            "node_status": step_status,
+            "processing_complete": not any_failed,
             "planned_execution": True
         }
-    
-    def _format_error_results(self, error_message: str) -> Dict[str, Any]:
+
+    def _format_error_results(self, error_message: str, step_status: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """Format error results"""
         return {
             "clauses": [],
             "violations": [],
             "risk_assessment": {"overall_risk_score": 0, "risk_level": "UNKNOWN"},
             "redlines": [],
+            "node_status": step_status or {},
             "processing_complete": False,
             "error": error_message
         }

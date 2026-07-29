@@ -1,11 +1,13 @@
-from typing import TypedDict, List, Any
+from typing import TypedDict, List, Any, Optional
 from backend.domain.value_objects import ProcessingResult
 
 class IntelligenceState(TypedDict):
     """Properly designed state following SRP - data separate from workflow"""
-    
+
     # Input data
     contract_text: str
+    contract_id: Optional[str]
+    tenant_id: Optional[str]
     
     # Processing results (structured data, not strings)
     extracted_clauses: List[dict]
@@ -27,3 +29,4 @@ class IntelligenceState(TypedDict):
     current_step: str
     processing_result: ProcessingResult
     is_complete: bool
+    node_status: dict

@@ -24,7 +24,7 @@ def get_llm_manager(request: Request):
 @router.post("/contracts/{contract_id}/analyze", dependencies=[Depends(requires_permission(Permission.ANALYZE))])
 async def analyze_contract_intelligence(
     contract_id: str,
-    tenant_id: str = Query(default="default-tenant", description="Tenant ID for data isolation"),
+    tenant_id: str = Query(..., description="Tenant ID for data isolation (required)"),
     model: str = Query(default="gemini-2.5-flash", description="LLM model to use for analysis"),
     use_planning: bool = Query(default=True, description="Use autonomous planning agent"),
     llm_mgr: LLMManager = Depends(get_llm_manager)
@@ -52,13 +52,15 @@ async def analyze_contract_intelligence(
         # Convert to response format with performance info
         response = {
             "contract_id": contract_id,
-            "analysis_complete": True,
+            "analysis_complete": intelligence.processing_complete,
+            "node_status": intelligence.node_status,
             "processing_time": intelligence.processing_time,
             "model_used": model,
             "phase_used": "phase3_optimized",
             "results": {
                 "clauses": [
                     {
+                        "clause_id": clause.clause_id,
                         "clause_type": clause.clause_type,
                         "content": clause.content,
                         "risk_level": clause.risk_level,
@@ -69,6 +71,7 @@ async def analyze_contract_intelligence(
                 ],
                 "violations": [
                     {
+                        "clause_id": violation.clause_id,
                         "clause_type": violation.clause_type,
                         "issue": violation.issue,
                         "severity": violation.severity,
@@ -81,6 +84,7 @@ async def analyze_contract_intelligence(
                     "overall_risk_score": intelligence.risk_assessment.overall_risk_score,
                     "risk_level": intelligence.risk_assessment.risk_level,
                     "critical_issues": intelligence.risk_assessment.critical_issues,
+                    "critical_issue_details": intelligence.risk_assessment.critical_issue_details,
                     "recommendations": intelligence.risk_assessment.recommendations
                 },
                 "redlines": [
@@ -114,7 +118,7 @@ async def analyze_contract_intelligence(
 @router.get("/contracts/{contract_id}/status")
 async def get_intelligence_status(
     contract_id: str,
-    tenant_id: str = Query(default="default-tenant", description="Tenant ID for data isolation"),
+    tenant_id: str = Query(..., description="Tenant ID for data isolation (required)"),
 ):
     """Get the current intelligence analysis status for a contract"""
 
@@ -161,7 +165,7 @@ async def get_intelligence_status(
 async def batch_analyze_contracts(
     background_tasks: BackgroundTasks,
     contract_ids: list[str],
-    tenant_id: str = Query(default="default-tenant", description="Tenant ID for data isolation"),
+    tenant_id: str = Query(..., description="Tenant ID for data isolation (required)"),
     model: str = Query(default="gemini-2.5-flash", description="LLM model to use for analysis"),
     llm_mgr: LLMManager = Depends(get_llm_manager)
 ):
@@ -204,7 +208,7 @@ async def batch_analyze_contracts(
 
 @router.get("/dashboard/summary", dependencies=[Depends(requires_permission(Permission.VIEW_REPORTS))])
 async def get_intelligence_dashboard(
-    tenant_id: str = Query(default="default-tenant", description="Tenant ID for data isolation"),
+    tenant_id: str = Query(..., description="Tenant ID for data isolation (required)"),
 ):
     """Get summary statistics for intelligence dashboard"""
 

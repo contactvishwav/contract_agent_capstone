@@ -18,7 +18,7 @@ the real-data precision/recall/F1 benchmark against CUAD ground truth.
 import json
 import os
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from backend.agents.llm_extraction_service import (
     LLMExtractionService,
@@ -30,6 +30,15 @@ from backend.agents.llm_extraction_service import (
 from backend.agents.clause_extraction_agent import LLMClauseExtractor, Clause
 from backend.agents.cuad_classifier_agent import LLMCUADClassifier, CUADClassification
 from backend.agents.intelligence_tools import ClauseDetectorTool
+
+# ClauseDetectorTool._run also writes an audit log entry (P1 item 2) via a
+# fresh AuditLogger() per call - unmocked, that constructs a real Neo4j
+# connection using whatever graph/embedding singletons are already cached in
+# this session, which can attempt a real network round-trip. Patch it out
+# here so this file keeps its "no live API calls" guarantee regardless of
+# audit logging internals.
+_audit_logger_patcher = patch("backend.agents.intelligence_tools.AuditLogger", return_value=MagicMock())
+_audit_logger_patcher.start()
 
 
 def make_fake_llm(response: _LLMExtractionResponse):

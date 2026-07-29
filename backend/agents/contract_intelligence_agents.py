@@ -10,6 +10,7 @@ from backend.agents.planning.planning_agent import PlanningAgentFactory
 from backend.agents.planning.execution_engine import PlanExecutionEngine
 import json
 import logging
+from typing import Optional
 
 from backend.shared.utils.logger import get_logger
 logger = get_logger(__name__)
@@ -54,27 +55,33 @@ class IntelligenceOrchestrator:
         """Extract clauses - Single Responsibility"""
         text_len = len(state["contract_text"])
         execution = workflow_tracker.start_agent(
-            "Clause Extraction Agent", 
+            "Clause Extraction Agent",
             "Extract key contract clauses (Payment, Liability, IP, etc.)",
             f"Contract text ({text_len:,} characters)"
         )
-        
+
         try:
             tool = ClauseDetectorTool()
-            clauses_json = tool._run(state["contract_text"])
+            clauses_json = tool._run(
+                state["contract_text"],
+                contract_id=state.get("contract_id"),
+                tenant_id=state.get("tenant_id"),
+            )
             clauses_list = json.loads(clauses_json)
-            
+
             workflow_tracker.complete_agent(execution, f"Extracted {len(clauses_list)} clauses")
-            
-            return {**state, 
+
+            return {**state,
                 "extracted_clauses": clauses_list,
-                "current_step": "clause_extraction"
+                "current_step": "clause_extraction",
+                "node_status": {**state.get("node_status", {}), "clause_extraction": "success"},
             }
         except Exception as e:
             workflow_tracker.error_agent(execution, f"Clause extraction failed: {e}")
             return {**state,
                 "extracted_clauses": [],
-                "processing_result": {"status": "error", "error": f"Clause extraction failed: {e}"}
+                "processing_result": {"status": "error", "error": f"Clause extraction failed: {e}"},
+                "node_status": {**state.get("node_status", {}), "clause_extraction": "error"},
             }
     
     def _pattern_analysis(self, state: IntelligenceState) -> IntelligenceState:
@@ -138,19 +145,26 @@ class IntelligenceOrchestrator:
         try:
             tool = PolicyCheckerTool()
             clauses_json = json.dumps(state["extracted_clauses"])
-            violations_json = tool._run(clauses_json)
+            violations_json = tool._run(
+                clauses_json,
+                contract_id=state.get("contract_id"),
+                tenant_id=state.get("tenant_id"),
+            )
             violations_list = json.loads(violations_json)
-            
+
             critical_count = len([v for v in violations_list if v.get("severity") == "CRITICAL"])
             workflow_tracker.complete_agent(execution, f"Found {len(violations_list)} violations ({critical_count} critical)")
-            
+
             return {**state,
                 "policy_violations": violations_list,
-                "current_step": "policy_checking"
+                "current_step": "policy_checking",
+                "node_status": {**state.get("node_status", {}), "policy_checking": "success"},
             }
         except Exception as e:
             workflow_tracker.error_agent(execution, f"Policy checking failed: {e}")
-            return {**state, "policy_violations": []}
+            return {**state, "policy_violations": [],
+                "node_status": {**state.get("node_status", {}), "policy_checking": "error"},
+            }
     
     def _calculate_risks(self, state: IntelligenceState) -> IntelligenceState:
         """Calculate risks - Single Responsibility"""
@@ -165,20 +179,29 @@ class IntelligenceOrchestrator:
             tool = RiskCalculatorTool()
             clauses_json = json.dumps(state["extracted_clauses"])
             violations_json = json.dumps(state["policy_violations"])
-            risk_json = tool._run(clauses_json, violations_json)
+            risk_json = tool._run(
+                clauses_json,
+                violations_json,
+                contract_id=state.get("contract_id"),
+                tenant_id=state.get("tenant_id"),
+            )
             risk_dict = json.loads(risk_json)
-            
+
             risk_score = risk_dict.get("overall_risk_score", 0)
             risk_level = risk_dict.get("risk_level", "UNKNOWN")
             workflow_tracker.complete_agent(execution, f"Risk Score: {risk_score}/100 ({risk_level})")
-            
+
+            node_status_value = "error" if risk_level == "ERROR" else "success"
             return {**state,
                 "risk_data": risk_dict,
-                "current_step": "risk_calculation"
+                "current_step": "risk_calculation",
+                "node_status": {**state.get("node_status", {}), "risk_calculation": node_status_value},
             }
         except Exception as e:
             workflow_tracker.error_agent(execution, f"Risk calculation failed: {e}")
-            return {**state, "risk_data": {"overall_risk_score": 50.0, "risk_level": "MEDIUM"}}
+            return {**state, "risk_data": {"overall_risk_score": None, "risk_level": "ERROR", "error": str(e)},
+                "node_status": {**state.get("node_status", {}), "risk_calculation": "error"},
+            }
     
     def _generate_redlines(self, state: IntelligenceState) -> IntelligenceState:
         """Generate redlines - Single Responsibility"""
@@ -192,20 +215,28 @@ class IntelligenceOrchestrator:
         try:
             tool = RedlineGeneratorTool()
             violations_json = json.dumps(state["policy_violations"])
-            redlines_json = tool._run(violations_json)
+            redlines_json = tool._run(
+                violations_json,
+                contract_id=state.get("contract_id"),
+                tenant_id=state.get("tenant_id"),
+            )
             redlines_list = json.loads(redlines_json)
-            
+
             critical_redlines = len([r for r in redlines_list if r.get("priority") == "CRITICAL"])
             workflow_tracker.complete_agent(execution, f"Generated {len(redlines_list)} redlines ({critical_redlines} critical)")
-            
+
             return {**state,
                 "redline_suggestions": redlines_list,
                 "is_complete": True,
-                "processing_result": {"status": "success", "message": "Intelligence analysis completed"}
+                "processing_result": {"status": "success", "message": "Intelligence analysis completed"},
+                "node_status": {**state.get("node_status", {}), "redline_generation": "success"},
             }
         except Exception as e:
             workflow_tracker.error_agent(execution, f"Redline generation failed: {e}")
-            return {**state, "redline_suggestions": [], "is_complete": True}
+            return {**state, "redline_suggestions": [], "is_complete": False,
+                "processing_result": {"status": "error", "error": f"Redline generation failed: {e}"},
+                "node_status": {**state.get("node_status", {}), "redline_generation": "error"},
+            }
     
     def _cuad_mitigation(self, state: IntelligenceState) -> IntelligenceState:
         """Enhanced CUAD mitigation analysis - Phase 2 implementation"""
@@ -371,7 +402,7 @@ class IntelligenceOrchestrator:
                 "precedent_matches": []
             }
     
-    def analyze_contract(self, contract_text: str, use_planning: bool = True) -> dict:
+    def analyze_contract(self, contract_text: str, use_planning: bool = True, contract_id: Optional[str] = None, tenant_id: Optional[str] = None) -> dict:
         """Run analysis with optional autonomous planning"""
         try:
             if use_planning:
@@ -384,16 +415,16 @@ class IntelligenceOrchestrator:
                         # If we're in an event loop, create a task
                         import concurrent.futures
                         with concurrent.futures.ThreadPoolExecutor() as executor:
-                            future = executor.submit(asyncio.run, self._analyze_with_planning(contract_text))
+                            future = executor.submit(asyncio.run, self._analyze_with_planning(contract_text, contract_id, tenant_id))
                             return future.result()
                     except RuntimeError:
                         # No event loop running, safe to use asyncio.run
-                        return asyncio.run(self._analyze_with_planning(contract_text))
+                        return asyncio.run(self._analyze_with_planning(contract_text, contract_id, tenant_id))
                 except Exception as planning_error:
                     logger.error(f"Planning agent failed: {planning_error}, falling back to traditional workflow")
-                    return self._analyze_traditional(contract_text)
+                    return self._analyze_traditional(contract_text, contract_id, tenant_id)
             else:
-                return self._analyze_traditional(contract_text)
+                return self._analyze_traditional(contract_text, contract_id, tenant_id)
             
         except Exception as e:
             logger.error(f"Analysis failed: {e}")
@@ -405,7 +436,7 @@ class IntelligenceOrchestrator:
                 "processing_complete": False
             }
     
-    async def _analyze_with_planning(self, contract_text: str) -> dict:
+    async def _analyze_with_planning(self, contract_text: str, contract_id: Optional[str] = None, tenant_id: Optional[str] = None) -> dict:
         """Analyze contract using autonomous planning agent"""
         logger.info("🧠 STEP 1: Starting Planning Agent Analysis")
         
@@ -432,7 +463,7 @@ class IntelligenceOrchestrator:
             
             # Step 2: Execute the planned workflow
             logger.info("🧠 STEP 4: Starting plan execution")
-            results = await self.execution_engine.execute_plan(execution_plan, contract_text)
+            results = await self.execution_engine.execute_plan(execution_plan, contract_text, contract_id=contract_id, tenant_id=tenant_id)
             logger.info(f"🧠 STEP 5: Plan execution completed: {results.get('processing_complete')}")
             
             # Step 3: Provide feedback
@@ -455,14 +486,16 @@ class IntelligenceOrchestrator:
             logger.error(f"🧠 Full traceback: {traceback.format_exc()}")
             raise e
     
-    def _analyze_traditional(self, contract_text: str) -> dict:
+    def _analyze_traditional(self, contract_text: str, contract_id: Optional[str] = None, tenant_id: Optional[str] = None) -> dict:
         """Traditional workflow analysis (fallback)"""
         # Start workflow tracking
         workflow_tracker.start_workflow()
-        
+
         # Initialize proper state with CUAD fields
         initial_state = {
             "contract_text": contract_text,
+            "contract_id": contract_id,
+            "tenant_id": tenant_id,
             "extracted_clauses": [],
             "policy_violations": [],
             "risk_data": {},
@@ -473,15 +506,19 @@ class IntelligenceOrchestrator:
             "messages": [],
             "current_step": "",
             "processing_result": None,
-            "is_complete": False
+            "is_complete": False,
+            "node_status": {},
         }
-        
+
         # Run workflow
         final_state = self.workflow.invoke(initial_state)
-        
+
         # Complete workflow tracking
         workflow_tracker.complete_workflow()
-        
+
+        node_status = final_state.get("node_status", {})
+        processing_complete = bool(final_state["is_complete"]) and not any(v == "error" for v in node_status.values())
+
         # Return structured results with CUAD data and validation
         return {
             "clauses": final_state["extracted_clauses"],
@@ -494,7 +531,8 @@ class IntelligenceOrchestrator:
             "validation_result": final_state.get("validation_result"),
             "pattern_used": final_state.get("pattern_used", "Standard"),
             "pattern_analysis": final_state.get("pattern_analysis", {}),
-            "processing_complete": final_state["is_complete"]
+            "node_status": node_status,
+            "processing_complete": processing_complete
         }
 
 class ContractIntelligenceAgentFactory:

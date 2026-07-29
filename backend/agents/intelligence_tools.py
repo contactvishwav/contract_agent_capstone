@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 from typing import Type, Dict, Any, List, Optional
 from backend.domain.entities import ContractClause, PolicyViolation, RiskAssessment, RedlineRecommendation
 from backend.agents.llm_extraction_service import LLMExtractionService, get_default_llm
+from backend.infrastructure.audit_logger import AuditLogger, AuditEventType
 import json
 import logging
 
@@ -49,6 +50,20 @@ COMPANY_POLICIES = {
     }
 }
 
+
+def _make_clause_id(contract_id: Optional[str], clause_type: str, start_offset: int, dup_index: int = 0) -> str:
+    """
+    Deterministic clause id, scoped to the contract and derived from the
+    clause's own type/position - NOT a random uuid4. Re-running extraction on
+    the same contract must produce the same ids for the same clauses so
+    downstream references (violations, risk factors) stay stable across
+    re-analysis, matching the id convention already used in
+    clause_extraction_agent.py (f"{section_id}_clause_{order:03d}").
+    """
+    slug = clause_type.lower().replace(" ", "_").replace("/", "_").replace("-", "_")
+    base = f"{contract_id or 'unknown'}_{slug}_{start_offset}"
+    return base if dup_index == 0 else f"{base}_dup{dup_index}"
+
 # Clause Extraction Agent Tools
 class ClauseDetectorInput(BaseModel):
     contract_text: str = Field(description="Contract text to analyze for clauses")
@@ -64,7 +79,7 @@ class ClauseDetectorTool(BaseTool):
         # convention in this codebase, e.g. EnhancedPrecedentMatcherTool)
         object.__setattr__(self, '_llm', llm)
 
-    def _run(self, contract_text: str) -> str:
+    def _run(self, contract_text: str, contract_id: Optional[str] = None, tenant_id: Optional[str] = None) -> str:
         """Extract clauses from contract text using real LLM-based extraction"""
         try:
             # No truncation: gemini-2.5-flash supports over 1M input tokens,
@@ -79,22 +94,43 @@ class ClauseDetectorTool(BaseTool):
             service = LLMExtractionService(llm)
             extracted = service.extract_clauses(contract_text)
 
-            clauses = [
-                {
+            seen: Dict[str, int] = {}
+            clauses = []
+            for e in extracted:
+                base_id = _make_clause_id(contract_id, e.clause_type.value, e.start_offset)
+                dup_index = seen.get(base_id, 0)
+                seen[base_id] = dup_index + 1
+                clause_id = _make_clause_id(contract_id, e.clause_type.value, e.start_offset, dup_index)
+                clauses.append({
+                    "clause_id": clause_id,
                     "clause_type": e.clause_type.value,
                     "content": e.extracted_text,
                     "confidence_score": e.confidence,
                     "start_offset": e.start_offset,
                     "end_offset": e.end_offset,
-                }
-                for e in extracted
-            ]
+                })
 
             logger.info(f"Extracted {len(clauses)} clauses")
+            AuditLogger().log_event(
+                event_type=AuditEventType.AGENT_TOOL_CALL,
+                resource_id=contract_id or "unknown",
+                tenant_id=tenant_id or "demo_tenant_1",
+                action="clause_extraction",
+                metadata={"clause_count": len(clauses)},
+                status="success",
+            )
             return json.dumps(clauses)
 
         except Exception as e:
             logger.error(f"Clause detection failed: {e}")
+            AuditLogger().log_event(
+                event_type=AuditEventType.AGENT_TOOL_CALL,
+                resource_id=contract_id or "unknown",
+                tenant_id=tenant_id or "demo_tenant_1",
+                action="clause_extraction",
+                status="failure",
+                error_details=str(e),
+            )
             return json.dumps([])
 
 # Policy Compliance Agent Tools
@@ -106,7 +142,7 @@ class PolicyCheckerTool(BaseTool):
     description: str = "Check clauses against company policies"
     args_schema: Type[BaseModel] = PolicyCheckerInput
     
-    def _run(self, clauses_json: str) -> str:
+    def _run(self, clauses_json: str, contract_id: Optional[str] = None, tenant_id: Optional[str] = None) -> str:
         """Check clauses against policies"""
         try:
             clauses = json.loads(clauses_json)
@@ -124,7 +160,8 @@ class PolicyCheckerTool(BaseTool):
                             "issue": "Payment terms exceed company policy (Net 30 preferred, Net 45 max with approval)",
                             "severity": "CRITICAL",
                             "suggested_fix": COMPANY_POLICIES["payment_terms"]["redline_text"],
-                            "clause_content": clause["content"]
+                            "clause_content": clause["content"],
+                            "clause_id": clause.get("clause_id", "unknown")
                         })
                     elif any(term in content for term in ["45 days", "net 45"]):
                         violations.append({
@@ -132,7 +169,8 @@ class PolicyCheckerTool(BaseTool):
                             "issue": "Payment terms require Delivery Director approval (Net 45)",
                             "severity": "MEDIUM",
                             "suggested_fix": "Obtain Delivery Director approval or " + COMPANY_POLICIES["payment_terms"]["redline_text"],
-                            "clause_content": clause["content"]
+                            "clause_content": clause["content"],
+                            "clause_id": clause.get("clause_id", "unknown")
                         })
                 
                 # Check liability caps against company policy
@@ -143,7 +181,8 @@ class PolicyCheckerTool(BaseTool):
                             "issue": "Liability policy violation - unlimited or indirect/consequential damages exposure",
                             "severity": "CRITICAL",
                             "suggested_fix": COMPANY_POLICIES["liability_cap"]["redline_text"],
-                            "clause_content": clause["content"]
+                            "clause_content": clause["content"],
+                            "clause_id": clause.get("clause_id", "unknown")
                         })
                     elif any(amount in content for amount in ["50,000", "25,000", "$50k", "$25k"]):
                         violations.append({
@@ -151,7 +190,8 @@ class PolicyCheckerTool(BaseTool):
                             "issue": "Liability cap not linked to SOW fees and below minimum threshold",
                             "severity": "HIGH",
                             "suggested_fix": COMPANY_POLICIES["liability_cap"]["redline_text"],
-                            "clause_content": clause["content"]
+                            "clause_content": clause["content"],
+                            "clause_id": clause.get("clause_id", "unknown")
                         })
                 
                 # Check indemnification against company policy
@@ -162,7 +202,8 @@ class PolicyCheckerTool(BaseTool):
                             "issue": "Broad indemnification or client negligence coverage violates company policy",
                             "severity": "CRITICAL",
                             "suggested_fix": COMPANY_POLICIES["indemnification"]["redline_text"],
-                            "clause_content": clause["content"]
+                            "clause_content": clause["content"],
+                            "clause_id": clause.get("clause_id", "unknown")
                         })
                 
                 # Check termination against company policy
@@ -173,7 +214,8 @@ class PolicyCheckerTool(BaseTool):
                             "issue": "Immediate termination without notice violates company policy",
                             "severity": "HIGH",
                             "suggested_fix": COMPANY_POLICIES["termination"]["redline_text"],
-                            "clause_content": clause["content"]
+                            "clause_content": clause["content"],
+                            "clause_id": clause.get("clause_id", "unknown")
                         })
                 
                 # Check IP ownership against company policy
@@ -184,14 +226,32 @@ class PolicyCheckerTool(BaseTool):
                             "issue": "IP assignment without carve-outs for company pre-existing IP",
                             "severity": "CRITICAL",
                             "suggested_fix": COMPANY_POLICIES["ip_ownership"]["redline_text"],
-                            "clause_content": clause["content"]
+                            "clause_content": clause["content"],
+                            "clause_id": clause.get("clause_id", "unknown")
                         })
             
             logger.info(f"Found {len(violations)} policy violations")
+            critical_count = len([v for v in violations if v.get("severity") == "CRITICAL"])
+            AuditLogger().log_event(
+                event_type=AuditEventType.AGENT_TOOL_CALL,
+                resource_id=contract_id or "unknown",
+                tenant_id=tenant_id or "demo_tenant_1",
+                action="policy_check",
+                metadata={"violation_count": len(violations), "critical_count": critical_count},
+                status="success",
+            )
             return json.dumps(violations)
-            
+
         except Exception as e:
             logger.error(f"Policy checking failed: {e}")
+            AuditLogger().log_event(
+                event_type=AuditEventType.AGENT_TOOL_CALL,
+                resource_id=contract_id or "unknown",
+                tenant_id=tenant_id or "demo_tenant_1",
+                action="policy_check",
+                status="failure",
+                error_details=str(e),
+            )
             return json.dumps([])
 
 # Risk Assessment Agent Tools
@@ -204,7 +264,7 @@ class RiskCalculatorTool(BaseTool):
     description: str = "Calculate overall contract risk score"
     args_schema: Type[BaseModel] = RiskCalculatorInput
     
-    def _run(self, clauses_json: str, violations_json: str) -> str:
+    def _run(self, clauses_json: str, violations_json: str, contract_id: Optional[str] = None, tenant_id: Optional[str] = None) -> str:
         """Calculate risk assessment"""
         try:
             clauses = json.loads(clauses_json)
@@ -245,21 +305,50 @@ class RiskCalculatorTool(BaseTool):
             if risk_score > 70:
                 recommendations.append("Requires legal review and approval")
             
-            critical_issues = [v["issue"] for v in violations if v.get("severity") == "CRITICAL"]
-            
+            critical_violations = [v for v in violations if v.get("severity") == "CRITICAL"]
+            critical_issues = [v["issue"] for v in critical_violations]
+            critical_issue_details = [
+                {"issue": v["issue"], "clause_id": v.get("clause_id"), "clause_type": v.get("clause_type")}
+                for v in critical_violations
+            ]
+
             assessment = {
                 "overall_risk_score": risk_score,
                 "risk_level": risk_level,
                 "critical_issues": critical_issues,
+                "critical_issue_details": critical_issue_details,
                 "recommendations": recommendations
             }
             
             logger.info(f"Risk assessment: {risk_level} ({risk_score}/100)")
+            AuditLogger().log_event(
+                event_type=AuditEventType.AGENT_TOOL_CALL,
+                resource_id=contract_id or "unknown",
+                tenant_id=tenant_id or "demo_tenant_1",
+                action="risk_calculation",
+                metadata={"risk_score": risk_score, "risk_level": risk_level},
+                status="success",
+            )
             return json.dumps(assessment)
-            
+
         except Exception as e:
             logger.error(f"Risk calculation failed: {e}")
-            return json.dumps({"overall_risk_score": 50.0, "risk_level": "MEDIUM", "critical_issues": [], "recommendations": []})
+            AuditLogger().log_event(
+                event_type=AuditEventType.AGENT_TOOL_CALL,
+                resource_id=contract_id or "unknown",
+                tenant_id=tenant_id or "demo_tenant_1",
+                action="risk_calculation",
+                status="failure",
+                error_details=str(e),
+            )
+            return json.dumps({
+                "overall_risk_score": None,
+                "risk_level": "ERROR",
+                "critical_issues": [],
+                "critical_issue_details": [],
+                "recommendations": ["Risk calculation failed - manual review required"],
+                "error": str(e),
+            })
 
 # Redline Generation Agent Tools
 class RedlineGeneratorInput(BaseModel):
@@ -270,7 +359,7 @@ class RedlineGeneratorTool(BaseTool):
     description: str = "Generate redline recommendations for violations"
     args_schema: Type[BaseModel] = RedlineGeneratorInput
     
-    def _run(self, violations_json: str) -> str:
+    def _run(self, violations_json: str, contract_id: Optional[str] = None, tenant_id: Optional[str] = None) -> str:
         """Generate redline recommendations"""
         try:
             violations = json.loads(violations_json)
@@ -323,8 +412,24 @@ class RedlineGeneratorTool(BaseTool):
                     })
             
             logger.info(f"Generated {len(redlines)} redline recommendations")
+            AuditLogger().log_event(
+                event_type=AuditEventType.AGENT_TOOL_CALL,
+                resource_id=contract_id or "unknown",
+                tenant_id=tenant_id or "demo_tenant_1",
+                action="redline_generation",
+                metadata={"redline_count": len(redlines)},
+                status="success",
+            )
             return json.dumps(redlines)
-            
+
         except Exception as e:
             logger.error(f"Redline generation failed: {e}")
+            AuditLogger().log_event(
+                event_type=AuditEventType.AGENT_TOOL_CALL,
+                resource_id=contract_id or "unknown",
+                tenant_id=tenant_id or "demo_tenant_1",
+                action="redline_generation",
+                status="failure",
+                error_details=str(e),
+            )
             return json.dumps([])

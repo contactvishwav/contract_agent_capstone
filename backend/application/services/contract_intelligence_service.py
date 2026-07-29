@@ -17,22 +17,22 @@ class ContractIntelligenceService:
         self.llm_manager = llm_manager
         self.repository = Neo4jContractRepository()
     
-    def analyze_contract_intelligence(self, contract_text: str, model: str = "gemini-2.5-flash", use_planning: bool = True) -> ContractIntelligence:
+    def analyze_contract_intelligence(self, contract_text: str, model: str = "gemini-2.5-flash", use_planning: bool = True, contract_id: Optional[str] = None, tenant_id: Optional[str] = None) -> ContractIntelligence:
         """Perform complete contract intelligence analysis using multi-agent system"""
-        
+
         start_time = time.time()
-        
+
         try:
             logger.info(f"Starting contract intelligence analysis with model: {model}")
-            
+
             # Get LLM for the specified model
             llm = self._get_llm_for_model(model)
-            
+
             # Create multi-agent orchestrator with error handling
             try:
                 orchestrator = ContractIntelligenceAgentFactory.create_orchestrator(llm)
                 # Run multi-agent analysis with optional planning
-                analysis_result = orchestrator.analyze_contract(contract_text, use_planning)
+                analysis_result = orchestrator.analyze_contract(contract_text, use_planning, contract_id=contract_id, tenant_id=tenant_id)
             except ImportError as ie:
                 logger.error(f"Import error in orchestrator: {ie}")
                 raise Exception(f"Intelligence system not properly configured: {ie}")
@@ -62,7 +62,8 @@ class ContractIntelligenceService:
                     recommendations=["Analysis failed - manual review required"]
                 ),
                 redlines=[],
-                processing_time=time.time() - start_time
+                processing_time=time.time() - start_time,
+                processing_complete=False
             )
     
     async def analyze_contract_by_id(self, contract_id: str, tenant_id: str = "default-tenant", model: str = "gemini-2.5-flash", use_planning: bool = True) -> Optional[ContractIntelligence]:
@@ -90,7 +91,7 @@ class ContractIntelligenceService:
                 return None
             
             # Perform analysis with optional planning
-            intelligence = self.analyze_contract_intelligence(contract_text, model, use_planning)
+            intelligence = self.analyze_contract_intelligence(contract_text, model, use_planning, contract_id=contract_id, tenant_id=tenant_id)
             
             # Store intelligence results back to database
             self._store_intelligence_results(contract_id, tenant_id, intelligence)
@@ -126,9 +127,10 @@ class ContractIntelligenceService:
                 content=clause_data.get("content", ""),
                 risk_level=clause_data.get("risk_level", "LOW"),
                 confidence_score=clause_data.get("confidence_score", 0.0),
-                location=clause_data.get("location", "")
+                location=clause_data.get("location", ""),
+                clause_id=clause_data.get("clause_id", "")
             ))
-        
+
         # Convert violations
         violations = []
         for violation_data in analysis_result.get("violations", []):
@@ -137,16 +139,18 @@ class ContractIntelligenceService:
                 issue=violation_data.get("issue", ""),
                 severity=violation_data.get("severity", "LOW"),
                 suggested_fix=violation_data.get("suggested_fix", ""),
-                clause_content=violation_data.get("clause_content", "")
+                clause_content=violation_data.get("clause_content", ""),
+                clause_id=violation_data.get("clause_id", "")
             ))
-        
+
         # Convert risk assessment
         risk_data = analysis_result.get("risk_assessment", {})
         risk_assessment = RiskAssessment(
             overall_risk_score=risk_data.get("overall_risk_score", 0.0),
             risk_level=risk_data.get("risk_level", "LOW"),
             critical_issues=risk_data.get("critical_issues", []),
-            recommendations=risk_data.get("recommendations", [])
+            recommendations=risk_data.get("recommendations", []),
+            critical_issue_details=risk_data.get("critical_issue_details", [])
         )
         
         # Convert redlines
@@ -171,6 +175,10 @@ class ContractIntelligenceService:
         intelligence.cuad_deviations = analysis_result.get("cuad_deviations", [])
         intelligence.jurisdiction_info = analysis_result.get("jurisdiction_info", {})
         intelligence.precedent_matches = analysis_result.get("precedent_matches", [])
+
+        # Honest partial-failure state: which nodes/steps actually succeeded
+        intelligence.node_status = analysis_result.get("node_status", {})
+        intelligence.processing_complete = analysis_result.get("processing_complete", True)
         
         return intelligence
     
