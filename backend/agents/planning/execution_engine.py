@@ -133,7 +133,12 @@ class StepExecutor:
         """Execute policy checking with dependency results"""
         clauses = context.get("extracted_clauses", [])
         tool = self.tools[StepType.CHECK_POLICIES]
-        result_json = tool._run(json.dumps(clauses), contract_id=context.get("contract_id"), tenant_id=context.get("tenant_id"))
+        result_json = tool._run(
+            json.dumps(clauses),
+            contract_id=context.get("contract_id"),
+            tenant_id=context.get("tenant_id"),
+            contract_type=context.get("contract_type") or "general",
+        )
         return json.loads(result_json)
 
     async def _execute_risk_assessment(self, step: ExecutionStep, context: Dict[str, Any]) -> Dict:
@@ -309,7 +314,7 @@ class PlanExecutionEngine:
         self.step_executor = StepExecutor()
         self.execution_context: Dict[str, Any] = {}
     
-    async def execute_plan(self, plan: ExecutionPlan, contract_text: str, contract_id: Optional[str] = None, tenant_id: Optional[str] = None) -> Dict[str, Any]:
+    async def execute_plan(self, plan: ExecutionPlan, contract_text: str, contract_id: Optional[str] = None, tenant_id: Optional[str] = None, contract_type: Optional[str] = None) -> Dict[str, Any]:
         """Execute the complete analysis plan"""
         logger.info(f"🚀 EXEC STEP 1: Starting plan execution {plan.plan_id} with {len(plan.steps)} steps")
         logger.info(f"🚀 EXEC STEP 2: Contract text length: {len(contract_text)} characters")
@@ -319,6 +324,7 @@ class PlanExecutionEngine:
             "contract_text": contract_text,
             "contract_id": contract_id,
             "tenant_id": tenant_id,
+            "contract_type": contract_type,
             "plan_id": plan.plan_id,
             "execution_start": datetime.now()
         }

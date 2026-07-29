@@ -65,7 +65,8 @@ async def analyze_contract_intelligence(
                         "content": clause.content,
                         "risk_level": clause.risk_level,
                         "confidence_score": clause.confidence_score,
-                        "location": clause.location
+                        "location": clause.location,
+                        "grounded": clause.grounded
                     }
                     for clause in intelligence.clauses
                 ],
@@ -76,7 +77,8 @@ async def analyze_contract_intelligence(
                         "issue": violation.issue,
                         "severity": violation.severity,
                         "suggested_fix": violation.suggested_fix,
-                        "clause_content": violation.clause_content
+                        "clause_content": violation.clause_content,
+                        "clause_grounded": violation.clause_grounded
                     }
                     for violation in intelligence.violations
                 ],

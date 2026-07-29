@@ -76,17 +76,32 @@ class ClauseIdStabilityTests(unittest.TestCase):
 
 class ViolationClauseIdTests(unittest.TestCase):
     def test_violation_carries_triggering_clauses_id(self):
-        clauses = [{"clause_id": "c1_payment_terms_0", "clause_type": "Payment Terms", "content": "net 90 days"}]
+        # Cap On Liability is in the deterministic table (P2 item 2), so
+        # this exercises PolicyCheckerTool's real clause_id threading
+        # without needing an LLM mock.
+        clauses = [{
+            "clause_id": "c1_cap_on_liability_0", "clause_type": "Cap On Liability",
+            "content": "Liability shall not exceed 3 times the total fees paid.",
+        }]
         violations = json.loads(PolicyCheckerTool()._run(json.dumps(clauses)))
 
         self.assertEqual(len(violations), 1)
-        self.assertEqual(violations[0]["clause_id"], "c1_payment_terms_0")
+        self.assertEqual(violations[0]["clause_id"], "c1_cap_on_liability_0")
 
 
 class RiskDetailClauseIdTests(unittest.TestCase):
     def test_critical_issue_details_carry_clause_id_and_critical_issues_unchanged(self):
-        clauses = [{"clause_id": "c1_payment_terms_0", "clause_type": "Payment Terms", "content": "net 90 days"}]
-        violations = json.loads(PolicyCheckerTool()._run(json.dumps(clauses)))
+        # RiskCalculatorTool's critical_issue_details only includes
+        # CRITICAL-severity violations - built directly here rather than
+        # via PolicyCheckerTool, whose deterministic-table categories are
+        # HIGH/MEDIUM, to isolate what this test actually checks: clause_id
+        # threading through RiskCalculatorTool, not PolicyCheckerTool's own
+        # severity assignment.
+        clauses = [{"clause_id": "c1_uncapped_liability_0", "clause_type": "Uncapped Liability", "content": "..."}]
+        violations = [{
+            "clause_id": "c1_uncapped_liability_0", "clause_type": "Uncapped Liability",
+            "issue": "Liability is uncapped", "severity": "CRITICAL",
+        }]
 
         risk = json.loads(RiskCalculatorTool()._run(json.dumps(clauses), json.dumps(violations)))
 
@@ -96,7 +111,7 @@ class RiskDetailClauseIdTests(unittest.TestCase):
 
         # New, additive field carries the clause reference.
         self.assertEqual(len(risk["critical_issue_details"]), 1)
-        self.assertEqual(risk["critical_issue_details"][0]["clause_id"], "c1_payment_terms_0")
+        self.assertEqual(risk["critical_issue_details"][0]["clause_id"], "c1_uncapped_liability_0")
         self.assertEqual(risk["critical_issue_details"][0]["issue"], violations[0]["issue"])
 
 

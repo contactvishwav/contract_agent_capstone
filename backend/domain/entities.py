@@ -54,6 +54,7 @@ class ContractClause:
     confidence_score: float
     location: str = ""
     clause_id: str = ""
+    grounded: bool = True  # False if the clause text couldn't be located in the source contract
 
 @dataclass
 class PolicyViolation:
@@ -63,6 +64,7 @@ class PolicyViolation:
     suggested_fix: str
     clause_content: str = ""
     clause_id: str = ""
+    clause_grounded: bool = True
 
 @dataclass
 class RiskAssessment:

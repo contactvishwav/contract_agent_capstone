@@ -17,7 +17,7 @@ class ContractIntelligenceService:
         self.llm_manager = llm_manager
         self.repository = Neo4jContractRepository()
     
-    def analyze_contract_intelligence(self, contract_text: str, model: str = "gemini-2.5-flash", use_planning: bool = True, contract_id: Optional[str] = None, tenant_id: Optional[str] = None) -> ContractIntelligence:
+    def analyze_contract_intelligence(self, contract_text: str, model: str = "gemini-2.5-flash", use_planning: bool = True, contract_id: Optional[str] = None, tenant_id: Optional[str] = None, contract_type: Optional[str] = None) -> ContractIntelligence:
         """Perform complete contract intelligence analysis using multi-agent system"""
 
         start_time = time.time()
@@ -32,7 +32,7 @@ class ContractIntelligenceService:
             try:
                 orchestrator = ContractIntelligenceAgentFactory.create_orchestrator(llm)
                 # Run multi-agent analysis with optional planning
-                analysis_result = orchestrator.analyze_contract(contract_text, use_planning, contract_id=contract_id, tenant_id=tenant_id)
+                analysis_result = orchestrator.analyze_contract(contract_text, use_planning, contract_id=contract_id, tenant_id=tenant_id, contract_type=contract_type)
             except ImportError as ie:
                 logger.error(f"Import error in orchestrator: {ie}")
                 raise Exception(f"Intelligence system not properly configured: {ie}")
@@ -89,9 +89,11 @@ class ContractIntelligenceService:
                 logger.error(f"No text content found for contract: {contract_id}")
                 logger.error(f"Contract data keys: {list(contract_data.keys())}")
                 return None
-            
+
+            contract_type = contract_data.get("contract_type") or "general"
+
             # Perform analysis with optional planning
-            intelligence = self.analyze_contract_intelligence(contract_text, model, use_planning, contract_id=contract_id, tenant_id=tenant_id)
+            intelligence = self.analyze_contract_intelligence(contract_text, model, use_planning, contract_id=contract_id, tenant_id=tenant_id, contract_type=contract_type)
             
             # Store intelligence results back to database
             self._store_intelligence_results(contract_id, tenant_id, intelligence)
@@ -128,7 +130,8 @@ class ContractIntelligenceService:
                 risk_level=clause_data.get("risk_level", "LOW"),
                 confidence_score=clause_data.get("confidence_score", 0.0),
                 location=clause_data.get("location", ""),
-                clause_id=clause_data.get("clause_id", "")
+                clause_id=clause_data.get("clause_id", ""),
+                grounded=clause_data.get("grounded", True)
             ))
 
         # Convert violations
@@ -140,7 +143,8 @@ class ContractIntelligenceService:
                 severity=violation_data.get("severity", "LOW"),
                 suggested_fix=violation_data.get("suggested_fix", ""),
                 clause_content=violation_data.get("clause_content", ""),
-                clause_id=violation_data.get("clause_id", "")
+                clause_id=violation_data.get("clause_id", ""),
+                clause_grounded=violation_data.get("clause_grounded", True)
             ))
 
         # Convert risk assessment

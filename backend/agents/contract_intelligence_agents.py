@@ -149,6 +149,7 @@ class IntelligenceOrchestrator:
                 clauses_json,
                 contract_id=state.get("contract_id"),
                 tenant_id=state.get("tenant_id"),
+                contract_type=state.get("contract_type") or "general",
             )
             violations_list = json.loads(violations_json)
 
@@ -402,7 +403,7 @@ class IntelligenceOrchestrator:
                 "precedent_matches": []
             }
     
-    def analyze_contract(self, contract_text: str, use_planning: bool = True, contract_id: Optional[str] = None, tenant_id: Optional[str] = None) -> dict:
+    def analyze_contract(self, contract_text: str, use_planning: bool = True, contract_id: Optional[str] = None, tenant_id: Optional[str] = None, contract_type: Optional[str] = None) -> dict:
         """Run analysis with optional autonomous planning"""
         try:
             if use_planning:
@@ -415,16 +416,16 @@ class IntelligenceOrchestrator:
                         # If we're in an event loop, create a task
                         import concurrent.futures
                         with concurrent.futures.ThreadPoolExecutor() as executor:
-                            future = executor.submit(asyncio.run, self._analyze_with_planning(contract_text, contract_id, tenant_id))
+                            future = executor.submit(asyncio.run, self._analyze_with_planning(contract_text, contract_id, tenant_id, contract_type))
                             return future.result()
                     except RuntimeError:
                         # No event loop running, safe to use asyncio.run
-                        return asyncio.run(self._analyze_with_planning(contract_text, contract_id, tenant_id))
+                        return asyncio.run(self._analyze_with_planning(contract_text, contract_id, tenant_id, contract_type))
                 except Exception as planning_error:
                     logger.error(f"Planning agent failed: {planning_error}, falling back to traditional workflow")
-                    return self._analyze_traditional(contract_text, contract_id, tenant_id)
+                    return self._analyze_traditional(contract_text, contract_id, tenant_id, contract_type)
             else:
-                return self._analyze_traditional(contract_text, contract_id, tenant_id)
+                return self._analyze_traditional(contract_text, contract_id, tenant_id, contract_type)
             
         except Exception as e:
             logger.error(f"Analysis failed: {e}")
@@ -436,7 +437,7 @@ class IntelligenceOrchestrator:
                 "processing_complete": False
             }
     
-    async def _analyze_with_planning(self, contract_text: str, contract_id: Optional[str] = None, tenant_id: Optional[str] = None) -> dict:
+    async def _analyze_with_planning(self, contract_text: str, contract_id: Optional[str] = None, tenant_id: Optional[str] = None, contract_type: Optional[str] = None) -> dict:
         """Analyze contract using autonomous planning agent"""
         logger.info("🧠 STEP 1: Starting Planning Agent Analysis")
         
@@ -463,7 +464,7 @@ class IntelligenceOrchestrator:
             
             # Step 2: Execute the planned workflow
             logger.info("🧠 STEP 4: Starting plan execution")
-            results = await self.execution_engine.execute_plan(execution_plan, contract_text, contract_id=contract_id, tenant_id=tenant_id)
+            results = await self.execution_engine.execute_plan(execution_plan, contract_text, contract_id=contract_id, tenant_id=tenant_id, contract_type=contract_type)
             logger.info(f"🧠 STEP 5: Plan execution completed: {results.get('processing_complete')}")
             
             # Step 3: Provide feedback
@@ -486,7 +487,7 @@ class IntelligenceOrchestrator:
             logger.error(f"🧠 Full traceback: {traceback.format_exc()}")
             raise e
     
-    def _analyze_traditional(self, contract_text: str, contract_id: Optional[str] = None, tenant_id: Optional[str] = None) -> dict:
+    def _analyze_traditional(self, contract_text: str, contract_id: Optional[str] = None, tenant_id: Optional[str] = None, contract_type: Optional[str] = None) -> dict:
         """Traditional workflow analysis (fallback)"""
         # Start workflow tracking
         workflow_tracker.start_workflow()
@@ -496,6 +497,7 @@ class IntelligenceOrchestrator:
             "contract_text": contract_text,
             "contract_id": contract_id,
             "tenant_id": tenant_id,
+            "contract_type": contract_type,
             "extracted_clauses": [],
             "policy_violations": [],
             "risk_data": {},

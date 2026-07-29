@@ -116,8 +116,15 @@ class ClauseDetectorAuditTests(unittest.TestCase):
 class OtherToolsAuditTests(unittest.TestCase):
     def test_policy_checker_logs_audit_event(self):
         fake_logger, patcher = _shared_fake_graph_logger()
+        # Patch rule resolution to a deterministic empty list - this test
+        # only cares that the audit event is written correctly, not about
+        # policy content, and avoids depending on PolicyRepository's real
+        # Neo4j behavior against whatever fake graph the session happens to
+        # have cached.
+        rules_patcher = patch("backend.agents.intelligence_tools.get_applicable_rules", return_value=[])
+        rules_patcher.start()
         try:
-            clauses = [{"clause_type": "Payment Terms", "content": "Net 90 payment terms apply."}]
+            clauses = [{"clause_type": "Non-Compete", "content": "Employee shall not compete for 5 years."}]
             PolicyCheckerTool()._run(json.dumps(clauses), contract_id="contract_3", tenant_id="tenant_1")
 
             trail = fake_logger.get_audit_trail("contract_3")
@@ -126,6 +133,7 @@ class OtherToolsAuditTests(unittest.TestCase):
             self.assertEqual(trail[0]["status"], "success")
         finally:
             patcher.stop()
+            rules_patcher.stop()
 
     def test_risk_calculator_logs_audit_event(self):
         fake_logger, patcher = _shared_fake_graph_logger()

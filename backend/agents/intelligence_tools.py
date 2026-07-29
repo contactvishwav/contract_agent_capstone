@@ -3,52 +3,15 @@ from pydantic import BaseModel, Field
 from typing import Type, Dict, Any, List, Optional
 from backend.domain.entities import ContractClause, PolicyViolation, RiskAssessment, RedlineRecommendation
 from backend.agents.llm_extraction_service import LLMExtractionService, get_default_llm
+from backend.agents.policy_evaluation_service import PolicyEvaluationService
+from backend.agents.policy_rule_resolver import get_applicable_rules
+from backend.agents.deterministic_policy_rules import evaluate_deterministic
 from backend.infrastructure.audit_logger import AuditLogger, AuditEventType
 import json
 import logging
 
 from backend.shared.utils.logger import get_logger
 logger = get_logger(__name__)
-
-# Company policy rules - merged existing with comprehensive internal policies
-COMPANY_POLICIES = {
-    "payment_terms": {
-        "preferred_days": 30,
-        "acceptable_days": 45,  # requires Delivery Director approval
-        "red_flags": [60, 90],
-        "redline_text": "Payment is due within thirty (30) days of invoice receipt."
-    },
-    "liability_cap": {
-        "preferred_multiplier": 1,  # 1x total fees
-        "acceptable_multiplier": 2,  # requires Legal approval
-        "min_amount": 100000,  # legacy minimum
-        "red_flags": ["unlimited", "indirect_damages", "consequential_damages"],
-        "redline_text": "Our liability shall not exceed the total fees paid or payable under the applicable Statement of Work."
-    },
-    "indemnification": {
-        "preferred_type": "mutual",
-        "acceptable_scope": ["third_party_ip", "gross_negligence", "willful_misconduct"],
-        "red_flags": ["broad_indemnification", "client_negligence", "open_ended_defense"],
-        "redline_text": "Each party will indemnify the other solely for third-party claims arising from gross negligence, willful misconduct, or infringement of IP under this Agreement."
-    },
-    "termination": {
-        "min_notice_days": 30,
-        "payment_required": "work_in_progress",
-        "red_flags": ["immediate_termination", "no_payment_wip"],
-        "redline_text": "Either party may terminate this SOW with thirty (30) days' written notice. All completed work shall be payable upon termination."
-    },
-    "ip_ownership": {
-        "company_retains": "pre_existing_ip",
-        "client_owns": "deliverables",
-        "red_flags": ["client_claims_company_ip", "assignment_without_carveouts"],
-        "redline_text": "Client owns deliverables created specifically for the engagement. Company retains ownership of its pre-existing IP, reusable tools, and methodologies."
-    },
-    "confidentiality": {
-        "required": True,
-        "mutual": True,
-        "redline_text": "Both parties agree to maintain confidentiality of all proprietary information."
-    }
-}
 
 
 def _make_clause_id(contract_id: Optional[str], clause_type: str, start_offset: int, dup_index: int = 0) -> str:
@@ -101,6 +64,13 @@ class ClauseDetectorTool(BaseTool):
                 dup_index = seen.get(base_id, 0)
                 seen[base_id] = dup_index + 1
                 clause_id = _make_clause_id(contract_id, e.clause_type.value, e.start_offset, dup_index)
+                # start_offset == -1 means _find_span couldn't locate the
+                # LLM's extracted_text anywhere in the source contract text -
+                # i.e. the model may have paraphrased or hallucinated the
+                # clause rather than quoting it verbatim. Surface that
+                # distinction rather than treating it as an equally-verified
+                # result: downstream (violations/risk) still gets to see and
+                # act on the clause, but a human reviewer can tell it apart.
                 clauses.append({
                     "clause_id": clause_id,
                     "clause_type": e.clause_type.value,
@@ -108,15 +78,17 @@ class ClauseDetectorTool(BaseTool):
                     "confidence_score": e.confidence,
                     "start_offset": e.start_offset,
                     "end_offset": e.end_offset,
+                    "grounded": e.start_offset != -1,
                 })
 
-            logger.info(f"Extracted {len(clauses)} clauses")
+            ungrounded_count = sum(1 for c in clauses if not c["grounded"])
+            logger.info(f"Extracted {len(clauses)} clauses ({ungrounded_count} ungrounded)")
             AuditLogger().log_event(
                 event_type=AuditEventType.AGENT_TOOL_CALL,
                 resource_id=contract_id or "unknown",
                 tenant_id=tenant_id or "demo_tenant_1",
                 action="clause_extraction",
-                metadata={"clause_count": len(clauses)},
+                metadata={"clause_count": len(clauses), "ungrounded_count": ungrounded_count},
                 status="success",
             )
             return json.dumps(clauses)
@@ -139,98 +111,62 @@ class PolicyCheckerInput(BaseModel):
 
 class PolicyCheckerTool(BaseTool):
     name: str = "policy_checker"
-    description: str = "Check clauses against company policies"
+    description: str = "Check clauses against tenant (or default) policy rules"
     args_schema: Type[BaseModel] = PolicyCheckerInput
-    
-    def _run(self, clauses_json: str, contract_id: Optional[str] = None, tenant_id: Optional[str] = None) -> str:
-        """Check clauses against policies"""
+
+    def __init__(self, llm: Optional[Any] = None):
+        super().__init__()
+        object.__setattr__(self, '_llm', llm)
+
+    def _run(
+        self,
+        clauses_json: str,
+        contract_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        contract_type: str = "general",
+    ) -> str:
+        """
+        Check each clause against its applicable policy rules: a small
+        deterministic table for the handful of categories with an
+        objective numeric threshold (no LLM call), and LLM-based reasoning
+        (PolicyEvaluationService) against the tenant's own uploaded policy
+        rules - or, if the tenant hasn't uploaded any, a small labeled
+        default rule set - for everything else. A clause with no
+        applicable rules produces no violation and no LLM call: there is
+        nothing to evaluate, so nothing is fabricated.
+        """
         try:
             clauses = json.loads(clauses_json)
             violations = []
-            
+
+            applicable_rules = get_applicable_rules(tenant_id, contract_type)
+            evaluation_service = PolicyEvaluationService(self._llm or get_default_llm())
+
             for clause in clauses:
-                clause_type = clause.get("clause_type", "").lower()
-                content = clause.get("content", "").lower()
-                
-                # Check payment terms against company policy
-                if "payment" in clause_type:
-                    if any(term in content for term in ["60 days", "90 days", "net 60", "net 90"]):
-                        violations.append({
-                            "clause_type": clause["clause_type"],
-                            "issue": "Payment terms exceed company policy (Net 30 preferred, Net 45 max with approval)",
-                            "severity": "CRITICAL",
-                            "suggested_fix": COMPANY_POLICIES["payment_terms"]["redline_text"],
-                            "clause_content": clause["content"],
-                            "clause_id": clause.get("clause_id", "unknown")
-                        })
-                    elif any(term in content for term in ["45 days", "net 45"]):
-                        violations.append({
-                            "clause_type": clause["clause_type"],
-                            "issue": "Payment terms require Delivery Director approval (Net 45)",
-                            "severity": "MEDIUM",
-                            "suggested_fix": "Obtain Delivery Director approval or " + COMPANY_POLICIES["payment_terms"]["redline_text"],
-                            "clause_content": clause["content"],
-                            "clause_id": clause.get("clause_id", "unknown")
-                        })
-                
-                # Check liability caps against company policy
-                if "liability" in clause_type:
-                    if any(term in content for term in ["unlimited", "indirect", "consequential", "special damages"]):
-                        violations.append({
-                            "clause_type": clause["clause_type"],
-                            "issue": "Liability policy violation - unlimited or indirect/consequential damages exposure",
-                            "severity": "CRITICAL",
-                            "suggested_fix": COMPANY_POLICIES["liability_cap"]["redline_text"],
-                            "clause_content": clause["content"],
-                            "clause_id": clause.get("clause_id", "unknown")
-                        })
-                    elif any(amount in content for amount in ["50,000", "25,000", "$50k", "$25k"]):
-                        violations.append({
-                            "clause_type": clause["clause_type"],
-                            "issue": "Liability cap not linked to SOW fees and below minimum threshold",
-                            "severity": "HIGH",
-                            "suggested_fix": COMPANY_POLICIES["liability_cap"]["redline_text"],
-                            "clause_content": clause["content"],
-                            "clause_id": clause.get("clause_id", "unknown")
-                        })
-                
-                # Check indemnification against company policy
-                if "indemnif" in clause_type.lower() or "indemnit" in content:
-                    if any(term in content for term in ["broad", "client negligence", "misuse", "open-ended"]):
-                        violations.append({
-                            "clause_type": "Indemnification",
-                            "issue": "Broad indemnification or client negligence coverage violates company policy",
-                            "severity": "CRITICAL",
-                            "suggested_fix": COMPANY_POLICIES["indemnification"]["redline_text"],
-                            "clause_content": clause["content"],
-                            "clause_id": clause.get("clause_id", "unknown")
-                        })
-                
-                # Check termination against company policy
-                if "terminat" in clause_type.lower():
-                    if any(term in content for term in ["immediate", "no notice", "0 days"]):
-                        violations.append({
-                            "clause_type": clause["clause_type"],
-                            "issue": "Immediate termination without notice violates company policy",
-                            "severity": "HIGH",
-                            "suggested_fix": COMPANY_POLICIES["termination"]["redline_text"],
-                            "clause_content": clause["content"],
-                            "clause_id": clause.get("clause_id", "unknown")
-                        })
-                
-                # Check IP ownership against company policy
-                if "ip" in clause_type.lower() or "intellectual property" in clause_type.lower():
-                    if any(term in content for term in ["client owns all", "assignment of rights", "company ip to client"]):
-                        violations.append({
-                            "clause_type": clause["clause_type"],
-                            "issue": "IP assignment without carve-outs for company pre-existing IP",
-                            "severity": "CRITICAL",
-                            "suggested_fix": COMPANY_POLICIES["ip_ownership"]["redline_text"],
-                            "clause_content": clause["content"],
-                            "clause_id": clause.get("clause_id", "unknown")
-                        })
-            
-            logger.info(f"Found {len(violations)} policy violations")
+                clause_type = clause.get("clause_type", "")
+                content = clause.get("content", "")
+
+                deterministic_violation = evaluate_deterministic(clause_type, content)
+                if deterministic_violation:
+                    deterministic_violation.update({
+                        "clause_type": clause_type,
+                        "clause_content": content,
+                        "clause_id": clause.get("clause_id", "unknown"),
+                        "clause_grounded": clause.get("grounded", True),
+                    })
+                    violations.append(deterministic_violation)
+                    continue
+
+                for v in evaluation_service.evaluate_clause(clause_type, content, applicable_rules):
+                    v.update({
+                        "clause_type": clause_type,
+                        "clause_content": content,
+                        "clause_id": clause.get("clause_id", "unknown"),
+                        "clause_grounded": clause.get("grounded", True),
+                    })
+                    violations.append(v)
+
+            logger.info(f"Found {len(violations)} policy violations against {len(applicable_rules)} applicable rules")
             critical_count = len([v for v in violations if v.get("severity") == "CRITICAL"])
             AuditLogger().log_event(
                 event_type=AuditEventType.AGENT_TOOL_CALL,
@@ -308,7 +244,12 @@ class RiskCalculatorTool(BaseTool):
             critical_violations = [v for v in violations if v.get("severity") == "CRITICAL"]
             critical_issues = [v["issue"] for v in critical_violations]
             critical_issue_details = [
-                {"issue": v["issue"], "clause_id": v.get("clause_id"), "clause_type": v.get("clause_type")}
+                {
+                    "issue": v["issue"],
+                    "clause_id": v.get("clause_id"),
+                    "clause_type": v.get("clause_type"),
+                    "clause_grounded": v.get("clause_grounded", True),
+                }
                 for v in critical_violations
             ]
 
@@ -358,59 +299,34 @@ class RedlineGeneratorTool(BaseTool):
     name: str = "redline_generator"
     description: str = "Generate redline recommendations for violations"
     args_schema: Type[BaseModel] = RedlineGeneratorInput
-    
+
     def _run(self, violations_json: str, contract_id: Optional[str] = None, tenant_id: Optional[str] = None) -> str:
-        """Generate redline recommendations"""
+        """
+        Generate a redline directly from each violation's own suggested_fix/
+        issue/severity - not a fixed category lookup. PolicyEvaluationService
+        (and the deterministic table) already produce a concrete per-violation
+        suggested_fix citing the actual rule that was checked, so this works
+        for any of the 41 CUAD categories a violation might reference, not
+        just a handful of hardcoded keyword matches.
+        """
         try:
             violations = json.loads(violations_json)
             redlines = []
-            
+
             for violation in violations:
-                clause_type = violation.get("clause_type", "")
-                issue = violation.get("issue", "")
                 suggested_fix = violation.get("suggested_fix", "")
-                original_text = violation.get("clause_content", "")
-                
-                if "payment" in clause_type.lower():
-                    redlines.append({
-                        "original_text": original_text,
-                        "suggested_text": COMPANY_POLICIES["payment_terms"]["redline_text"],
-                        "justification": "Aligns with company payment policy (Net 30 preferred)",
-                        "priority": "HIGH"
-                    })
-                
-                elif "liability" in clause_type.lower():
-                    redlines.append({
-                        "original_text": original_text,
-                        "suggested_text": COMPANY_POLICIES["liability_cap"]["redline_text"],
-                        "justification": "Caps liability at 1x SOW fees per company policy",
-                        "priority": "CRITICAL"
-                    })
-                
-                elif "indemnif" in clause_type.lower():
-                    redlines.append({
-                        "original_text": original_text,
-                        "suggested_text": COMPANY_POLICIES["indemnification"]["redline_text"],
-                        "justification": "Limits indemnification to mutual third-party claims only",
-                        "priority": "CRITICAL"
-                    })
-                
-                elif "terminat" in clause_type.lower():
-                    redlines.append({
-                        "original_text": original_text,
-                        "suggested_text": COMPANY_POLICIES["termination"]["redline_text"],
-                        "justification": "Ensures 30-day notice and payment for work-in-progress",
-                        "priority": "HIGH"
-                    })
-                
-                elif "ip" in clause_type.lower() or "intellectual property" in clause_type.lower():
-                    redlines.append({
-                        "original_text": original_text,
-                        "suggested_text": COMPANY_POLICIES["ip_ownership"]["redline_text"],
-                        "justification": "Protects company pre-existing IP and methodologies",
-                        "priority": "CRITICAL"
-                    })
-            
+                if not suggested_fix:
+                    continue
+                redlines.append({
+                    "original_text": violation.get("clause_content", ""),
+                    "suggested_text": suggested_fix,
+                    "justification": violation.get("issue", ""),
+                    "priority": violation.get("severity", "MEDIUM"),
+                    "clause_id": violation.get("clause_id", "unknown"),
+                    "clause_grounded": violation.get("clause_grounded", True),
+                    "rule_id": violation.get("rule_id"),
+                })
+
             logger.info(f"Generated {len(redlines)} redline recommendations")
             AuditLogger().log_event(
                 event_type=AuditEventType.AGENT_TOOL_CALL,

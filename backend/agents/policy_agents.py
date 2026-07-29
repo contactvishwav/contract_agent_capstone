@@ -140,123 +140,63 @@ class PolicyExtractionAgent(IAgent):
 
 
 class PolicyComplianceAgent(IAgent):
-    """Extends existing policy compliance for dynamic policy loading."""
-    
+    """
+    Policy compliance checking for the standalone /api/policies/compliance/
+    check route. Delegates rule resolution and evaluation to the same
+    engine the main analysis pipeline uses (policy_rule_resolver.
+    get_applicable_rules + PolicyEvaluationService in
+    backend/agents/intelligence_tools.py's PolicyCheckerTool) rather than
+    maintaining a second, independent evaluator - this used to be its own
+    3-term keyword matcher (even more primitive than the main pipeline's
+    former 6-category dict), explicitly marked "can be enhanced with LLM"
+    in its own comment. Now there is one evaluation path, not two.
+    """
+
     def execute(self, context: AgentContext) -> AgentResult:
-        """Check contract compliance against stored policies."""
+        """Check contract compliance against stored (or default) policies."""
         try:
+            from backend.agents.policy_rule_resolver import get_applicable_rules
+            from backend.agents.policy_evaluation_service import PolicyEvaluationService
+            from backend.agents.llm_extraction_service import get_default_llm
+
             tenant_id = context.input_data['tenant_id']
             contract_clauses = context.input_data['clauses']
             contract_type = context.input_data.get('contract_type', 'general')
-            
-            # Load policies from database
-            policies = self._load_tenant_policies(tenant_id, contract_type)
-            
-            # Check compliance using existing patterns
+
+            applicable_rules = get_applicable_rules(tenant_id, contract_type)
+            evaluation_service = PolicyEvaluationService(get_default_llm())
+
             violations = []
             for clause in contract_clauses:
-                clause_violations = self._check_clause_compliance(clause, policies)
-                violations.extend(clause_violations)
-            
+                clause_type = clause.get('type', clause.get('clause_type', 'general'))
+                clause_content = clause.get('content', '')
+                for v in evaluation_service.evaluate_clause(clause_type, clause_content, applicable_rules):
+                    violations.append(PolicyViolation(
+                        policy_rule_id=v['rule_id'],
+                        clause_content=clause_content,
+                        violation_type='policy_violation',
+                        severity=v['severity'],
+                        message=v['issue'],
+                        recommendation=v['suggested_fix'],
+                        confidence=v['confidence'],
+                    ))
+
             return AgentResult(
                 status='success',
                 data={
                     'violations_found': len(violations),
                     'violations': [v.__dict__ for v in violations],
-                    'policies_checked': len(policies)
+                    'policies_checked': len(applicable_rules)
                 },
                 confidence=0.9
             )
-            
+
         except Exception as e:
             return AgentResult(
                 status='error',
                 data={'error': str(e)},
                 confidence=0.0
             )
-    
-    def _load_tenant_policies(self, tenant_id: str, contract_type: str = None) -> List[PolicyRule]:
-        """Load policies from Neo4j using existing patterns."""
-        query = """
-        MATCH (p:PolicyDocument {tenant_id: $tenant_id})-[:HAS_RULE]->(r:PolicyRule)
-        WHERE $contract_type IN r.applies_to OR 'general' IN r.applies_to
-        RETURN r.id as id, r.rule_text as rule_text, r.rule_type as rule_type,
-               r.applies_to as applies_to, r.severity as severity,
-               r.section_reference as section_reference
-        """
-        
-        result = graph.query(query, {
-            'tenant_id': tenant_id,
-            'contract_type': contract_type or 'general'
-        })
-        
-        policies = []
-        for record in result:
-            policy = PolicyRule(
-                id=record['id'],
-                rule_text=record['rule_text'],
-                rule_type=record['rule_type'],
-                applies_to=record['applies_to'],
-                severity=record['severity'],
-                section_reference=record['section_reference']
-            )
-            policies.append(policy)
-        
-        return policies
-    
-    def _check_clause_compliance(self, clause: Dict[str, Any], policies: List[PolicyRule]) -> List[PolicyViolation]:
-        """Check single clause against policies."""
-        violations = []
-        clause_content = clause.get('content', '').lower()
-        clause_type = clause.get('type', 'general')
-        
-        for policy in policies:
-            if clause_type not in policy.applies_to and 'general' not in policy.applies_to:
-                continue
-            
-            violation = self._evaluate_policy_rule(clause, policy)
-            if violation:
-                violations.append(violation)
-        
-        return violations
-    
-    def _evaluate_policy_rule(self, clause: Dict[str, Any], policy: PolicyRule) -> PolicyViolation:
-        """Evaluate clause against specific policy rule."""
-        clause_content = clause.get('content', '').lower()
-        rule_text = policy.rule_text.lower()
-        
-        # Simple rule evaluation logic (can be enhanced with LLM)
-        if policy.rule_type == 'prohibited':
-            # Check for prohibited terms
-            prohibited_terms = ['unlimited liability', 'immediate termination', 'no notice']
-            for term in prohibited_terms:
-                if term in clause_content and term in rule_text:
-                    return PolicyViolation(
-                        policy_rule_id=policy.id,
-                        clause_content=clause.get('content', ''),
-                        violation_type='prohibited_term',
-                        severity=policy.severity,
-                        message=f"Clause contains prohibited term: {term}",
-                        recommendation=f"Remove or modify '{term}' to comply with policy",
-                        confidence=0.8
-                    )
-        
-        elif policy.rule_type == 'mandatory':
-            # Check for missing mandatory terms
-            mandatory_terms = ['liability cap', 'notice period', 'governing law']
-            for term in mandatory_terms:
-                if term in rule_text and term not in clause_content:
-                    return PolicyViolation(
-                        policy_rule_id=policy.id,
-                        clause_content=clause.get('content', ''),
-                        violation_type='missing_mandatory',
-                        severity=policy.severity,
-                        message=f"Clause missing mandatory term: {term}",
-                        recommendation=f"Add '{term}' to comply with policy",
-                        confidence=0.7
-                    )
-        
-        return None
-    
+
     def get_capabilities(self) -> List[str]:
         return ['policy_compliance', 'violation_detection', 'risk_assessment']

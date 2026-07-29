@@ -8,6 +8,7 @@ class IntelligenceState(TypedDict):
     contract_text: str
     contract_id: Optional[str]
     tenant_id: Optional[str]
+    contract_type: Optional[str]
     
     # Processing results (structured data, not strings)
     extracted_clauses: List[dict]
