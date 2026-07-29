@@ -61,6 +61,7 @@ from backend.agents.llm_extraction_service import LLMExtractionService, CUADClau
 
 BENCHMARK_CSV = os.path.join(os.path.dirname(__file__), "extraction_benchmark.csv")
 CORPUS_JSON = os.path.join(os.path.dirname(__file__), "cuad_contract_texts.json")
+RISK_CATEGORIES_JSON = os.path.join(os.path.dirname(__file__), "risk_category_ground_truth.json")
 BENCHMARK_DIR = os.path.dirname(__file__)
 
 
@@ -86,6 +87,18 @@ COLUMN_TO_TYPE = {
     "Expiration Date-Answer": CUADClauseType.EXPIRATION_DATE,
 }
 DATE_COLUMNS = {"Agreement Date-Answer", "Effective Date-Answer", "Expiration Date-Answer"}
+
+# The other 36 CUAD categories (risk-relevant: Cap On Liability, Non-Compete,
+# Termination For Convenience, Ip Ownership Assignment, etc.) - ground truth
+# sourced by prepare_risk_category_ground_truth.py into
+# risk_category_ground_truth.json, keyed by category name == CUADClauseType
+# value (verified 1:1 against the dataset's own question categories). None
+# of these are date-valued, so they're always scored via text_match, never
+# the date-parsing path.
+_METADATA_COLUMNS_COVERED = {"Document Name", "Parties", "Agreement Date", "Effective Date", "Expiration Date"}
+RISK_CATEGORY_TYPES = {
+    ct.value: ct for ct in CUADClauseType if ct.value not in _METADATA_COLUMNS_COVERED
+}
 
 DATE_FORMATS = [
     "%m/%d/%y", "%m/%d/%Y",
@@ -324,11 +337,19 @@ def load_benchmark_rows():
 
 def load_checkpoint(path: str):
     """
-    Return {filename: {"filename": ..., "results": ...}} for contracts already
-    evaluated in a prior (possibly interrupted) run, so a run can resume
-    across multiple invocations - e.g. across days, if a free-tier daily
-    quota is exhausted mid-run - without re-spending API calls on contracts
-    already scored.
+    Return {filename: {"filename": ..., "results": ..., "extracted": [...]}}
+    for contracts already evaluated in a prior (possibly interrupted) run,
+    so a run can resume across multiple invocations - e.g. across days, if a
+    free-tier daily quota is exhausted mid-run - without re-spending API
+    calls on contracts already scored.
+
+    "extracted" (added alongside "results") holds the raw predicted clauses
+    for ALL 41 types, not just whichever ones were scored at checkpoint time -
+    so if a later run adds a new scoring dimension (e.g. the risk-relevant
+    categories), already-checkpointed contracts can be RE-scored against it
+    for free, without a new LLM call. Older checkpoint files predating this
+    field simply won't have it - callers fall back to whatever "results" was
+    already scored for those entries.
     """
     done = {}
     if os.path.exists(path):
@@ -441,8 +462,12 @@ def _first_parsed_date(texts):
     return None
 
 
-def evaluate_contract(column_gold: dict, predicted_by_type: dict) -> dict:
-    """Score one contract's 5 columns; returns {column: {gold, predicted, outcome}}."""
+def evaluate_contract(column_gold: dict, predicted_by_type: dict, risk_gold: dict = None) -> dict:
+    """
+    Score one contract's 5 metadata columns plus (if risk_gold is given) the
+    36 risk-relevant categories; returns {column_or_category: {gold,
+    predicted, outcome}}.
+    """
     # Anchors for resolving relative Expiration Date phrasing - derived from
     # the model's OWN predictions for this contract, never from ground
     # truth, so scoring doesn't leak gold data into the resolution step.
@@ -483,6 +508,26 @@ def evaluate_contract(column_gold: dict, predicted_by_type: dict) -> dict:
             outcome = "TN"
 
         results[column] = {"gold": gold_values, "predicted": preds, "outcome": outcome}
+
+    for category, clause_type in RISK_CATEGORY_TYPES.items():
+        gold_values = (risk_gold or {}).get(category, [])
+        gold_present = len(gold_values) > 0
+        preds = predicted_by_type.get(clause_type, [])
+        pred_present = len(preds) > 0
+
+        matched = gold_present and pred_present and any(text_match(p, g) for p in preds for g in gold_values)
+
+        if gold_present and matched:
+            outcome = "TP"
+        elif gold_present and not matched:
+            outcome = "FN"
+        elif pred_present and not gold_present:
+            outcome = "FP"
+        else:
+            outcome = "TN"
+
+        results[category] = {"gold": gold_values, "predicted": preds, "outcome": outcome}
+
     return results
 
 
@@ -501,6 +546,16 @@ def main(limit=None, model=None, sample=None, seed=42, fresh=False, run_name=Non
         sys.exit(1)
     service = LLMExtractionService(llm)
     print(f"Using model: {model}" + (f"  (run: {run_name})" if run_name else ""))
+
+    risk_ground_truth = {}
+    if os.path.exists(RISK_CATEGORIES_JSON):
+        with open(RISK_CATEGORIES_JSON, encoding="utf-8") as f:
+            risk_ground_truth = json.load(f)
+        print(f"Scoring {len(RISK_CATEGORY_TYPES)} risk-relevant categories in addition to the 5 metadata fields "
+              f"({RISK_CATEGORIES_JSON}).")
+    else:
+        print(f"NOTE: {RISK_CATEGORIES_JSON} not found - scoring only the 5 metadata fields. "
+              f"Run prepare_risk_category_ground_truth.py to add the 36 risk-relevant categories.")
 
     ckpt_path = checkpoint_path(run_name)
     res_path = results_path(run_name)
@@ -524,7 +579,8 @@ def main(limit=None, model=None, sample=None, seed=42, fresh=False, run_name=Non
         )]
         rows = rng.sample(available, min(sample, len(available)))
 
-    counts = {t: {"tp": 0, "fp": 0, "fn": 0} for t in COLUMN_TO_TYPE.values()}
+    all_scored_types = {**COLUMN_TO_TYPE, **RISK_CATEGORY_TYPES}
+    counts = {t: {"tp": 0, "fp": 0, "fn": 0} for t in all_scored_types.values()}
     skipped_no_text = []
     per_contract = []
     evaluated = 0
@@ -534,13 +590,29 @@ def main(limit=None, model=None, sample=None, seed=42, fresh=False, run_name=Non
 
     for row in rows:
         filename = row["Filename"]
+        title = filename[:-4] if filename.lower().endswith(".pdf") else filename
 
         if filename in checkpoint:
             entry = checkpoint[filename]
-            per_contract.append(entry)
             evaluated += 1
-            for column, clause_type in COLUMN_TO_TYPE.items():
-                outcome = entry["results"][column]["outcome"]
+
+            if "extracted" in entry and risk_ground_truth:
+                # Raw predictions were cached - re-score against the full
+                # current category set (including risk categories that may
+                # not have existed when this contract was first checkpointed)
+                # without spending a new LLM call.
+                predicted_by_type = defaultdict(list)
+                for e in entry["extracted"]:
+                    predicted_by_type[CUADClauseType(e["clause_type"])].append(e["extracted_text"])
+                column_gold = {column: parse_ground_truth_list(row.get(column, "")) for column in COLUMN_TO_TYPE}
+                entry = {**entry, "results": evaluate_contract(column_gold, predicted_by_type, risk_ground_truth.get(title, {}))}
+
+            per_contract.append(entry)
+            for column_or_category, clause_type in all_scored_types.items():
+                column_result = entry["results"].get(column_or_category)
+                if not column_result:
+                    continue  # older checkpoint entry never scored this category - not a call worth spending
+                outcome = column_result["outcome"]
                 if outcome in ("TP", "FP", "FN"):
                     counts[clause_type][outcome.lower()] += 1
             continue
@@ -552,7 +624,6 @@ def main(limit=None, model=None, sample=None, seed=42, fresh=False, run_name=Non
         if stop_new_attempts or (limit is not None and new_this_run >= limit):
             continue
 
-        title = filename[:-4] if filename.lower().endswith(".pdf") else filename
         text = corpus.get(title)
         if not text:
             skipped_no_text.append(filename)
@@ -576,18 +647,25 @@ def main(limit=None, model=None, sample=None, seed=42, fresh=False, run_name=Non
             predicted_by_type[e.clause_type].append(e.extracted_text)
 
         column_gold = {column: parse_ground_truth_list(row.get(column, "")) for column in COLUMN_TO_TYPE}
-        results = evaluate_contract(column_gold, predicted_by_type)
+        results = evaluate_contract(column_gold, predicted_by_type, risk_ground_truth.get(title, {}))
 
-        for column, clause_type in COLUMN_TO_TYPE.items():
-            outcome = results[column]["outcome"]
+        for column_or_category, clause_type in all_scored_types.items():
+            outcome = results[column_or_category]["outcome"]
             if outcome in ("TP", "FP", "FN"):
                 counts[clause_type][outcome.lower()] += 1
 
-        entry = {"filename": filename, "results": results}
+        # Store raw predictions (all 41 types), not just the scored subset -
+        # so a future new scoring dimension can re-score this contract for
+        # free instead of spending another LLM call on it.
+        entry = {
+            "filename": filename,
+            "results": results,
+            "extracted": [{"clause_type": e.clause_type.value, "extracted_text": e.extracted_text} for e in extracted],
+        }
         append_checkpoint(ckpt_path, entry)
         per_contract.append(entry)
         print(f"[new #{new_this_run}, total {evaluated}/{len(rows)}] {filename}: "
-              + ", ".join(f"{c}={r['outcome']}" for c, r in results.items()))
+              + ", ".join(f"{c}={r['outcome']}" for c, r in results.items() if c in COLUMN_TO_TYPE))
 
     report = {}
     for clause_type, c in counts.items():
