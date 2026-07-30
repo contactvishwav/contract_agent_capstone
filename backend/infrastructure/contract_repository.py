@@ -1,4 +1,6 @@
 from backend.domain.entities import IContractRepository
+from backend.governance.pii_engine import PIIEngine
+from backend.infrastructure.encryption import field_encryptor
 from backend.shared.utils.contract_search_tool import graph, embedding
 from backend.shared.utils.utils import parse_date_to_iso
 from typing import Dict, Any
@@ -27,14 +29,15 @@ class Neo4jContractRepository(IContractRepository):
                    c.summary as summary,
                    c.contract_scope as contract_scope,
                    c.full_text as full_text,
+                   c.contains_pii as contains_pii,
                    c.effective_date as effective_date,
                    c.end_date as end_date,
                    c.total_amount as total_amount,
                    collect({name: p.name, role: r.role}) as parties
             """
-            
+
             result = self.graph.query(query, {"contract_id": contract_id, "tenant_id": tenant_id})
-            
+
             if result:
                 contract_data = result[0]
                 return {
@@ -42,7 +45,8 @@ class Neo4jContractRepository(IContractRepository):
                     "contract_type": contract_data["contract_type"],
                     "summary": contract_data["summary"] or "",
                     "contract_scope": contract_data["contract_scope"] or "",
-                    "full_text": contract_data["full_text"] or "",
+                    "full_text": field_encryptor.decrypt(contract_data["full_text"] or ""),
+                    "contains_pii": bool(contract_data["contains_pii"]),
                     "effective_date": str(contract_data["effective_date"]) if contract_data["effective_date"] else None,
                     "end_date": str(contract_data["end_date"]) if contract_data["end_date"] else None,
                     "total_amount": contract_data["total_amount"],
@@ -73,14 +77,25 @@ class Neo4jContractRepository(IContractRepository):
             # Generate embedding for the contract summary
             summary_text = contract_data.get("summary", "")
             contract_embedding = []
-            
+
             if summary_text:
                 try:
                     contract_embedding = self.embedding_service.embed_query(summary_text)
                     logger.info(f"Generated embedding with {len(contract_embedding)} dimensions")
                 except Exception as e:
                     logger.warning(f"Failed to generate embedding: {e}")
-            
+
+            # PII redact-before-store (P3 item 21): the raw uploaded PDF
+            # remains the fidelity/audit copy of the original text; this
+            # persisted full_text is the redacted version, matching the
+            # chat path's existing redact-not-block posture for output.
+            raw_full_text = contract_data.get("full_text", "")
+            contains_pii = bool(PIIEngine.detect(raw_full_text))
+            redacted_full_text = PIIEngine.redact(raw_full_text)
+            encrypted_full_text = field_encryptor.encrypt(redacted_full_text)
+            if contains_pii:
+                logger.warning(f"PII detected and redacted in contract full_text before storage: {contract_id}")
+
             contract_query = """
             CREATE (c:Contract {
                 file_id: $file_id,
@@ -89,6 +104,7 @@ class Neo4jContractRepository(IContractRepository):
                 contract_type: $contract_type,
                 contract_scope: $contract_scope,
                 full_text: $full_text,
+                contains_pii: $contains_pii,
                 effective_date: CASE WHEN $effective_date IS NOT NULL THEN date($effective_date) ELSE NULL END,
                 end_date: CASE WHEN $end_date IS NOT NULL THEN date($end_date) ELSE NULL END,
                 total_amount: $total_amount,
@@ -99,14 +115,15 @@ class Neo4jContractRepository(IContractRepository):
             })
             RETURN c.file_id as contract_id
             """
-            
+
             contract_params = {
                 "file_id": contract_id,
                 "tenant_id": tenant_id,
                 "summary": contract_data.get("summary", ""),
                 "contract_type": contract_data.get("contract_type", "Unknown"),
                 "contract_scope": ", ".join(contract_data.get("key_terms", [])),
-                "full_text": contract_data.get("full_text", ""),
+                "full_text": encrypted_full_text,
+                "contains_pii": contains_pii,
                 "effective_date": parse_date_to_iso(contract_data.get("effective_date")),
                 "end_date": parse_date_to_iso(contract_data.get("end_date")),
                 "total_amount": contract_data.get("total_amount"),

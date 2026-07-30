@@ -28,6 +28,7 @@ dependencies = [
     "mcp>=0.1.0",
     "fastmcp>=0.1.0",
     "nest_asyncio>=1.6.0",
+    "cryptography>=49.0.0",
 ]
 
 [tool.ruff]

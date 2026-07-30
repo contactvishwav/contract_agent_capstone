@@ -4,11 +4,12 @@ Chain of Responsibility + Strategy Pattern for document validation
 """
 
 import logging
+from collections import defaultdict
 from typing import Dict, Any, List, Optional
 from abc import ABC, abstractmethod
 from enum import Enum
-import re
 
+from backend.governance.pii_engine import PIIEngine
 from backend.shared.utils.logger import get_logger
 logger = get_logger(__name__)
 
@@ -217,29 +218,38 @@ class ContractStructureValidator(IValidator):
         return results
 
 class SecurityValidator(IValidator):
-    """Validate security concerns in content"""
-    
+    """
+    Validate security concerns in content. Reuses PIIEngine (backend/
+    governance/pii_engine.py) - the same detection logic the chat path's
+    PIIValidator/OutputGuard already use - as the single source of truth
+    for what counts as PII, rather than maintaining a second, independently
+    reimplemented pattern set here.
+    """
+
     def validate(self, data: Dict[str, Any]) -> List[ValidationResult]:
         results = []
         content = data.get("full_text", "")
-        
-        # Check for potential PII patterns
-        pii_patterns = {
-            "ssn": r'\b\d{3}-\d{2}-\d{4}\b',
-            "credit_card": r'\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b',
-            "email": r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
-        }
-        
-        for pii_type, pattern in pii_patterns.items():
-            matches = re.findall(pattern, content)
-            if matches:
-                results.append(ValidationResult(
-                    is_valid=True,
-                    severity=ValidationSeverity.WARNING,
-                    message=f"Potential {pii_type.upper()} detected in content",
-                    details={"pii_type": pii_type, "count": len(matches)}
-                ))
-        
+
+        matches = PIIEngine.detect(content)
+        counts_by_type = defaultdict(int)
+        for pii_type, _ in matches:
+            counts_by_type[pii_type] += 1
+
+        for pii_type, count in counts_by_type.items():
+            results.append(ValidationResult(
+                # is_valid=False (not True) so a PII hit is actually visible
+                # to ContentValidationService's has_warnings/has_errors
+                # aggregation - previously this was always True regardless
+                # of what was found, making every PII hit silently invisible
+                # to any caller. WARNING (not ERROR) so it's surfaced, not
+                # blocking - redaction happens at the storage layer instead
+                # (see Neo4jContractRepository.store_contract).
+                is_valid=False,
+                severity=ValidationSeverity.WARNING,
+                message=f"Potential {pii_type} detected in content",
+                details={"pii_type": pii_type, "count": count}
+            ))
+
         if not results:
             results.append(ValidationResult(
                 is_valid=True,
@@ -247,7 +257,7 @@ class SecurityValidator(IValidator):
                 message="Security validation passed",
                 details={}
             ))
-        
+
         return results
 
 class ContentValidationService:

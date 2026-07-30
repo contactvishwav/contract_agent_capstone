@@ -2,6 +2,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Depends, 
 from backend.governance.rbac import Permission, requires_permission
 from backend.application.services.enhanced_document_processing_service import EnhancedDocumentServiceFactory
 from backend.domain.entities import DocumentProcessingRequest
+from backend.infrastructure.content_validator import ContentValidationService
 from backend.llm_manager import LLMManager
 import os
 import uuid
@@ -98,6 +99,15 @@ async def upload_pdf_enhanced(
             text_extractor = TextExtractionService()
             full_text = text_extractor.extract_with_fallback(temp_path)
             logger.info(f"Text extraction completed. Length: {len(full_text)} characters")
+
+            # Content/PII validation (P3 item 21) - this endpoint previously
+            # had none at all, unlike /api/documents/upload. Non-blocking:
+            # actual PII redaction happens at the storage layer regardless
+            # (see Neo4jContractRepository.store_contract); this surfaces a
+            # warning for visibility/audit rather than rejecting the upload.
+            content_validation = ContentValidationService().validate({"full_text": full_text})
+            if content_validation["has_warnings"]:
+                logger.warning(f"Content validation warnings for {file.filename}: {content_validation['summary']}")
         except Exception as extract_error:
             logger.error(f"Text extraction failed: {extract_error}")
             raise
@@ -177,17 +187,18 @@ async def upload_pdf_enhanced(
         logger.error(f"Error: {e}")
         import traceback
         logger.error(f"Full traceback: {traceback.format_exc()}")
-        
-        # Cleanup temp file if it exists
+        raise HTTPException(status_code=500, detail=f"Enhanced processing failed: {str(e)}")
+    finally:
+        # Cleanup temp file unconditionally (P3 item 21) - previously this
+        # only ran in the except branch above, so the raw uploaded PDF
+        # (containing full unredacted contract text) was left on disk
+        # indefinitely on every successful upload.
         if 'temp_path' in locals() and temp_path and os.path.exists(temp_path):
             try:
                 os.remove(temp_path)
                 logger.info(f"Cleaned up temp file: {temp_path}")
             except Exception as cleanup_error:
                 logger.error(f"Failed to cleanup temp file: {cleanup_error}")
-                
-        raise HTTPException(status_code=500, detail=f"Enhanced processing failed: {str(e)}")
-    finally:
         logger.info(f"=== ENHANCED UPLOAD END: {file.filename if file else 'unknown'} ===")
 
 @router.get("/embedding-status/{contract_id}")

@@ -5,6 +5,8 @@ Clause Repository with Order Preservation and CUAD Classification Storage
 from typing import List, Dict, Any
 import logging
 
+from backend.governance.pii_engine import PIIEngine
+from backend.infrastructure.encryption import field_encryptor
 from backend.shared.utils.logger import get_logger
 logger = get_logger(__name__)
 
@@ -59,11 +61,16 @@ class ClauseRepository:
         CREATE (s)-[:CONTAINS_CLAUSE {order: $order}]->(cl)
         RETURN cl.clause_id as clause_id
         """
-        
+
+        # Redact-then-encrypt before persistence, matching
+        # Neo4jContractRepository.store_contract's treatment of full_text.
+        redacted_content = PIIEngine.redact(clause["content"])
+        encrypted_content = field_encryptor.encrypt(redacted_content)
+
         self.repository.graph.query(query, {
             "section_id": clause["section_id"],
             "clause_id": clause["clause_id"],
-            "content": clause["content"],
+            "content": encrypted_content,
             "clause_type": clause["clause_type"],
             "order": clause["order"],
             "start_position": clause.get("start_position", 0),
@@ -120,8 +127,11 @@ class ClauseRepository:
         """
         
         result = self.repository.graph.query(query, {"section_id": section_id})
-        return [dict(row) for row in result]
-    
+        rows = [dict(row) for row in result]
+        for row in rows:
+            row["content"] = field_encryptor.decrypt(row.get("content") or "")
+        return rows
+
     def get_clause_count(self, section_id: str) -> int:
         """Get total clause count for section"""
         query = """

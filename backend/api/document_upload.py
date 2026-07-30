@@ -214,6 +214,13 @@ async def upload_pdf(
                         error_details=json.dumps(content_validation)
                     )
                     logger.warning(f"Content validation issues: {content_validation['summary']}")
+                elif content_validation["has_warnings"]:
+                    # Now that SecurityValidator's PII hits actually surface
+                    # as warnings (P3 item 21), this is where a PII-in-
+                    # content warning becomes visible - non-blocking, since
+                    # actual redaction happens at the storage layer
+                    # regardless (Neo4jContractRepository.store_contract).
+                    logger.warning(f"Content validation warnings: {content_validation['summary']}")
                 else:
                     logger.info(f"Content validation passed: {len(full_text)} characters")
                 
@@ -390,17 +397,22 @@ async def upload_pdf(
             logger.error(f"Error type: {type(e).__name__}")
             import traceback
             logger.error(f"Full traceback: {traceback.format_exc()}")
-            
-            # Cleanup temp file if it exists
+            raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
+        finally:
+            # Cleanup temp file unconditionally (P3 item 21) - previously
+            # only ran here on the exception path. The enable_enhanced=True
+            # branch (DocumentProcessorFactory) never cleans up its own
+            # file_path, so the raw uploaded PDF was left on disk
+            # indefinitely on every successful enhanced-processing upload.
+            # (The non-enhanced branch already cleans up internally via
+            # DocumentProcessingService._cleanup_file - this is a no-op
+            # there since the file no longer exists by this point.)
             if 'temp_path' in locals() and temp_path and os.path.exists(temp_path):
                 try:
                     os.remove(temp_path)
                     logger.info(f"Cleaned up temp file: {temp_path}")
                 except Exception as cleanup_error:
                     logger.error(f"Failed to cleanup temp file: {cleanup_error}")
-                    
-            raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
-        finally:
             logger.info(f"=== UPLOAD END: {file.filename if file else 'unknown'} ===")
 
 @router.post("/upload-stream", dependencies=[Depends(requires_permission(Permission.UPLOAD))])
