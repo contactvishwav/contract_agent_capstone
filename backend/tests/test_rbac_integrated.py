@@ -1,7 +1,23 @@
+"""
+Regression fix (live-infrastructure audit): this file previously did no
+mocking at all - `from backend.main import app` transitively constructs a
+real Neo4jGraph() (backend/shared/utils/contract_search_tool.py:54) and a
+real Redis connection attempt (backend/shared/cache/redis_cache.py) with
+zero patching. It only worked because pytest's alphabetical collection
+order left an earlier test file's Neo4jGraph mock cached in sys.modules by
+the time this file's tests ran - run it alone and it would attempt a real
+Neo4j connection.
+"""
+
 import unittest
+from unittest.mock import patch
 from fastapi.testclient import TestClient
-from backend.main import app
-from backend.governance.rbac import UserRole, Permission
+
+with patch("langchain_neo4j.Neo4jGraph") as _MockNeo4jGraph, \
+     patch("backend.shared.utils.gemini_embedding_service.embedding"):
+    _MockNeo4jGraph.return_value.query.return_value = []
+    from backend.main import app
+    from backend.governance.rbac import UserRole, Permission
 
 class TestRBACIntegrated(unittest.TestCase):
     def setUp(self):
