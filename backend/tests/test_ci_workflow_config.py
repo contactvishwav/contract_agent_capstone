@@ -68,6 +68,19 @@ class CIWorkflowConfigTests(unittest.TestCase):
             "test job must either run a real Neo4j service or set dummy NEO4J_* env vars",
         )
 
+    def test_test_job_excludes_the_known_broken_async_smoke_scripts(self):
+        # test_ai_patterns.py/test_policy_system.py are pre-existing smoke
+        # scripts (every function `async def`, zero assert statements, no
+        # working async-test setup) that pytest has always rejected at
+        # collection - excluded rather than "fixed" via asyncio_mode=auto,
+        # since that would trade a deterministic failure for a live-API-
+        # dependent one (both call real Agent classes with no LLM mocking).
+        # A regression here would make the test job permanently red again.
+        test_job = self.workflow["jobs"]["test"]
+        run_commands = " ".join(s.get("run", "") for s in test_job["steps"])
+        self.assertIn("--ignore=tests/test_ai_patterns.py", run_commands)
+        self.assertIn("--ignore=tests/test_policy_system.py", run_commands)
+
     def test_has_a_lint_job_running_ruff(self):
         jobs = self.workflow["jobs"]
         self.assertIn("lint", jobs)
