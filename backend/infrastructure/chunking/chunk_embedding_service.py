@@ -5,6 +5,8 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 
+from backend.governance.pii_engine import PIIEngine
+from backend.infrastructure.encryption import field_encryptor
 from backend.shared.utils.gemini_embedding_service import GeminiEmbeddingService
 from backend.shared.utils.contract_search_tool import graph
 from backend.shared.utils.vector_index_config import CHUNK_EMBEDDING_INDEX, VECTOR_SEARCH_OVERFETCH
@@ -164,11 +166,15 @@ class ChunkEmbeddingService:
                 })
                 CREATE (d)-[:HAS_CHUNK]->(c)
                 """
-                
+
+                # Redact-then-encrypt before persistence (P3 item 21).
+                redacted_content = PIIEngine.redact(chunk_embedding.chunk_content)
+                encrypted_content = field_encryptor.encrypt(redacted_content)
+
                 self.graph.query(query, {
                     'document_id': chunk_embedding.document_id,
                     'chunk_id': chunk_embedding.chunk_id,
-                    'content': chunk_embedding.chunk_content,
+                    'content': encrypted_content,
                     'chunk_type': chunk_embedding.chunk_metadata.get('chunk_type', 'unknown'),
                     'start_position': chunk_embedding.chunk_metadata.get('start_position', 0),
                     'end_position': chunk_embedding.chunk_metadata.get('end_position', 0),
@@ -236,7 +242,7 @@ class ChunkEmbeddingService:
             for record in result:
                 similar_chunks.append({
                     'chunk_id': record['chunk_id'],
-                    'content': record['content'],
+                    'content': field_encryptor.decrypt(record['content'] or ""),
                     'chunk_type': record['chunk_type'],
                     'start_position': record['start_position'],
                     'end_position': record['end_position'],
@@ -269,7 +275,7 @@ class ChunkEmbeddingService:
                     chunk_id=record['chunk_id'],
                     document_id=document_id,
                     embedding=record['embedding'],
-                    chunk_content=record['content'],
+                    chunk_content=field_encryptor.decrypt(record['content'] or ""),
                     chunk_metadata={
                         'chunk_type': record['chunk_type'],
                         'start_position': record['start_position'],

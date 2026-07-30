@@ -1,7 +1,10 @@
 """Enhanced storage service for chunked documents with embedding integration."""
 
 from typing import List, Dict, Any, Optional
+from backend.governance.pii_engine import PIIEngine
+from backend.infrastructure.encryption import field_encryptor
 from backend.shared.utils.contract_search_tool import graph
+from backend.shared.utils.vector_index_config import CHUNK_TEXT_SEARCH_CANDIDATE_LIMIT
 from backend.infrastructure.chunking.chunk_embedding_service import ChunkEmbeddingService
 import logging
 
@@ -69,11 +72,17 @@ class ChunkingStorageService:
                 """
                 
                 chunk_id = f"{document_id}_chunk_{chunk.get('chunk_index', 0)}"
-                
+
+                # Redact-then-encrypt before persistence, matching
+                # Neo4jContractRepository.store_contract's treatment of
+                # Contract.full_text (P3 item 21 follow-up).
+                redacted_content = PIIEngine.redact(chunk['content'])
+                encrypted_content = field_encryptor.encrypt(redacted_content)
+
                 self.graph.query(chunk_query, {
                     'document_id': document_id,
                     'chunk_id': chunk_id,
-                    'content': chunk['content'],
+                    'content': encrypted_content,
                     'start_position': chunk.get('start_position', 0),
                     'end_position': chunk.get('end_position', 0),
                     'chunk_type': chunk.get('chunk_type', 'unknown'),
@@ -138,7 +147,7 @@ class ChunkingStorageService:
             for record in result:
                 chunk_data = {
                     'chunk_id': record['chunk_id'],
-                    'content': record['content'],
+                    'content': field_encryptor.decrypt(record['content'] or ""),
                     'start_position': record['start_position'],
                     'end_position': record['end_position'],
                     'chunk_type': record['chunk_type'],
@@ -184,93 +193,106 @@ class ChunkingStorageService:
             # Final fallback to basic text search
             return await self._basic_text_search(query, document_id, limit)
     
-    async def _text_search_chunks(self, query: str, document_id: Optional[str] = None, 
+    async def _text_search_chunks(self, query: str, document_id: Optional[str] = None,
                                 limit: int = 10) -> List[Dict[str, Any]]:
-        """Text-based chunk search fallback."""
+        """
+        Text-based chunk search fallback. Chunk.content is encrypted at rest
+        (P3 item 21 follow-up), so Cypher can no longer CONTAINS-match it
+        directly - a bounded, quality-ordered candidate set is fetched
+        instead, decrypted, and matched in Python.
+        """
         try:
             if document_id:
                 cypher_query = """
                 MATCH (d:Document {id: $document_id})-[:HAS_CHUNK]->(c:Chunk)
-                WHERE c.content CONTAINS $query
                 RETURN c.id as chunk_id, c.content as content,
                        c.chunk_type as chunk_type, c.quality_score as quality_score,
                        c.start_position as start_position, c.end_position as end_position
                 ORDER BY c.quality_score DESC, c.chunk_index ASC
-                LIMIT $limit
+                LIMIT $candidate_limit
                 """
-                params = {'document_id': document_id, 'query': query, 'limit': limit}
+                params = {'document_id': document_id, 'candidate_limit': CHUNK_TEXT_SEARCH_CANDIDATE_LIMIT}
             else:
                 cypher_query = """
                 MATCH (c:Chunk)
-                WHERE c.content CONTAINS $query
                 RETURN c.id as chunk_id, c.content as content,
                        c.chunk_type as chunk_type, c.quality_score as quality_score,
                        c.start_position as start_position, c.end_position as end_position
                 ORDER BY c.quality_score DESC
-                LIMIT $limit
+                LIMIT $candidate_limit
                 """
-                params = {'query': query, 'limit': limit}
-            
+                params = {'candidate_limit': CHUNK_TEXT_SEARCH_CANDIDATE_LIMIT}
+
             result = self.graph.query(cypher_query, params)
-            
+
             chunks = []
             for record in result:
+                decrypted_content = field_encryptor.decrypt(record['content'] or "")
+                if query not in decrypted_content:
+                    continue
                 chunks.append({
                     'chunk_id': record['chunk_id'],
-                    'content': record['content'],
+                    'content': decrypted_content,
                     'chunk_type': record['chunk_type'],
                     'quality_score': record['quality_score'],
                     'start_position': record['start_position'],
                     'end_position': record['end_position'],
                     'similarity_score': 1.0  # Default for text search
                 })
-            
+                if len(chunks) >= limit:
+                    break
+
             return chunks
-                
+
         except Exception as e:
             logger.error(f"Failed to perform text search: {e}")
             return []
-    
-    async def _basic_text_search(self, query: str, document_id: Optional[str] = None, 
+
+    async def _basic_text_search(self, query: str, document_id: Optional[str] = None,
                                limit: int = 10) -> List[Dict[str, Any]]:
-        """Basic text search as final fallback."""
+        """Basic text search as final fallback - same encrypted-content
+        treatment as _text_search_chunks, case-insensitive match."""
         try:
             if document_id:
                 cypher_query = """
                 MATCH (d:Document {id: $document_id})-[:HAS_CHUNK]->(c:Chunk)
-                WHERE toLower(c.content) CONTAINS toLower($query)
                 RETURN c.id as chunk_id, c.content as content,
                        c.chunk_type as chunk_type, c.quality_score as quality_score
                 ORDER BY c.quality_score DESC
-                LIMIT $limit
+                LIMIT $candidate_limit
                 """
-                params = {'document_id': document_id, 'query': query, 'limit': limit}
+                params = {'document_id': document_id, 'candidate_limit': CHUNK_TEXT_SEARCH_CANDIDATE_LIMIT}
             else:
                 cypher_query = """
                 MATCH (c:Chunk)
-                WHERE toLower(c.content) CONTAINS toLower($query)
                 RETURN c.id as chunk_id, c.content as content,
                        c.chunk_type as chunk_type, c.quality_score as quality_score
                 ORDER BY c.quality_score DESC
-                LIMIT $limit
+                LIMIT $candidate_limit
                 """
-                params = {'query': query, 'limit': limit}
-            
+                params = {'candidate_limit': CHUNK_TEXT_SEARCH_CANDIDATE_LIMIT}
+
             result = self.graph.query(cypher_query, params)
-            
+
+            query_lower = query.lower()
             chunks = []
             for record in result:
+                decrypted_content = field_encryptor.decrypt(record['content'] or "")
+                if query_lower not in decrypted_content.lower():
+                    continue
                 chunks.append({
                     'chunk_id': record['chunk_id'],
-                    'content': record['content'],
+                    'content': decrypted_content,
                     'chunk_type': record['chunk_type'],
                     'quality_score': record['quality_score'],
                     'similarity_score': 0.8,  # Default for text search
                     'search_type': 'basic_text'
                 })
-            
+                if len(chunks) >= limit:
+                    break
+
             return chunks
-                
+
         except Exception as e:
             logger.error(f"Basic text search failed: {e}")
             return []
@@ -359,7 +381,12 @@ class ChunkStorageService(ChunkingStorageService):
                 content = safe_get(chunk, 'content', '')
                 chunk_type = safe_get(chunk, 'chunk_type', safe_get(chunk, 'type', 'sentence'))
                 confidence = safe_get(chunk, 'confidence', safe_get(chunk, 'quality_score', 1.0))
-                
+
+                # Redact-then-encrypt before persistence, matching the rest
+                # of this file's Chunk.content treatment (P3 item 21).
+                redacted_content = PIIEngine.redact(content)
+                encrypted_content = field_encryptor.encrypt(redacted_content)
+
                 self.graph.query("""
                     MERGE (dc:DocumentChunk {chunk_id: $chunk_id})
                     SET dc.contract_id = $contract_id,
@@ -382,7 +409,7 @@ class ChunkStorageService(ChunkingStorageService):
                     "order": i,
                     "size": len(content),
                     "type": chunk_type,
-                    "content": content,
+                    "content": encrypted_content,
                     "confidence": float(confidence)
                 })
                 

@@ -5,9 +5,10 @@ from langchain_core.tools import BaseTool
 from backend.shared.utils.gemini_embedding_service import embedding
 from langchain_neo4j import Neo4jGraph
 from pydantic import BaseModel, Field
+from backend.infrastructure.encryption import field_encryptor
 from backend.shared.utils.vector_index_config import (
     CONTRACT_EMBEDDING_INDEX, SECTION_EMBEDDING_INDEX, CLAUSE_EMBEDDING_INDEX,
-    CHUNK_EMBEDDING_INDEX, VECTOR_SEARCH_OVERFETCH,
+    CHUNK_EMBEDDING_INDEX, VECTOR_SEARCH_OVERFETCH, CHUNK_TEXT_SEARCH_CANDIDATE_LIMIT,
 )
 from backend.shared.utils.logger import get_logger
 
@@ -281,100 +282,136 @@ def _search_relationships(embeddings, tenant_id, summary_search, parties, filter
     output = graph.query(cypher_statement, params)
     return [convert_neo4j_date(el) for el in output]
 
+def _chunk_snippet(content: str) -> str:
+    """Equivalent to the old substring(content, 0, 200) + '...' Cypher
+    snippet - now computed in Python since Neo4j can no longer operate on
+    Chunk.content/DocumentChunk.content directly (encrypted at rest, P3
+    item 21 follow-up)."""
+    return content[:200] + '...'
+
+
 def _search_chunks(embeddings, tenant_id, summary_search, filters, params):
-    """Enhanced search at chunk level with semantic capabilities and tenant isolation"""
-    
+    """
+    Enhanced search at chunk level with semantic capabilities and tenant
+    isolation. Chunk.content/DocumentChunk.content are encrypted at rest,
+    so neither the CONTAINS-based fallback match nor the preview-snippet
+    slice can happen in Cypher anymore - both now operate on content
+    decrypted in Python after a bounded, tenant-scoped fetch.
+    """
+
     # Try semantic search first if available
     if summary_search:
         try:
             # Query the vector index for candidates (instead of scoring
             # every Chunk node), then enforce tenant scoping afterward - a
             # vector index query has no way to pre-filter by tenant_id
-            # before ranking globally.
+            # before ranking globally. This is the primary search path,
+            # not the fallback - snippet generation is now Python-side
+            # here too, so a plaintext preview is never derived from
+            # ciphertext.
             semantic_query = f"""
             CALL db.index.vector.queryNodes('{CHUNK_EMBEDDING_INDEX}', $k, $chunk_embedding)
             YIELD node AS c, score AS chunk_score
             MATCH (d:Document)-[:HAS_CHUNK]->(c)
             WHERE d.tenant_id = $tenant_id AND chunk_score > 0.7
-            RETURN {{
-                total_count: count(c),
-                chunks: collect({{
-                    document_id: d.id,
-                    chunk_type: c.chunk_type,
-                    content: substring(c.content, 0, 200) + '...',
-                    chunk_index: c.chunk_index,
-                    quality_score: c.quality_score,
-                    similarity_score: chunk_score,
-                    search_type: 'semantic'
-                }})[..10]
-            }} AS result
+            RETURN d.id AS document_id, c.chunk_type AS chunk_type, c.content AS content,
+                   c.chunk_index AS chunk_index, c.quality_score AS quality_score,
+                   chunk_score AS similarity_score
             ORDER BY chunk_score DESC
             """
 
             chunk_embedding = embeddings.embed_query(summary_search)
             semantic_params = {"chunk_embedding": chunk_embedding, "tenant_id": tenant_id, "k": VECTOR_SEARCH_OVERFETCH}
-            
-            semantic_output = graph.query(semantic_query, semantic_params)
-            if semantic_output and semantic_output[0]['result']['total_count'] > 0:
-                return [convert_neo4j_date(el) for el in semantic_output]
+
+            rows = graph.query(semantic_query, semantic_params)
+            if rows:
+                chunks = [
+                    {
+                        "document_id": r["document_id"],
+                        "chunk_type": r["chunk_type"],
+                        "content": _chunk_snippet(field_encryptor.decrypt(r["content"] or "")),
+                        "chunk_index": r["chunk_index"],
+                        "quality_score": r["quality_score"],
+                        "similarity_score": r["similarity_score"],
+                        "search_type": "semantic",
+                    }
+                    for r in rows[:10]
+                ]
+                result = {"total_count": len(rows), "chunks": chunks}
+                return [convert_neo4j_date({"result": result})]
         except Exception as e:
             logger.error(f"Semantic chunk search failed, falling back to text search: {e}")
-    
-    # Fallback to text search across both new and legacy chunks, enforcing tenant_id
-    cypher_statement = """
+
+    # Fallback to text search across both new and legacy chunks, enforcing
+    # tenant_id. A bounded, tenant-scoped candidate set is fetched (can't
+    # CONTAINS-match encrypted content in Cypher), decrypted, and matched
+    # in Python - the same known, standard bounded-approximation tradeoff
+    # as VECTOR_SEARCH_OVERFETCH: total_count reflects matches within the
+    # candidate set, not a true unbounded count, in exchange for never
+    # pulling an entire tenant's chunk corpus into memory on a cache-miss
+    # search.
+    search_text = summary_search
+    output = []
+
+    new_chunk_query = """
     MATCH (d:Document)-[:HAS_CHUNK]->(c:Chunk)
-    WHERE c.content CONTAINS $search_text AND d.tenant_id = $tenant_id
-    RETURN {
-        total_count: count(c),
-        chunks: collect({
-            document_id: d.id,
-            chunk_type: c.chunk_type,
-            content: substring(c.content, 0, 200) + '...',
-            chunk_index: c.chunk_index,
-            quality_score: c.quality_score,
-            search_type: 'text_new'
-        })[..5]
-    } AS result
-    
-    UNION
-    
-    MATCH (c:Contract)-[:CONTAINS_CHUNK]->(dc:DocumentChunk)
-    WHERE dc.content CONTAINS $search_text AND c.tenant_id = $tenant_id
-    RETURN {
-        total_count: count(dc),
-        chunks: collect({
-            contract_id: c.file_id,
-            chunk_type: dc.chunk_type,
-            content: substring(dc.content, 0, 200) + '...',
-            chunk_order: dc.chunk_order,
-            confidence: dc.confidence,
-            search_type: 'text_legacy'
-        })[..5]
-    } AS result
+    WHERE d.tenant_id = $tenant_id
+    RETURN d.id AS document_id, c.chunk_type AS chunk_type, c.content AS content,
+           c.chunk_index AS chunk_index, c.quality_score AS quality_score
+    ORDER BY c.chunk_index DESC
+    LIMIT $candidate_limit
     """
-    
-    if summary_search:
-        params["search_text"] = summary_search
-    else:
-        # If no search text, return recent chunks for current tenant
-        cypher_statement = """
-        MATCH (d:Document)-[:HAS_CHUNK]->(c:Chunk)
-        WHERE d.tenant_id = $tenant_id
-        RETURN {
-            total_count: count(c),
-            chunks: collect({
-                document_id: d.id,
-                chunk_type: c.chunk_type,
-                content: substring(c.content, 0, 200) + '...',
-                chunk_index: c.chunk_index,
-                quality_score: c.quality_score,
-                search_type: 'recent'
-            })[..10]
-        } AS result
-        ORDER BY c.chunk_index DESC
+    new_chunk_rows = graph.query(
+        new_chunk_query, {"tenant_id": tenant_id, "candidate_limit": CHUNK_TEXT_SEARCH_CANDIDATE_LIMIT}
+    )
+
+    new_chunks_limit = 5 if search_text else 10
+    new_chunks = []
+    for r in new_chunk_rows:
+        decrypted = field_encryptor.decrypt(r["content"] or "")
+        if search_text and search_text not in decrypted:
+            continue
+        new_chunks.append({
+            "document_id": r["document_id"],
+            "chunk_type": r["chunk_type"],
+            "content": _chunk_snippet(decrypted),
+            "chunk_index": r["chunk_index"],
+            "quality_score": r["quality_score"],
+            "search_type": "text_new" if search_text else "recent",
+        })
+        if len(new_chunks) >= new_chunks_limit:
+            break
+    output.append({"result": {"total_count": len(new_chunks), "chunks": new_chunks}})
+
+    if search_text:
+        legacy_chunk_query = """
+        MATCH (c:Contract)-[:CONTAINS_CHUNK]->(dc:DocumentChunk)
+        WHERE c.tenant_id = $tenant_id
+        RETURN c.file_id AS contract_id, dc.chunk_type AS chunk_type, dc.content AS content,
+               dc.chunk_order AS chunk_order, dc.confidence AS confidence
+        LIMIT $candidate_limit
         """
-    
-    output = graph.query(cypher_statement, params)
+        legacy_chunk_rows = graph.query(
+            legacy_chunk_query, {"tenant_id": tenant_id, "candidate_limit": CHUNK_TEXT_SEARCH_CANDIDATE_LIMIT}
+        )
+
+        legacy_chunks = []
+        for r in legacy_chunk_rows:
+            decrypted = field_encryptor.decrypt(r["content"] or "")
+            if search_text not in decrypted:
+                continue
+            legacy_chunks.append({
+                "contract_id": r["contract_id"],
+                "chunk_type": r["chunk_type"],
+                "content": _chunk_snippet(decrypted),
+                "chunk_order": r["chunk_order"],
+                "confidence": r["confidence"],
+                "search_type": "text_legacy",
+            })
+            if len(legacy_chunks) >= 5:
+                break
+        output.append({"result": {"total_count": len(legacy_chunks), "chunks": legacy_chunks}})
+
     return [convert_neo4j_date(el) for el in output]
 
 def _search_all_levels(embeddings, tenant_id, summary_search, clause_types, section_types, filters, params):

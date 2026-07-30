@@ -43,3 +43,14 @@ POLICY_DOCUMENT_EMBEDDING_INDEX = "policy_document_embedding_vector_index"
 # count for a given label ever regularly exceeds this, the fix is a bigger
 # over-fetch, not per-tenant indexes.
 VECTOR_SEARCH_OVERFETCH = 200
+
+# Chunk.content/DocumentChunk.content are encrypted at rest (P3 item 21
+# follow-up), so a CONTAINS-based fallback text search (used only when the
+# vector index above returns zero results) can no longer filter in Cypher -
+# ciphertext never substring-matches a plaintext search term. Instead, a
+# tenant-scoped candidate set bounded by this limit is fetched, decrypted,
+# and matched in Python. This is a fallback path, not the primary search
+# (which uses the vector index), so a bound here trades a small amount of
+# fallback recall for not pulling an entire tenant's chunk corpus into
+# memory on every semantic-search miss.
+CHUNK_TEXT_SEARCH_CANDIDATE_LIMIT = 500
