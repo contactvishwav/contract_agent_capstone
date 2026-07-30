@@ -12,6 +12,7 @@ import traceback
 import json
 
 from backend.shared.utils.logger import get_logger
+from backend.shared.utils.utils import serialize_neo4j_datetime
 logger = get_logger(__name__)
 
 class ErrorCategory(Enum):
@@ -168,8 +169,17 @@ class ErrorTracker:
             """
             
             result = self.repository.graph.query(query, {"limit": limit})
-            return [dict(row) for row in result]
-            
+            errors = []
+            for row in result:
+                error = dict(row)
+                # e.timestamp is stored via datetime($timestamp) (see
+                # track_error above), so it comes back as a raw neo4j.time.
+                # DateTime object here - same leak class as AuditLogger.
+                # get_audit_trail, reachable via GET /api/audit/errors/recent.
+                error["timestamp"] = serialize_neo4j_datetime(error.get("timestamp"))
+                errors.append(error)
+            return errors
+
         except Exception as e:
             logger.error(f"Failed to get recent errors: {e}")
             return []

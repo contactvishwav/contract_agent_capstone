@@ -14,6 +14,27 @@ def convert_neo4j_date(value):
     return value
 
 
+def serialize_neo4j_datetime(value):
+    """
+    Convert a neo4j.time.DateTime/Date/Time value (e.g. from a Cypher
+    datetime()/date() property) to a proper ISO 8601 string via
+    .iso_format(), before it reaches an API response - without this,
+    FastAPI's default JSON encoder doesn't know how to serialize these
+    types and falls back to dumping their __dict__ internals (nonsensical
+    fields like "_Date__day": -2) instead of a readable value or a clean
+    error.
+
+    Unlike convert_neo4j_date (date-only, YYYY-M-D, no zero-padding -
+    unsuitable for full datetimes, which need the time-of-day preserved),
+    this always uses .iso_format() and is safe to call unconditionally on
+    any query-result field: values that aren't a Neo4j temporal type
+    (already a plain string, None, etc.) are returned unchanged.
+    """
+    if hasattr(value, "iso_format"):
+        return value.iso_format()
+    return value
+
+
 def parse_date_to_iso(date_str: str) -> Optional[str]:
     """
     Parse various date formats into ISO 8601 (YYYY-MM-DD) for Neo4j compatibility.

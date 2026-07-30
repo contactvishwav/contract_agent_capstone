@@ -11,6 +11,7 @@ from functools import wraps
 import json
 
 from backend.shared.utils.logger import get_logger
+from backend.shared.utils.utils import serialize_neo4j_datetime
 logger = get_logger(__name__)
 
 class AuditEventType(Enum):
@@ -117,9 +118,7 @@ class AuditLogger:
                 # like "_Date__day": -2) instead of raising or producing a
                 # readable value. Convert to a real ISO 8601 string here, at
                 # the source, rather than downstream in every consumer.
-                timestamp = event.get("timestamp")
-                if hasattr(timestamp, "iso_format"):
-                    event["timestamp"] = timestamp.iso_format()
+                event["timestamp"] = serialize_neo4j_datetime(event.get("timestamp"))
                 events.append(event)
 
             return events

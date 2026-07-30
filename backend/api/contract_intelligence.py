@@ -9,6 +9,7 @@ import logging
 from typing import Optional
 
 from backend.shared.utils.logger import get_logger
+from backend.shared.utils.utils import serialize_neo4j_datetime
 logger = get_logger(__name__)
 
 # Create router
@@ -154,7 +155,11 @@ async def get_intelligence_status(
             "clauses_count": contract_data.get("clauses_count", 0),
             "redlines_count": contract_data.get("redlines_count", 0),
             "processing_time": contract_data.get("processing_time"),
-            "last_updated": contract_data.get("updated")
+            # c.intelligence_updated is set via datetime() (contract_
+            # intelligence_service.py's _store_intelligence_results), so it
+            # comes back as a raw neo4j.time.DateTime object here - same
+            # leak class as AuditLogger.get_audit_trail.
+            "last_updated": serialize_neo4j_datetime(contract_data.get("updated"))
         }
         
     except HTTPException:
