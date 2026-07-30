@@ -23,16 +23,27 @@ class LLMManager:
             self.agents["gpt-4o"] = get_agent(ChatOpenAI(model="gpt-4o", temperature=0))
 
         if os.getenv("GOOGLE_API_KEY"):
+            # request_timeout/max_retries: without these, this client relies
+            # entirely on the SDK's own defaults (no timeout at all, 6
+            # retries with growing exponential backoff on a 429) - see
+            # backend/agents/llm_extraction_service.py's get_default_llm for
+            # the same fix and its full rationale (found via live testing
+            # and an overnight benchmark run that hung for ~3 hours on a
+            # stalled connection).
             self.agents["gemini-2.5-pro"] = get_agent(
                 ChatGoogleGenerativeAI(
                     model="gemini-2.5-pro",
                     temperature=0,
+                    request_timeout=120,
+                    max_retries=1,
                 )
             )
             self.agents["gemini-2.5-flash"] = get_agent(
                 ChatGoogleGenerativeAI(
                     model="gemini-2.5-flash",
                     temperature=0,
+                    request_timeout=120,
+                    max_retries=1,
                 )
             )
 

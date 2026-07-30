@@ -2,15 +2,15 @@
   "model": "gemini-2.5-flash",
   "run_name": "risk-categories-2.5-flash",
   "sample_size": 90,
-  "contracts_evaluated": 4,
-  "newly_evaluated_this_run": 2,
-  "contracts_remaining": 86,
+  "contracts_evaluated": 5,
+  "newly_evaluated_this_run": 1,
+  "contracts_remaining": 85,
   "contracts_skipped_no_text": 0,
   "skipped_filenames": [],
   "stopped_early": true,
   "per_type": {
     "Document Name": {
-      "tp": 4,
+      "tp": 5,
       "fp": 0,
       "fn": 0,
       "precision": 1.0,
@@ -18,7 +18,7 @@
       "f1": 1.0
     },
     "Parties": {
-      "tp": 4,
+      "tp": 5,
       "fp": 0,
       "fn": 0,
       "precision": 1.0,
@@ -26,36 +26,36 @@
       "f1": 1.0
     },
     "Agreement Date": {
-      "tp": 3,
+      "tp": 4,
       "fp": 0,
       "fn": 1,
       "precision": 1.0,
-      "recall": 0.75,
-      "f1": 0.857
+      "recall": 0.8,
+      "f1": 0.889
     },
     "Effective Date": {
-      "tp": 2,
+      "tp": 3,
       "fp": 0,
       "fn": 2,
       "precision": 1.0,
-      "recall": 0.5,
-      "f1": 0.667
+      "recall": 0.6,
+      "f1": 0.75
     },
     "Expiration Date": {
       "tp": 1,
       "fp": 0,
-      "fn": 3,
+      "fn": 4,
       "precision": 1.0,
-      "recall": 0.25,
-      "f1": 0.4
+      "recall": 0.2,
+      "f1": 0.333
     },
     "Renewal Term": {
-      "tp": 0,
+      "tp": 1,
       "fp": 0,
       "fn": 0,
-      "precision": 0.0,
-      "recall": 0.0,
-      "f1": 0.0
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
     },
     "Notice Period To Terminate Renewal": {
       "tp": 0,
@@ -66,7 +66,7 @@
       "f1": 0.0
     },
     "Governing Law": {
-      "tp": 4,
+      "tp": 5,
       "fp": 0,
       "fn": 0,
       "precision": 1.0,
@@ -90,12 +90,12 @@
       "f1": 0.857
     },
     "Exclusivity": {
-      "tp": 1,
+      "tp": 2,
       "fp": 1,
       "fn": 2,
-      "precision": 0.5,
-      "recall": 0.333,
-      "f1": 0.4
+      "precision": 0.667,
+      "recall": 0.5,
+      "f1": 0.571
     },
     "No-Solicit Of Customers": {
       "tp": 0,
@@ -107,11 +107,11 @@
     },
     "Competitive Restriction Exception": {
       "tp": 3,
-      "fp": 0,
+      "fp": 1,
       "fn": 0,
-      "precision": 1.0,
+      "precision": 0.75,
       "recall": 1.0,
-      "f1": 1.0
+      "f1": 0.857
     },
     "No-Solicit Of Employees": {
       "tp": 0,
@@ -130,12 +130,12 @@
       "f1": 0.0
     },
     "Termination For Convenience": {
-      "tp": 2,
+      "tp": 3,
       "fp": 0,
       "fn": 1,
       "precision": 1.0,
-      "recall": 0.667,
-      "f1": 0.8
+      "recall": 0.75,
+      "f1": 0.857
     },
     "Rofr/Rofo/Rofn": {
       "tp": 1,
@@ -195,7 +195,7 @@
     },
     "Ip Ownership Assignment": {
       "tp": 0,
-      "fp": 1,
+      "fp": 2,
       "fn": 2,
       "precision": 0.0,
       "recall": 0.0,
@@ -210,12 +210,12 @@
       "f1": 0.0
     },
     "License Grant": {
-      "tp": 2,
+      "tp": 3,
       "fp": 1,
       "fn": 1,
-      "precision": 0.667,
-      "recall": 0.667,
-      "f1": 0.667
+      "precision": 0.75,
+      "recall": 0.75,
+      "f1": 0.75
     },
     "Non-Transferable License": {
       "tp": 1,
@@ -234,17 +234,17 @@
       "f1": 0.0
     },
     "Affiliate License-Licensee": {
-      "tp": 1,
+      "tp": 2,
       "fp": 1,
       "fn": 0,
-      "precision": 0.5,
+      "precision": 0.667,
       "recall": 1.0,
-      "f1": 0.667
+      "f1": 0.8
     },
     "Unlimited/All-You-Can-Eat-License": {
       "tp": 0,
       "fp": 0,
-      "fn": 0,
+      "fn": 1,
       "precision": 0.0,
       "recall": 0.0,
       "f1": 0.0
@@ -1934,6 +1934,349 @@
         {
           "clause_type": "Insurance",
           "extracted_text": "Not applicable."
+        }
+      ]
+    },
+    {
+      "filename": "XinhuaSportsEntertainmentLtd_20070221_F-1_EX-99.4_645553_EX-99.4_Content License Agreement.pdf",
+      "results": {
+        "Document Name": {
+          "gold": [
+            "CONTENT LICENSE AGREEMENT"
+          ],
+          "predicted": [
+            "CONTENT LICENSE AGREEMENT"
+          ],
+          "outcome": "TP"
+        },
+        "Parties": {
+          "gold": [
+            "XFN",
+            "XINHUA FINANCIAL NETWORK LIMITED",
+            "CHINA ECONOMIC INFORMATION SERVICE OF XINHUA NEWS AGENCY",
+            "CEIS"
+          ],
+          "predicted": [
+            "(1)  CHINA ECONOMIC INFORMATION SERVICE OF XINHUA NEWS AGENCY, the organisation      within the Xinhua News Agency that is responsible for news and information      operations and business, registered in the People's Republic of China with      offices at 57 Xuanwumen Xidajie, Beijing, the People's Republic of China (      \"CEIS\"); and\n\n(2)  XINHUA FINANCIAL NETWORK LIMITED, a company incorporated in Hong Kong whose      registered office is at Room 2003-4, Vicwood Plaza, 199 Des Voeux Road      Central, Hong Kong (\"XFN\"),\n\n     (collectively referred to as \"PARTIES\"; individually, a \"PARTY\")."
+          ],
+          "outcome": "TP"
+        },
+        "Agreement Date-Answer": {
+          "gold": [
+            "12/15/01"
+          ],
+          "predicted": [
+            "THIS AGREEMENT is made the 15th day of December 2001."
+          ],
+          "outcome": "TP"
+        },
+        "Effective Date-Answer": {
+          "gold": [
+            "5/18/00"
+          ],
+          "predicted": [
+            "EFFECTIVE DATE     means 18 May 2000;"
+          ],
+          "outcome": "TP"
+        },
+        "Expiration Date-Answer": {
+          "gold": [
+            "5/18/20"
+          ],
+          "predicted": [
+            "This Agreement shall take effect from the Effective Date and continue in      full force and effect for twenty (20) years thereafter, unless otherwise      terminated in accordance with Clause 8."
+          ],
+          "outcome": "FN"
+        },
+        "Renewal Term": {
+          "gold": [
+            "This Agreement may be renewed for an additional term of ten (10) years by      notice in writing given by XFN to CEIS at the expiry of the Term, for a      consideration to be mutually agreed."
+          ],
+          "predicted": [
+            "This Agreement may be renewed for an additional term of ten (10) years by      notice in writing given by XFN to CEIS at the expiry of the Term, for a      consideration to be mutually agreed."
+          ],
+          "outcome": "TP"
+        },
+        "Notice Period To Terminate Renewal": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Governing Law": {
+          "gold": [
+            "This Agreement is governed by and shall be construed in      accordance with the laws of Hong Kong"
+          ],
+          "predicted": [
+            "This Agreement is governed by and shall be construed in      accordance with the laws of Hong Kong"
+          ],
+          "outcome": "TP"
+        },
+        "Most Favored Nation": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Non-Compete": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Exclusivity": {
+          "gold": [
+            "During the Term, CEIS agrees not to appoint any other licensees for the      distribution of the Content in the People's Republic of China.",
+            "(a)  store or cache the Content in one or more host computers controlled           directly or indirectly by XFN or its Affiliates;\n\n     (b)  adapt, translate, modify, reproduce, copy, amend, revise or encode the           Content; and\n\n     (c)  publish, broadcast, distribute, re-distribute, transmit, display, make           available to the public or otherwise exploit the Content in any manner           by any device or in media now or hereafter known.",
+            "CEIS hereby grants XFN and its      Affiliates an exclusive license (free of all third-party liens, claims and      encumbrances) to, and to permit others to, during the Term in the      Territory:"
+          ],
+          "predicted": [
+            "Exclusive Rights in the Territory: CEIS hereby grants XFN and its      Affiliates an exclusive license (free of all third-party liens, claims and      encumbrances) to, and to permit others to, during the Term in the      Territory:"
+          ],
+          "outcome": "TP"
+        },
+        "No-Solicit Of Customers": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Competitive Restriction Exception": {
+          "gold": [],
+          "predicted": [
+            "XFN and/or its Affiliates are entitled to publish or distribute content of      any third party where such content is similar to or competitive with the      Content."
+          ],
+          "outcome": "FP"
+        },
+        "No-Solicit Of Employees": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Non-Disparagement": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Termination For Convenience": {
+          "gold": [
+            "XFN may terminate this Agreement by giving thirty (30) days written notice      to the CEIS."
+          ],
+          "predicted": [
+            "XFN may terminate this Agreement by giving thirty (30) days written notice      to the CEIS."
+          ],
+          "outcome": "TP"
+        },
+        "Rofr/Rofo/Rofn": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Change Of Control": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Anti-Assignment": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Revenue/Profit Sharing": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Price Restrictions": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Minimum Commitment": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Volume Restriction": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Ip Ownership Assignment": {
+          "gold": [],
+          "predicted": [
+            "All Intellectual Property Rights and other proprietary rights in any      translated, amended, revised or updated Content independently created by      XFN (\"AMENDED CONTENT\") shall automatically vest in XFN."
+          ],
+          "outcome": "FP"
+        },
+        "Joint Ip Ownership": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "License Grant": {
+          "gold": [
+            "media now or hereafter known.",
+            "(a)  store or cache the Content in one or more host computers controlled           directly or indirectly by XFN or its Affiliates;\n\n     (b)  adapt, translate, modify, reproduce, copy, amend, revise or encode the           Content; and\n\n     (c)  publish, broadcast, distribute, re-distribute, transmit, display, make           available to the public or otherwise exploit the Content in any manner           by any device or in media now or hereafter known.",
+            "CEIS hereby grants      XFN and its Affiliates a non-exclusive license (free of all third-party      liens, claims and encumbrances) to, and to permit others to, during the      Term in the People's Republic of China:\n\n     (a)  store or cache the Content in one or more host computers controlled           directly or indirectly by XFN or its Affiliates;\n\n     (b)  adapt, translate, modify, reproduce, copy, amend, revise or encode the           Content; and\n\n     (c)  publish, broadcast, distribute, re-distribute, transmit, display, make           available to the public or otherwise exploit the Content in any manner           by any device or in",
+            "CEIS hereby grants XFN and its      Affiliates an exclusive license (free of all third-party liens, claims and      encumbrances) to, and to permit others to, during the Term in the      Territory:"
+          ],
+          "predicted": [
+            "Exclusive Rights in the Territory: CEIS hereby grants XFN and its      Affiliates an exclusive license (free of all third-party liens, claims and      encumbrances) to, and to permit others to, during the Term in the      Territory:",
+            "Non-exclusive Rights in the People's Republic of China: CEIS hereby grants      XFN and its Affiliates a non-exclusive license (free of all third-party      liens, claims and encumbrances) to, and to permit others to, during the      Term in the People's Republic of China:",
+            "The Intellectual Property Rights to use \"Xinhua\" as the first name of XFN      and its affiliates world-wide."
+          ],
+          "outcome": "TP"
+        },
+        "Non-Transferable License": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Affiliate License-Licensor": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Affiliate License-Licensee": {
+          "gold": [
+            "media now or hereafter known.",
+            "(a)  store or cache the Content in one or more host computers controlled           directly or indirectly by XFN or its Affiliates;\n\n     (b)  adapt, translate, modify, reproduce, copy, amend, revise or encode the           Content; and\n\n     (c)  publish, broadcast, distribute, re-distribute, transmit, display, make           available to the public or otherwise exploit the Content in any manner           by any device or in media now or hereafter known.",
+            "CEIS hereby grants      XFN and its Affiliates a non-exclusive license (free of all third-party      liens, claims and encumbrances) to, and to permit others to, during the      Term in the People's Republic of China:\n\n     (a)  store or cache the Content in one or more host computers controlled           directly or indirectly by XFN or its Affiliates;\n\n     (b)  adapt, translate, modify, reproduce, copy, amend, revise or encode the           Content; and\n\n     (c)  publish, broadcast, distribute, re-distribute, transmit, display, make           available to the public or otherwise exploit the Content in any manner           by any device or in",
+            "CEIS hereby grants XFN and its      Affiliates an exclusive license (free of all third-party liens, claims and      encumbrances) to, and to permit others to, during the Term in the      Territory:"
+          ],
+          "predicted": [
+            "Exclusive Rights in the Territory: CEIS hereby grants XFN and its      Affiliates an exclusive license (free of all third-party liens, claims and      encumbrances) to, and to permit others to, during the Term in the      Territory:",
+            "Non-exclusive Rights in the People's Republic of China: CEIS hereby grants      XFN and its Affiliates a non-exclusive license (free of all third-party      liens, claims and encumbrances) to, and to permit others to, during the      Term in the People's Republic of China:"
+          ],
+          "outcome": "TP"
+        },
+        "Unlimited/All-You-Can-Eat-License": {
+          "gold": [
+            "media now or hereafter known.",
+            "(a)  store or cache the Content in one or more host computers controlled           directly or indirectly by XFN or its Affiliates;\n\n     (b)  adapt, translate, modify, reproduce, copy, amend, revise or encode the           Content; and\n\n     (c)  publish, broadcast, distribute, re-distribute, transmit, display, make           available to the public or otherwise exploit the Content in any manner           by any device or in media now or hereafter known.",
+            "CEIS hereby grants      XFN and its Affiliates a non-exclusive license (free of all third-party      liens, claims and encumbrances) to, and to permit others to, during the      Term in the People's Republic of China:\n\n     (a)  store or cache the Content in one or more host computers controlled           directly or indirectly by XFN or its Affiliates;\n\n     (b)  adapt, translate, modify, reproduce, copy, amend, revise or encode the           Content; and\n\n     (c)  publish, broadcast, distribute, re-distribute, transmit, display, make           available to the public or otherwise exploit the Content in any manner           by any device or in",
+            "CEIS hereby grants XFN and its      Affiliates an exclusive license (free of all third-party liens, claims and      encumbrances) to, and to permit others to, during the Term in the      Territory:"
+          ],
+          "predicted": [],
+          "outcome": "FN"
+        },
+        "Irrevocable Or Perpetual License": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Source Code Escrow": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Post-Termination Services": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Audit Rights": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Uncapped Liability": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Cap On Liability": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Liquidated Damages": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Warranty Duration": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Insurance": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Covenant Not To Sue": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        },
+        "Third Party Beneficiary": {
+          "gold": [],
+          "predicted": [],
+          "outcome": "TN"
+        }
+      },
+      "extracted": [
+        {
+          "clause_type": "Document Name",
+          "extracted_text": "CONTENT LICENSE AGREEMENT"
+        },
+        {
+          "clause_type": "Parties",
+          "extracted_text": "(1)  CHINA ECONOMIC INFORMATION SERVICE OF XINHUA NEWS AGENCY, the organisation      within the Xinhua News Agency that is responsible for news and information      operations and business, registered in the People's Republic of China with      offices at 57 Xuanwumen Xidajie, Beijing, the People's Republic of China (      \"CEIS\"); and\n\n(2)  XINHUA FINANCIAL NETWORK LIMITED, a company incorporated in Hong Kong whose      registered office is at Room 2003-4, Vicwood Plaza, 199 Des Voeux Road      Central, Hong Kong (\"XFN\"),\n\n     (collectively referred to as \"PARTIES\"; individually, a \"PARTY\")."
+        },
+        {
+          "clause_type": "Agreement Date",
+          "extracted_text": "THIS AGREEMENT is made the 15th day of December 2001."
+        },
+        {
+          "clause_type": "Effective Date",
+          "extracted_text": "EFFECTIVE DATE     means 18 May 2000;"
+        },
+        {
+          "clause_type": "Expiration Date",
+          "extracted_text": "This Agreement shall take effect from the Effective Date and continue in      full force and effect for twenty (20) years thereafter, unless otherwise      terminated in accordance with Clause 8."
+        },
+        {
+          "clause_type": "Renewal Term",
+          "extracted_text": "This Agreement may be renewed for an additional term of ten (10) years by      notice in writing given by XFN to CEIS at the expiry of the Term, for a      consideration to be mutually agreed."
+        },
+        {
+          "clause_type": "Governing Law",
+          "extracted_text": "This Agreement is governed by and shall be construed in      accordance with the laws of Hong Kong"
+        },
+        {
+          "clause_type": "Exclusivity",
+          "extracted_text": "Exclusive Rights in the Territory: CEIS hereby grants XFN and its      Affiliates an exclusive license (free of all third-party liens, claims and      encumbrances) to, and to permit others to, during the Term in the      Territory:"
+        },
+        {
+          "clause_type": "Competitive Restriction Exception",
+          "extracted_text": "XFN and/or its Affiliates are entitled to publish or distribute content of      any third party where such content is similar to or competitive with the      Content."
+        },
+        {
+          "clause_type": "Termination For Convenience",
+          "extracted_text": "XFN may terminate this Agreement by giving thirty (30) days written notice      to the CEIS."
+        },
+        {
+          "clause_type": "Ip Ownership Assignment",
+          "extracted_text": "All Intellectual Property Rights and other proprietary rights in any      translated, amended, revised or updated Content independently created by      XFN (\"AMENDED CONTENT\") shall automatically vest in XFN."
+        },
+        {
+          "clause_type": "License Grant",
+          "extracted_text": "Exclusive Rights in the Territory: CEIS hereby grants XFN and its      Affiliates an exclusive license (free of all third-party liens, claims and      encumbrances) to, and to permit others to, during the Term in the      Territory:"
+        },
+        {
+          "clause_type": "License Grant",
+          "extracted_text": "Non-exclusive Rights in the People's Republic of China: CEIS hereby grants      XFN and its Affiliates a non-exclusive license (free of all third-party      liens, claims and encumbrances) to, and to permit others to, during the      Term in the People's Republic of China:"
+        },
+        {
+          "clause_type": "License Grant",
+          "extracted_text": "The Intellectual Property Rights to use \"Xinhua\" as the first name of XFN      and its affiliates world-wide."
+        },
+        {
+          "clause_type": "Affiliate License-Licensee",
+          "extracted_text": "Exclusive Rights in the Territory: CEIS hereby grants XFN and its      Affiliates an exclusive license (free of all third-party liens, claims and      encumbrances) to, and to permit others to, during the Term in the      Territory:"
+        },
+        {
+          "clause_type": "Affiliate License-Licensee",
+          "extracted_text": "Non-exclusive Rights in the People's Republic of China: CEIS hereby grants      XFN and its Affiliates a non-exclusive license (free of all third-party      liens, claims and encumbrances) to, and to permit others to, during the      Term in the People's Republic of China:"
         }
       ]
     }

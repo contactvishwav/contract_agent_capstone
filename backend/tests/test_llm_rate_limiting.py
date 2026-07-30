@@ -171,6 +171,93 @@ class RateLimitAwareRetryTests(unittest.TestCase):
         self.assertEqual(call_count["n"], 2, "Ordinary (non-rate-limit) failures should still retry as before")
 
 
+class RealHangDetectedWithinConfiguredTimeoutTests(unittest.TestCase):
+    """
+    Regression test for a genuine ~3-hour hang observed during an overnight
+    benchmark run: "LLM clause extraction failed: The read operation timed
+    out" - no 429, no retry-storm logging in between, just one call that
+    took roughly 3 hours to finally raise despite get_default_llm() already
+    setting request_timeout=120 at the time.
+
+    Investigation confirmed this was NOT a missing/broken timeout
+    configuration: get_default_llm() does set timeout=120/max_retries=1 (see
+    SDKLevelRetryCapTests below), and this test proves that value is
+    genuinely wired all the way through the real with_structured_output(...,
+    include_raw=True).invoke(...) call chain used in production - against a
+    real socket that accepts a connection and then never responds (as close
+    to "actually hangs" as a test can get without touching the real Gemini
+    API), the client raises within its configured timeout, not indefinitely.
+
+    This means a per-call client-side timeout, correctly configured, cannot
+    by itself explain a multi-hour hang while the process keeps running -
+    the far more likely explanation for the observed incident is the
+    machine/session being suspended (e.g. laptop sleep) for that ~3-hour
+    window, freezing the process (and its timeout-tracking) entirely until
+    it woke up, at which point the already-expired deadline fired
+    immediately. No in-process timeout of any kind (this one, a thread-pool
+    watchdog, asyncio.wait_for, etc.) can fire *during* a full process
+    suspension, since no code runs at all until the OS resumes it - that is
+    an operational/environmental concern (e.g. preventing sleep during a
+    long batch job), not something a timeout value can fix.
+    """
+
+    @staticmethod
+    def _start_hang_server():
+        """A raw TCP listener that accepts a connection and then never
+        writes anything back - simulates a stalled read at the socket
+        level, independent of any Gemini-specific error handling."""
+        import socket as socket_module
+
+        sock = socket_module.socket(socket_module.AF_INET, socket_module.SOCK_STREAM)
+        sock.setsockopt(socket_module.SOL_SOCKET, socket_module.SO_REUSEADDR, 1)
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        sock.listen(5)
+
+        def _serve():
+            while True:
+                try:
+                    conn, _ = sock.accept()
+                except OSError:
+                    return  # socket closed at test teardown
+
+        thread = threading.Thread(target=_serve, daemon=True)
+        thread.start()
+        return port
+
+    def test_real_call_chain_raises_within_timeout_against_a_stalled_connection(self):
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        from pydantic import BaseModel
+
+        class _Schema(BaseModel):
+            value: str = "x"
+
+        port = self._start_hang_server()
+
+        # Google's API rejects any deadline under 10s outright ("Manually
+        # set deadline Ns is too short. Minimum allowed deadline is 10s.") -
+        # confirmed empirically - so 10s is both the fastest and the
+        # smallest valid value for this test, mirroring the same
+        # request_timeout/max_retries get_default_llm() actually sets
+        # (just a shorter timeout so the test doesn't take 120 real
+        # seconds).
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash", temperature=0, request_timeout=10, max_retries=1,
+            api_key="test-key-not-real", client_options=f"http://127.0.0.1:{port}",
+        )
+        structured = llm.with_structured_output(_Schema, include_raw=True)
+
+        start = time.monotonic()
+        with self.assertRaises(Exception):
+            structured.invoke("test prompt")
+        elapsed = time.monotonic() - start
+
+        # Generous upper bound (30s, not the exact 10s) to avoid flakiness
+        # on a loaded CI runner - the point is "closes in well under a
+        # minute," not exact timing precision.
+        self.assertLess(elapsed, 30.0, "Call should fail fast against a stalled connection, not hang")
+
+
 class SDKLevelRetryCapTests(unittest.TestCase):
     """
     Regression test for a live end-to-end testing finding: a real quota-

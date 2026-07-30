@@ -69,7 +69,10 @@ class DocumentProcessingService:
                 "gemini-1.5-pro": "gemini-1.5-pro"
             }
             actual_model = model_mapping.get(model_name, "gemini-2.5-flash")
-            return ChatGoogleGenerativeAI(model=actual_model, temperature=0)
+            # request_timeout/max_retries: see llm_extraction_service.py's
+            # get_default_llm - without these this client has no timeout at
+            # all and retries a 429 up to 6 times with growing backoff.
+            return ChatGoogleGenerativeAI(model=actual_model, temperature=0, request_timeout=120, max_retries=1)
         elif model_name == "sonnet-3.5":
             from langchain_anthropic import ChatAnthropic
             return ChatAnthropic(model="claude-3-5-sonnet-latest", temperature=0)
