@@ -51,3 +51,12 @@ dev = [
     "pyyaml>=6.0.2",
     "ruff>=0.16.0",
 ]
+
+[tool.pytest.ini_options]
+# Every test file imports via the absolute `backend.xxx` package path, which
+# requires the repo root (parent of this backend/ directory), not backend/
+# itself, on sys.path. Locally this worked by accident (pytest always ran
+# from the repo root in this session's own invocations), but CI runs pytest
+# with backend/ as the working directory - added here so it works
+# regardless of invocation directory.
+pythonpath = [".."]

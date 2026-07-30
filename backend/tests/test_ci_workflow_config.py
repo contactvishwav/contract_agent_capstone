@@ -147,5 +147,42 @@ class DevToolsAreLockedNotAdHocTests(unittest.TestCase):
             )
 
 
+class PytestCollectibleFromCIWorkingDirectoryTests(unittest.TestCase):
+    """
+    Regression guard for a real CI failure this workflow actually hit in
+    production: every test file imports via the absolute `backend.xxx`
+    package path, which requires the repo root (parent of backend/) on
+    sys.path - true by accident locally (this session always ran pytest
+    from the repo root), but ci.yml's test job sets
+    `working-directory: backend`, so `uv run pytest tests/ -q` there
+    collected with `ModuleNotFoundError: No module named 'backend'`.
+
+    Fixed via `[tool.pytest.ini_options] pythonpath = [".."]` in
+    pyproject.toml. This test actually shells out to `uv run pytest` from
+    backend/ (not `python -m pytest`, which has different sys.path
+    semantics - `-m` itself adds cwd to sys.path, masking this exact bug)
+    to reproduce the real CI invocation precisely, rather than only
+    asserting the ini key exists.
+    """
+
+    def test_pyproject_configures_pythonpath_to_the_repo_root(self):
+        with open(PYPROJECT_PATH, "rb") as f:
+            pyproject = tomllib.load(f)
+        pythonpath = pyproject.get("tool", {}).get("pytest", {}).get("ini_options", {}).get("pythonpath")
+        self.assertEqual(pythonpath, [".."])
+
+    def test_uv_run_pytest_collects_cleanly_from_the_backend_working_directory(self):
+        import subprocess
+        backend_dir = os.path.join(REPO_ROOT, "backend")
+        result = subprocess.run(
+            ["uv", "run", "pytest", "tests/test_audit_validation_error_tracking.py", "--collect-only", "-q"],
+            cwd=backend_dir, capture_output=True, text=True, timeout=60,
+        )
+        self.assertEqual(
+            result.returncode, 0,
+            f"pytest failed to collect from backend/ as CI invokes it:\n{result.stdout}\n{result.stderr}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
