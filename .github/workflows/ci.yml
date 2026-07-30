@@ -68,6 +68,8 @@ jobs:
         # against CI's fake GOOGLE_API_KEY - excluded here rather than
         # "fixed", matching how test_mcp_capabilities.py was excluded
         # earlier in this engagement before it was actually fixed.
+        # Tracked as punch-list item 22 in docs/ENTERPRISE_READINESS.md -
+        # a deliberate, tracked exclusion, not a silent gap.
         working-directory: backend
         run: uv run pytest tests/ -q --ignore=tests/test_ai_patterns.py --ignore=tests/test_policy_system.py
 
