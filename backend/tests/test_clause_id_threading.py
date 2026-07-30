@@ -13,6 +13,7 @@ point back to a stable clause reference on re-analysis.
 
 import json
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 with patch("langchain_neo4j.Neo4jGraph"), \
@@ -27,20 +28,32 @@ with patch("langchain_neo4j.Neo4jGraph"), \
 _audit_logger_patcher = patch("backend.agents.intelligence_tools.AuditLogger", return_value=MagicMock())
 _audit_logger_patcher.start()
 
+# Several tests below reuse the same TEXT constant with different fake LLM
+# responses - disable the P3-item-20 content-hash cache (keyed on text, not
+# on which fake happens to be configured) so one test can't receive another
+# test's cached result.
+_cache_disabled_patcher = patch("backend.shared.config.phase3_config.Phase3Config.CACHE_ENABLED", False)
+_cache_disabled_patcher.start()
+
 
 class FakeLLM:
     def __init__(self, clauses):
         self._clauses = clauses
 
-    def with_structured_output(self, schema):
+    def with_structured_output(self, schema, include_raw=True):
         return self
 
     def invoke(self, prompt):
         from backend.agents.llm_extraction_service import _LLMExtractionResponse, _LLMExtractedClause
-        return _LLMExtractionResponse(clauses=[
+        parsed = _LLMExtractionResponse(clauses=[
             _LLMExtractedClause(clause_type=t, extracted_text=text, confidence=0.9)
             for t, text in self._clauses
         ])
+        return {
+            "raw": SimpleNamespace(usage_metadata={"input_tokens": 20, "output_tokens": 5}),
+            "parsed": parsed,
+            "parsing_error": None,
+        }
 
 
 TEXT = "Payment is due Net 90 days. Governing law is California law."

@@ -70,13 +70,20 @@ def _run_phase2_phase3_schema():
     Phase2Phase3SchemaMigration().migrate_schema()
 
 
+def _run_vector_indexes():
+    from backend.migrations.vector_index_migration import VectorIndexMigration
+    VectorIndexMigration().migrate()
+
+
 # Ordered: the new Contract constraint first (safe to run anytime, no
 # dependencies), then the base schema pieces, then fix_enterprise_
 # relationships (depends on enterprise_schema's sample data existing
 # first), then the later embeddings/phase2-3 additions - matching the order
 # they were historically introduced (confirmed via git log: all 7 original
 # scripts landed in a single commit, so this ordering reflects logical
-# dependency, not commit history).
+# dependency, not commit history). Vector indexes run last since they only
+# need the node labels (Contract/Section/Clause/Chunk/PolicyDocument) to
+# exist, not any particular data in them.
 MIGRATIONS = [
     ("contract_constraints", _run_contract_constraints),
     ("section_schema", _run_section_schema),
@@ -86,6 +93,7 @@ MIGRATIONS = [
     ("fix_enterprise_relationships", _run_fix_enterprise_relationships),
     ("multi_level_embeddings", _run_multi_level_embeddings),
     ("phase2_phase3_schema", _run_phase2_phase3_schema),
+    ("vector_indexes", _run_vector_indexes),
 ]
 
 

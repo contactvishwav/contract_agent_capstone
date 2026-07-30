@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 
 from backend.shared.utils.gemini_embedding_service import GeminiEmbeddingService
 from backend.shared.utils.contract_search_tool import graph
+from backend.shared.utils.vector_index_config import CHUNK_EMBEDDING_INDEX, VECTOR_SEARCH_OVERFETCH
 
 
 @dataclass
@@ -191,11 +192,13 @@ class ChunkEmbeddingService:
             # Generate embedding for query
             query_embedding = await self.embedding_service.generate_embedding(query_text)
             
-            # Build Neo4j query
+            # Build Neo4j query - queries the vector index for candidates
+            # instead of scoring every Chunk node.
             if document_id:
-                cypher_query = """
-                MATCH (d:Document {id: $document_id})-[:HAS_CHUNK]->(c:Chunk)
-                WITH c, gds.similarity.cosine(c.embedding, $query_embedding) AS similarity
+                cypher_query = f"""
+                CALL db.index.vector.queryNodes('{CHUNK_EMBEDDING_INDEX}', $k, $query_embedding)
+                YIELD node AS c, score AS similarity
+                MATCH (d:Document {{id: $document_id}})-[:HAS_CHUNK]->(c)
                 WHERE similarity >= $threshold
                 RETURN c.id as chunk_id, c.content as content, c.chunk_type as chunk_type,
                        c.start_position as start_position, c.end_position as end_position,
@@ -207,12 +210,13 @@ class ChunkEmbeddingService:
                     'document_id': document_id,
                     'query_embedding': query_embedding,
                     'threshold': similarity_threshold,
-                    'limit': limit
+                    'limit': limit,
+                    'k': VECTOR_SEARCH_OVERFETCH,
                 }
             else:
-                cypher_query = """
-                MATCH (c:Chunk)
-                WITH c, gds.similarity.cosine(c.embedding, $query_embedding) AS similarity
+                cypher_query = f"""
+                CALL db.index.vector.queryNodes('{CHUNK_EMBEDDING_INDEX}', $limit, $query_embedding)
+                YIELD node AS c, score AS similarity
                 WHERE similarity >= $threshold
                 RETURN c.id as chunk_id, c.content as content, c.chunk_type as chunk_type,
                        c.start_position as start_position, c.end_position as end_position,

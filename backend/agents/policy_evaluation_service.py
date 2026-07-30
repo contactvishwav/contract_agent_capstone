@@ -11,15 +11,23 @@ trusted as a citation of a real rule on its own. This is what prevents a
 violation from citing a policy rule that doesn't exist.
 """
 
+import hashlib
 from typing import Any, Dict, List
 
 from pydantic import BaseModel, Field
 
 from backend.domain.policies.entities import PolicyRule
+from backend.shared.cache.redis_cache import cache
+from backend.shared.config.phase3_config import Phase3Config
+from backend.shared.monitoring.llm_usage_tracker import llm_usage_tracker
 from backend.shared.utils.llm_concurrency import llm_call_semaphore
 from backend.shared.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Bumped whenever _build_prompt's wording changes - see llm_extraction_
+# service.py's identical convention.
+PROMPT_VERSION = "v1"
 
 
 class _LLMPolicyViolation(BaseModel):
@@ -47,7 +55,10 @@ class PolicyEvaluationService:
 
     def __init__(self, llm=None):
         self.llm = llm
-        self._structured_llm = llm.with_structured_output(_LLMPolicyEvaluationResponse) if llm else None
+        self._model_name = getattr(llm, "model", None) or "unknown"
+        self._structured_llm = (
+            llm.with_structured_output(_LLMPolicyEvaluationResponse, include_raw=True) if llm else None
+        )
 
     def evaluate_clause(
         self, clause_type: str, clause_text: str, rules: List[PolicyRule]
@@ -59,19 +70,42 @@ class PolicyEvaluationService:
         no rules to check against - there is nothing to evaluate, so
         nothing should be fabricated. This is the mechanical anti-
         hallucination guarantee for the "no applicable policy" case.
+
+        Results are cached on a hash of (prompt version, model, clause
+        type/text, applicable rules) - see LLMExtractionService.
+        extract_clauses's identical rationale.
         """
         if not rules or not self._structured_llm or not clause_text or not clause_text.strip():
             return []
 
         valid_rule_ids = {r.id for r in rules}
+        cache_key = self._cache_key(clause_type, clause_text, rules)
+        if Phase3Config.CACHE_ENABLED:
+            cached = cache.get(cache_key)
+            if cached is not None:
+                llm_usage_tracker.record_call("policy_evaluation", self._model_name, cache_hit=True)
+                return cached
+
         prompt = self._build_prompt(clause_type, clause_text, rules)
 
         try:
             with llm_call_semaphore:
-                response = self._structured_llm.invoke(prompt)
+                raw_result = self._structured_llm.invoke(prompt)
         except Exception as e:
             logger.error(f"Policy evaluation failed: {e}")
             return []
+
+        response = raw_result.get("parsed")
+        if response is None:
+            logger.error(
+                f"Policy evaluation returned no parsed result (parsing_error={raw_result.get('parsing_error')})"
+            )
+            return []
+
+        usage_metadata = getattr(raw_result.get("raw"), "usage_metadata", None)
+        llm_usage_tracker.record_call(
+            "policy_evaluation", self._model_name, cache_hit=False, usage_metadata=usage_metadata
+        )
 
         violations = []
         for v in response.violations:
@@ -89,7 +123,16 @@ class PolicyEvaluationService:
                 "suggested_fix": v.suggested_fix,
                 "confidence": v.confidence,
             })
+
+        if Phase3Config.CACHE_ENABLED:
+            cache.set(cache_key, violations, ttl=Phase3Config.get_cache_ttl("policy_evaluation"))
+
         return violations
+
+    def _cache_key(self, clause_type: str, clause_text: str, rules: List[PolicyRule]) -> str:
+        rules_part = "|".join(sorted(f"{r.id}:{r.severity}:{r.rule_text}" for r in rules))
+        raw = f"policy_evaluation:{PROMPT_VERSION}:{self._model_name}:{clause_type}:{clause_text}:{rules_part}"
+        return hashlib.sha256(raw.encode()).hexdigest()
 
     def _build_prompt(self, clause_type: str, clause_text: str, rules: List[PolicyRule]) -> str:
         rule_list = "\n".join(

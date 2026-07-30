@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # A real Neo4j instance is provided rather than relying purely on
+    # per-test mocking: several modules construct a module-level Neo4jGraph
+    # singleton at import time (e.g. backend/shared/utils/contract_search_tool.py),
+    # which requires a reachable Neo4j to even import successfully. Today
+    # that import is intercepted by another test file's mock as a side
+    # effect of pytest's collection order - fragile if files are renamed,
+    # reordered, or run as a subset. A real service container removes that
+    # dependency on collection-order luck entirely.
+    services:
+      neo4j:
+        image: neo4j:5.26-community
+        env:
+          NEO4J_AUTH: neo4j/ci_test_password
+        ports:
+          - 7687:7687
+          - 7474:7474
+        options: >-
+          --health-cmd "wget -q --spider http://localhost:7474 || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      NEO4J_URI: bolt://localhost:7687
+      NEO4J_USERNAME: neo4j
+      NEO4J_PASSWORD: ci_test_password
+      NEO4J_DATABASE: neo4j
+      GOOGLE_API_KEY: ci-dummy-key
+      CACHE_ENABLED: "false"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        working-directory: backend
+        run: uv sync --frozen
+
+      - name: Run test suite
+        working-directory: backend
+        run: uv run pytest tests/ -q
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        working-directory: backend
+        run: uv sync --frozen
+
+      - name: Lint (blocking - syntax errors and undefined names)
+        # E9 (syntax errors) and F821 (undefined names) are both genuine
+        # correctness bugs - the codebase was audited clean of both when
+        # this workflow was introduced, so it's safe to block on them.
+        working-directory: backend
+        run: uv run ruff check . --select=E9,F821
+
+      - name: Lint (full report - non-blocking)
+        # Everything else configured in pyproject.toml's [tool.ruff.lint]
+        # plus the wider default rule set - unused imports/variables,
+        # f-string-missing-placeholders, etc. Pre-existing style debt
+        # across a codebase that never had a linter before this; reported
+        # for visibility, not yet enforced.
+        working-directory: backend
+        run: uv run ruff check . --exit-zero

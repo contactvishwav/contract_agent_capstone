@@ -10,6 +10,7 @@ prompt/parsing logic - previously each had its own stubbed
 _parse_llm_response() that discarded the LLM's response and returned [].
 """
 
+import hashlib
 import os
 import re
 from enum import Enum
@@ -17,10 +18,18 @@ from typing import List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
+from backend.shared.cache.redis_cache import cache
+from backend.shared.config.phase3_config import Phase3Config
+from backend.shared.monitoring.llm_usage_tracker import llm_usage_tracker
 from backend.shared.utils.llm_concurrency import llm_call_semaphore
 from backend.shared.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Bumped whenever _build_prompt's wording changes, so a cached result from
+# an old prompt version is never silently reused under a new one - the
+# cache key is content + prompt version, not content alone.
+PROMPT_VERSION = "v1"
 
 
 class CUADClauseType(str, Enum):
@@ -142,7 +151,10 @@ class LLMExtractionService:
 
     def __init__(self, llm=None):
         self.llm = llm
-        self._structured_llm = llm.with_structured_output(_LLMExtractionResponse) if llm else None
+        self._model_name = getattr(llm, "model", None) or DEFAULT_MODEL
+        self._structured_llm = (
+            llm.with_structured_output(_LLMExtractionResponse, include_raw=True) if llm else None
+        )
 
     def extract_clauses(
         self,
@@ -164,22 +176,63 @@ class LLMExtractionService:
         a genuine "no clauses found" apart from a quota/network failure and
         stop a long batch run cleanly instead of burning through the rest of
         it on calls that are guaranteed to keep failing.
+
+        Re-analyzing the same contract text previously re-billed the LLM
+        every time (docs/ENTERPRISE_READINESS.md §9) - results are now
+        cached on a hash of (prompt version, model, candidate_types, text),
+        so an identical request is free and instant on a cache hit.
         """
         if not self._structured_llm or not text or not text.strip():
             return []
+
+        cache_key = self._cache_key(text, candidate_types)
+        if Phase3Config.CACHE_ENABLED:
+            cached = cache.get(cache_key)
+            if cached is not None:
+                llm_usage_tracker.record_call("clause_extraction", self._model_name, cache_hit=True)
+                return [ExtractedClause(**c) for c in cached]
 
         prompt = self._build_prompt(text, candidate_types)
 
         try:
             with llm_call_semaphore:
-                response = self._structured_llm.invoke(prompt)
+                raw_result = self._structured_llm.invoke(prompt)
         except Exception as e:
             logger.error(f"LLM clause extraction failed: {e}")
             if raise_on_error:
                 raise
             return []
 
-        return [self._resolve_offsets(clause, text) for clause in response.clauses]
+        response = raw_result.get("parsed")
+        if response is None:
+            logger.error(
+                f"LLM clause extraction returned no parsed result "
+                f"(parsing_error={raw_result.get('parsing_error')})"
+            )
+            if raise_on_error:
+                raise raw_result.get("parsing_error") or ValueError("LLM structured output parsing failed")
+            return []
+
+        usage_metadata = getattr(raw_result.get("raw"), "usage_metadata", None)
+        llm_usage_tracker.record_call(
+            "clause_extraction", self._model_name, cache_hit=False, usage_metadata=usage_metadata
+        )
+
+        result = [self._resolve_offsets(clause, text) for clause in response.clauses]
+
+        if Phase3Config.CACHE_ENABLED:
+            cache.set(
+                cache_key,
+                [c.model_dump() for c in result],
+                ttl=Phase3Config.get_cache_ttl("clause_extraction"),
+            )
+
+        return result
+
+    def _cache_key(self, text: str, candidate_types: Optional[List[CUADClauseType]]) -> str:
+        types_part = ",".join(sorted(t.value for t in (candidate_types or [])))
+        raw = f"clause_extraction:{PROMPT_VERSION}:{self._model_name}:{types_part}:{text}"
+        return hashlib.sha256(raw.encode()).hexdigest()
 
     def _build_prompt(self, text: str, candidate_types: Optional[List[CUADClauseType]]) -> str:
         types = candidate_types or list(CUADClauseType)

@@ -5,6 +5,10 @@ from langchain_core.tools import BaseTool
 from backend.shared.utils.gemini_embedding_service import embedding
 from langchain_neo4j import Neo4jGraph
 from pydantic import BaseModel, Field
+from backend.shared.utils.vector_index_config import (
+    CONTRACT_EMBEDDING_INDEX, SECTION_EMBEDDING_INDEX, CLAUSE_EMBEDDING_INDEX,
+    CHUNK_EMBEDDING_INDEX, VECTOR_SEARCH_OVERFETCH,
+)
 from backend.shared.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -87,8 +91,6 @@ def _search_documents(embeddings, tenant_id, summary_search, filters, params,
                      min_effective_date, max_effective_date, min_end_date, max_end_date,
                      contract_type, parties, active, cypher_aggregation, monetary_value, governing_law):
     """Search at document level using existing logic with tenant isolation"""
-    cypher_statement = "MATCH (c:Contract) "
-    
     # Apply existing filters (already includes tenant_id filter from get_contracts_multi_level)
     if governing_law and governing_law.country:
         filters.append("""EXISTS {
@@ -96,36 +98,45 @@ def _search_documents(embeddings, tenant_id, summary_search, filters, params,
             WHERE toLower(country.country) = $governing_law_country
         }""")
         params["governing_law_country"] = governing_law.country.lower()
-    
+
     if monetary_value:
         filters.append(f"c.total_amount {monetary_value.operator.value} $total_value")
         params["total_value"] = monetary_value.value
-    
+
     if min_effective_date:
         filters.append("c.effective_date >= date($min_effective_date)")
         params["min_effective_date"] = min_effective_date
-    
+
     if max_effective_date:
         filters.append("c.effective_date <= date($max_effective_date)")
         params["max_effective_date"] = max_effective_date
-    
+
     if active is not None:
         operator = ">=" if active else "<"
         filters.append(f"c.end_date {operator} date()")
-    
-    if filters:
-        cypher_statement += f"WHERE {' AND '.join(filters)} "
-    
+
     if summary_search:
         summary_embedding = embeddings.embed_query(summary_search)
         params["summary_embedding"] = summary_embedding
-        
-        cypher_statement += """
-        WITH c, vector.similarity.cosine(c.embedding, $summary_embedding) AS doc_score
+        params["k"] = VECTOR_SEARCH_OVERFETCH
+
+        # Query the vector index for candidates (instead of scoring every
+        # Contract node), then apply the same non-vector filters afterward -
+        # a vector index query has no way to pre-filter by an arbitrary
+        # property before ranking globally.
+        cypher_statement = f"""
+        CALL db.index.vector.queryNodes('{CONTRACT_EMBEDDING_INDEX}', $k, $summary_embedding)
+        YIELD node AS c, score AS doc_score
         WHERE doc_score > 0.8
-        ORDER BY doc_score DESC
         """
-    
+        if filters:
+            cypher_statement += f"AND {' AND '.join(filters)} "
+        cypher_statement += "ORDER BY doc_score DESC "
+    else:
+        cypher_statement = "MATCH (c:Contract) "
+        if filters:
+            cypher_statement += f"WHERE {' AND '.join(filters)} "
+
     cypher_statement += """
     RETURN {
         total_count: count(c),
@@ -145,31 +156,32 @@ def _search_documents(embeddings, tenant_id, summary_search, filters, params,
 
 def _search_sections(embeddings, tenant_id, summary_search, section_types, filters, params):
     """Search at section level with tenant isolation"""
-    cypher_statement = "MATCH (c:Contract)-[:HAS_SECTION]->(s:Section) "
-    
     # Add tenant filtering (Contract node has tenant_id)
     filters.append("c.tenant_id = $tenant_id")
-    
+
     if section_types:
         filters.append("s.section_type IN $section_types")
         params["section_types"] = section_types
-    
+
     if summary_search:
         summary_embedding = embeddings.embed_query(summary_search)
         params["summary_embedding"] = summary_embedding
-        
-        cypher_statement += """
-        WITH c, s, vector.similarity.cosine(s.embedding, $summary_embedding) AS section_score
+        params["k"] = VECTOR_SEARCH_OVERFETCH
+
+        cypher_statement = f"""
+        CALL db.index.vector.queryNodes('{SECTION_EMBEDDING_INDEX}', $k, $summary_embedding)
+        YIELD node AS s, score AS section_score
+        MATCH (c:Contract)-[:HAS_SECTION]->(s)
         WHERE section_score > 0.8
         """
-        
         if filters:
             cypher_statement += f"AND {' AND '.join(filters)} "
-        
         cypher_statement += "ORDER BY section_score DESC "
-    elif filters:
-        cypher_statement += f"WHERE {' AND '.join(filters)} "
-    
+    else:
+        cypher_statement = "MATCH (c:Contract)-[:HAS_SECTION]->(s:Section) "
+        if filters:
+            cypher_statement += f"WHERE {' AND '.join(filters)} "
+
     cypher_statement += """
     RETURN {
         total_count: count(s),
@@ -187,31 +199,32 @@ def _search_sections(embeddings, tenant_id, summary_search, section_types, filte
 
 def _search_clauses(embeddings, tenant_id, summary_search, clause_types, filters, params):
     """Search at clause level with tenant isolation"""
-    cypher_statement = "MATCH (c:Contract)-[:CONTAINS_CLAUSE]->(cl:Clause) "
-    
     # Add tenant filtering
     filters.append("c.tenant_id = $tenant_id")
-    
+
     if clause_types:
         filters.append("cl.clause_type IN $clause_types")
         params["clause_types"] = clause_types
-    
+
     if summary_search:
         summary_embedding = embeddings.embed_query(summary_search)
         params["summary_embedding"] = summary_embedding
-        
-        cypher_statement += """
-        WITH c, cl, vector.similarity.cosine(cl.embedding, $summary_embedding) AS clause_score
+        params["k"] = VECTOR_SEARCH_OVERFETCH
+
+        cypher_statement = f"""
+        CALL db.index.vector.queryNodes('{CLAUSE_EMBEDDING_INDEX}', $k, $summary_embedding)
+        YIELD node AS cl, score AS clause_score
+        MATCH (c:Contract)-[:CONTAINS_CLAUSE]->(cl)
         WHERE clause_score > 0.8
         """
-        
         if filters:
             cypher_statement += f"AND {' AND '.join(filters)} "
-        
         cypher_statement += "ORDER BY clause_score DESC "
-    elif filters:
-        cypher_statement += f"WHERE {' AND '.join(filters)} "
-    
+    else:
+        cypher_statement = "MATCH (c:Contract)-[:CONTAINS_CLAUSE]->(cl:Clause) "
+        if filters:
+            cypher_statement += f"WHERE {' AND '.join(filters)} "
+
     cypher_statement += """
     RETURN {
         total_count: count(cl),
@@ -274,15 +287,18 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params):
     # Try semantic search first if available
     if summary_search:
         try:
-            # Check for new Chunk nodes with embeddings, including tenant filtering
-            semantic_query = """
-            MATCH (d:Document)-[:HAS_CHUNK]->(c:Chunk)
-            WHERE c.embedding IS NOT NULL AND d.tenant_id = $tenant_id
-            WITH c, d, vector.similarity.cosine(c.embedding, $chunk_embedding) AS chunk_score
-            WHERE chunk_score > 0.7
-            RETURN {
+            # Query the vector index for candidates (instead of scoring
+            # every Chunk node), then enforce tenant scoping afterward - a
+            # vector index query has no way to pre-filter by tenant_id
+            # before ranking globally.
+            semantic_query = f"""
+            CALL db.index.vector.queryNodes('{CHUNK_EMBEDDING_INDEX}', $k, $chunk_embedding)
+            YIELD node AS c, score AS chunk_score
+            MATCH (d:Document)-[:HAS_CHUNK]->(c)
+            WHERE d.tenant_id = $tenant_id AND chunk_score > 0.7
+            RETURN {{
                 total_count: count(c),
-                chunks: collect({
+                chunks: collect({{
                     document_id: d.id,
                     chunk_type: c.chunk_type,
                     content: substring(c.content, 0, 200) + '...',
@@ -290,13 +306,13 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params):
                     quality_score: c.quality_score,
                     similarity_score: chunk_score,
                     search_type: 'semantic'
-                })[..10]
-            } AS result
+                }})[..10]
+            }} AS result
             ORDER BY chunk_score DESC
             """
-            
+
             chunk_embedding = embeddings.embed_query(summary_search)
-            semantic_params = {"chunk_embedding": chunk_embedding, "tenant_id": tenant_id}
+            semantic_params = {"chunk_embedding": chunk_embedding, "tenant_id": tenant_id, "k": VECTOR_SEARCH_OVERFETCH}
             
             semantic_output = graph.query(semantic_query, semantic_params)
             if semantic_output and semantic_output[0]['result']['total_count'] > 0:

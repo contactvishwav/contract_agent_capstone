@@ -7,6 +7,7 @@ import json
 
 from backend.shared.utils.contract_search_tool import graph, embedding
 from backend.domain.policies.entities import PolicyDocument, PolicyRule
+from backend.shared.utils.vector_index_config import POLICY_DOCUMENT_EMBEDDING_INDEX, VECTOR_SEARCH_OVERFETCH
 
 
 class PolicyRepository:
@@ -193,23 +194,27 @@ class PolicyRepository:
             # Generate query embedding
             query_embedding = self.embedding_service.embed_query(query_text)
             
-            # Search using existing vector similarity patterns
-            search_query = """
-            MATCH (p:PolicyDocument {tenant_id: $tenant_id})-[:HAS_RULE]->(r:PolicyRule)
-            WHERE p.embedding IS NOT NULL
-            WITH p, r, gds.similarity.cosine(p.embedding, $query_embedding) AS similarity
-            WHERE similarity > 0.7
+            # Query the vector index for the top candidates by similarity
+            # (instead of scoring every PolicyDocument), then scope to this
+            # tenant afterward - a vector index query has no way to
+            # pre-filter by tenant_id before ranking globally.
+            search_query = f"""
+            CALL db.index.vector.queryNodes('{POLICY_DOCUMENT_EMBEDDING_INDEX}', $k, $query_embedding)
+            YIELD node AS p, score AS similarity
+            MATCH (p)-[:HAS_RULE]->(r:PolicyRule)
+            WHERE p.tenant_id = $tenant_id AND similarity > 0.7
             RETURN p.id as policy_id, p.name as policy_name,
                    r.id as rule_id, r.rule_text as rule_text,
                    r.severity as severity, similarity
             ORDER BY similarity DESC
             LIMIT $limit
             """
-            
+
             result = self.graph.query(search_query, {
                 'tenant_id': tenant_id,
                 'query_embedding': query_embedding,
-                'limit': limit
+                'limit': limit,
+                'k': VECTOR_SEARCH_OVERFETCH,
             })
             
             return [dict(record) for record in result]

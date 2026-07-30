@@ -1,0 +1,23 @@
+server {
+    listen 80;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Mirrors vite.config.ts's dev-server proxy (server.proxy['/api']),
+    # which only applies to `vite dev` - a static production build needs
+    # the equivalent handled by the web server serving it.
+    location /api/ {
+        proxy_pass http://${BACKEND_HOST}:${BACKEND_PORT}/api/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # SPA client-side routing fallback.
+    location / {
+        try_files $uri /index.html;
+    }
+}

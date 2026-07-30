@@ -48,9 +48,8 @@ class IntentValidator(IGuardValidator):
                     violation_type="MALICIOUS_INTENT",
                     message=f"Request flagged for malicious intent: {data.get('reason')}"
                 )
-        except Exception:
+        except Exception as e:
             from backend.shared.utils.logger import get_logger
             get_logger(__name__).error(f"Intent classification failed: {e}")
-            pass
             
         return GuardResult(is_safe=True)

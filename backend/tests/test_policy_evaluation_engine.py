@@ -15,6 +15,7 @@ rule_id on every violation produced.
 
 import json
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 with patch("langchain_neo4j.Neo4jGraph"), \
@@ -30,6 +31,12 @@ with patch("langchain_neo4j.Neo4jGraph"), \
 _audit_logger_patcher = patch("backend.agents.intelligence_tools.AuditLogger", return_value=MagicMock())
 _audit_logger_patcher.start()
 
+# This file tests policy-evaluation reasoning for varying clauses/rules, not
+# caching - disable the P3-item-20 content-hash cache so it can't return a
+# stale result cached under identical clause text/rules by an earlier test.
+_cache_disabled_patcher = patch("backend.shared.config.phase3_config.Phase3Config.CACHE_ENABLED", False)
+_cache_disabled_patcher.start()
+
 
 class FakePolicyLLM:
     """Fake LLM that always cites a specific rule_id, regardless of clause content."""
@@ -38,23 +45,28 @@ class FakePolicyLLM:
         self._rule_id = rule_id_to_cite
         self._severity = severity
 
-    def with_structured_output(self, schema):
+    def with_structured_output(self, schema, include_raw=True):
         return self
 
     def invoke(self, prompt):
         from backend.agents.policy_evaluation_service import _LLMPolicyEvaluationResponse, _LLMPolicyViolation
-        return _LLMPolicyEvaluationResponse(violations=[
+        parsed = _LLMPolicyEvaluationResponse(violations=[
             _LLMPolicyViolation(
                 rule_id=self._rule_id, issue="Test-fabricated issue", severity=self._severity,
                 suggested_fix="Test-fabricated fix", confidence=0.9,
             )
         ])
+        return {
+            "raw": SimpleNamespace(usage_metadata={"input_tokens": 50, "output_tokens": 10}),
+            "parsed": parsed,
+            "parsing_error": None,
+        }
 
 
 class NeverCalledLLM:
     """Fails the test immediately if the LLM is ever invoked."""
 
-    def with_structured_output(self, schema):
+    def with_structured_output(self, schema, include_raw=True):
         return self
 
     def invoke(self, prompt):

@@ -13,6 +13,7 @@ exercise the real log_event/get_audit_trail round trip deterministically.
 import json
 import unittest
 from collections import Counter
+from types import SimpleNamespace
 from unittest.mock import patch
 
 with patch("langchain_neo4j.Neo4jGraph"), \
@@ -21,6 +22,13 @@ with patch("langchain_neo4j.Neo4jGraph"), \
     from backend.agents.intelligence_tools import (
         ClauseDetectorTool, PolicyCheckerTool, RiskCalculatorTool, RedlineGeneratorTool
     )
+
+# This file tests audit logging, not caching - disable the P3-item-20
+# content-hash cache so identical input text across tests (and across this
+# file and others in the same pytest session) can't return a stale cached
+# result instead of exercising the fake LLM/audit path being tested.
+_cache_disabled_patcher = patch("backend.shared.config.phase3_config.Phase3Config.CACHE_ENABLED", False)
+_cache_disabled_patcher.start()
 
 
 class FakeGraph:
@@ -77,14 +85,19 @@ class ClauseDetectorAuditTests(unittest.TestCase):
         fake_logger, patcher = _shared_fake_graph_logger()
         try:
             class FakeLLM:
-                def with_structured_output(self, schema):
+                def with_structured_output(self, schema, include_raw=True):
                     return self
 
                 def invoke(self, prompt):
                     from backend.agents.llm_extraction_service import _LLMExtractionResponse, _LLMExtractedClause
-                    return _LLMExtractionResponse(clauses=[
+                    parsed = _LLMExtractionResponse(clauses=[
                         _LLMExtractedClause(clause_type="Governing Law", extracted_text="California law applies.", confidence=0.9)
                     ])
+                    return {
+                        "raw": SimpleNamespace(usage_metadata={"input_tokens": 15, "output_tokens": 5}),
+                        "parsed": parsed,
+                        "parsing_error": None,
+                    }
 
             tool = ClauseDetectorTool(llm=FakeLLM())
             tool._run("Some contract text.", contract_id="contract_1", tenant_id="tenant_1")
@@ -100,7 +113,7 @@ class ClauseDetectorAuditTests(unittest.TestCase):
         fake_logger, patcher = _shared_fake_graph_logger()
         try:
             class BrokenLLM:
-                def with_structured_output(self, schema):
+                def with_structured_output(self, schema, include_raw=True):
                     raise RuntimeError("LLM unavailable")
 
             tool = ClauseDetectorTool(llm=BrokenLLM())

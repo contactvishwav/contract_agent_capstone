@@ -29,3 +29,25 @@ dependencies = [
     "fastmcp>=0.1.0",
     "nest_asyncio>=1.6.0",
 ]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+exclude = [".venv"]
+
+[tool.ruff.lint]
+# Only block CI on syntax errors (E9) and undefined names (F821) - real
+# correctness bugs. The rest of the F-series (unused imports/variables,
+# f-string-missing-placeholders, etc.) is pre-existing style debt across
+# a codebase that never had a linter before this; it's surfaced in CI
+# output for visibility (see .github/workflows/ci.yml's non-blocking
+# `ruff check --exit-zero` step) but not enforced yet.
+select = ["E9", "F821"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pyyaml>=6.0.2",
+    "ruff>=0.16.0",
+]

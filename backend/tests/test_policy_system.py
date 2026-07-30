@@ -1,11 +1,6 @@
 """Test policy management implementation."""
 
 import asyncio
-import sys
-import os
-
-# Add backend to path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 
 async def test_policy_system():

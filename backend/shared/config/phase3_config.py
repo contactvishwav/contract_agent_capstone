@@ -14,6 +14,12 @@ class Phase3Config:
         "deviation_analysis": int(os.getenv("CACHE_TTL_DEVIATION", "1800")),  # 30 minutes
         "jurisdiction_analysis": int(os.getenv("CACHE_TTL_JURISDICTION", "3600")),  # 1 hour
         "precedent_clause": int(os.getenv("CACHE_TTL_PRECEDENT", "7200")),  # 2 hours
+        # Keyed on content hash (contract/clause text + prompt version), not
+        # contract_id/time - correctness depends only on what was asked, not
+        # when. A long-but-bounded TTL avoids unbounded growth while still
+        # capturing the common "re-analyze the same contract" case.
+        "clause_extraction": int(os.getenv("CACHE_TTL_CLAUSE_EXTRACTION", "86400")),  # 24 hours
+        "policy_evaluation": int(os.getenv("CACHE_TTL_POLICY_EVALUATION", "86400")),  # 24 hours
     }
     
     # Performance Monitoring

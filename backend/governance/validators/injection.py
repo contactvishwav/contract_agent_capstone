@@ -18,7 +18,7 @@ class InjectionValidator(IGuardValidator):
 
     def validate(self, input_text: str, context: Optional[Dict[str, Any]] = None) -> GuardResult:
         for pattern in self.PATTERNS:
-            if re.search(pattern, prompt):
+            if re.search(pattern, input_text):
                 return GuardResult(
                     is_safe=False,
                     violation_type="PROMPT_INJECTION",

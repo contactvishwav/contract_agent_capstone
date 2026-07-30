@@ -3,6 +3,10 @@ from typing import Any, List, Dict
 from backend.domain.search_entities import SearchParams, SearchResult
 from backend.shared.utils.contract_search_tool import graph, embedding
 from backend.shared.utils.utils import convert_neo4j_date
+from backend.shared.utils.vector_index_config import (
+    CONTRACT_EMBEDDING_INDEX, CLAUSE_EMBEDDING_INDEX, SECTION_EMBEDDING_INDEX,
+    VECTOR_SEARCH_OVERFETCH,
+)
 
 class SearchStrategy(ABC):
     """Abstract base class for search strategies (Strategy Pattern)"""
@@ -18,48 +22,54 @@ class DocumentSearchStrategy(SearchStrategy):
         try:
             cypher_params = {}
             filters = []
-            
-            cypher_statement = "MATCH (c:Contract) "
-            
+
             # Apply all filters
             if params.active is not None:
                 operator = ">=" if params.active else "<"
                 filters.append(f"c.end_date {operator} date()")
-            
+
             if params.contract_type:
                 filters.append("toLower(c.contract_type) CONTAINS toLower($contract_type)")
                 cypher_params["contract_type"] = params.contract_type
-            
+
             if params.min_effective_date:
                 filters.append("c.effective_date >= date($min_effective_date)")
                 cypher_params["min_effective_date"] = params.min_effective_date
-            
+
             if params.max_effective_date:
                 filters.append("c.effective_date <= date($max_effective_date)")
                 cypher_params["max_effective_date"] = params.max_effective_date
-            
+
             if params.min_end_date:
                 filters.append("c.end_date >= date($min_end_date)")
                 cypher_params["min_end_date"] = params.min_end_date
-            
+
             if params.max_end_date:
                 filters.append("c.end_date <= date($max_end_date)")
                 cypher_params["max_end_date"] = params.max_end_date
-            
-            if filters:
-                cypher_statement += f"WHERE {' AND '.join(filters)} "
-            
-            # Add semantic search if query provided
+
+            # Add semantic search if query provided - queries the vector
+            # index for the top VECTOR_SEARCH_OVERFETCH candidates (instead
+            # of scoring every Contract node), then applies the same
+            # non-vector filters afterward.
             if params.query:
                 query_embedding = embedding.embed_query(params.query)
                 cypher_params["query_embedding"] = query_embedding
-                
-                cypher_statement += """
-                WITH c, vector.similarity.cosine(c.embedding, $query_embedding) AS score
-                WHERE c.embedding IS NOT NULL AND score > 0.3
-                ORDER BY score DESC
+                cypher_params["k"] = VECTOR_SEARCH_OVERFETCH
+
+                cypher_statement = f"""
+                CALL db.index.vector.queryNodes('{CONTRACT_EMBEDDING_INDEX}', $k, $query_embedding)
+                YIELD node AS c, score
+                WHERE score > 0.3
                 """
-            
+                if filters:
+                    cypher_statement += f"AND {' AND '.join(filters)} "
+                cypher_statement += "ORDER BY score DESC "
+            else:
+                cypher_statement = "MATCH (c:Contract) "
+                if filters:
+                    cypher_statement += f"WHERE {' AND '.join(filters)} "
+
             cypher_statement += """
             RETURN {
                 total_count: count(c),
@@ -97,29 +107,30 @@ class ClauseSearchStrategy(SearchStrategy):
         try:
             cypher_params = {}
             filters = []
-            
-            cypher_statement = "MATCH (c:Contract)-[:CONTAINS_CLAUSE]->(cl:Clause) "
-            
+
             if params.clause_types:
                 filters.append("cl.clause_type IN $clause_types")
                 cypher_params["clause_types"] = params.clause_types
-            
+
             if params.query:
                 query_embedding = embedding.embed_query(params.query)
                 cypher_params["query_embedding"] = query_embedding
-                
-                cypher_statement += """
-                WITH c, cl, vector.similarity.cosine(cl.embedding, $query_embedding) AS score
-                WHERE cl.embedding IS NOT NULL AND score > 0.3
+                cypher_params["k"] = VECTOR_SEARCH_OVERFETCH
+
+                cypher_statement = f"""
+                CALL db.index.vector.queryNodes('{CLAUSE_EMBEDDING_INDEX}', $k, $query_embedding)
+                YIELD node AS cl, score
+                MATCH (c:Contract)-[:CONTAINS_CLAUSE]->(cl)
+                WHERE score > 0.3
                 """
-                
                 if filters:
                     cypher_statement += f"AND {' AND '.join(filters)} "
-                
                 cypher_statement += "ORDER BY score DESC "
-            elif filters:
-                cypher_statement += f"WHERE {' AND '.join(filters)} "
-            
+            else:
+                cypher_statement = "MATCH (c:Contract)-[:CONTAINS_CLAUSE]->(cl:Clause) "
+                if filters:
+                    cypher_statement += f"WHERE {' AND '.join(filters)} "
+
             cypher_statement += """
             RETURN {
                 total_count: count(cl),
@@ -155,29 +166,30 @@ class SectionSearchStrategy(SearchStrategy):
         try:
             cypher_params = {}
             filters = []
-            
-            cypher_statement = "MATCH (c:Contract)-[:HAS_SECTION]->(s:Section) "
-            
+
             if params.section_types:
                 filters.append("s.section_type IN $section_types")
                 cypher_params["section_types"] = params.section_types
-            
+
             if params.query:
                 query_embedding = embedding.embed_query(params.query)
                 cypher_params["query_embedding"] = query_embedding
-                
-                cypher_statement += """
-                WITH c, s, vector.similarity.cosine(s.embedding, $query_embedding) AS score
-                WHERE s.embedding IS NOT NULL AND score > 0.3
+                cypher_params["k"] = VECTOR_SEARCH_OVERFETCH
+
+                cypher_statement = f"""
+                CALL db.index.vector.queryNodes('{SECTION_EMBEDDING_INDEX}', $k, $query_embedding)
+                YIELD node AS s, score
+                MATCH (c:Contract)-[:HAS_SECTION]->(s)
+                WHERE score > 0.3
                 """
-                
                 if filters:
                     cypher_statement += f"AND {' AND '.join(filters)} "
-                
                 cypher_statement += "ORDER BY score DESC "
-            elif filters:
-                cypher_statement += f"WHERE {' AND '.join(filters)} "
-            
+            else:
+                cypher_statement = "MATCH (c:Contract)-[:HAS_SECTION]->(s:Section) "
+                if filters:
+                    cypher_statement += f"WHERE {' AND '.join(filters)} "
+
             cypher_statement += """
             RETURN {
                 total_count: count(s),

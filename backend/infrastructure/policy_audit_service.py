@@ -50,85 +50,73 @@ class PolicyAuditService:
             error_details=processing_result.get('error') if not success else None
         )
     
-    def log_policy_compliance_check(self, tenant_id: str, contract_id: str, 
+    def log_policy_compliance_check(self, tenant_id: str, contract_id: str,
                                   compliance_result: Dict[str, Any]) -> None:
         """Log policy compliance checking."""
-        event = AuditEvent(
-            event_type="policy_compliance_check",
-            tenant_id=tenant_id,
-            user_id="system",
+        self.audit_logger.log_event(
+            event_type=AuditEventType.ANALYSIS_REQUEST,
             resource_id=contract_id,
-            resource_type="contract",
-            action="compliance_check",
-            details={
+            action="policy_compliance_check",
+            user_id="system",
+            tenant_id=tenant_id,
+            metadata={
                 "violations_found": compliance_result.get('violations_found', 0),
                 "policies_checked": compliance_result.get('policies_checked', 0),
                 "violations": compliance_result.get('violations', []),
                 "compliance_score": self._calculate_compliance_score(compliance_result)
             },
-            success=True
+            status="success"
         )
-        
-        self.audit_logger.log_event(event)
-    
+
     def log_policy_search(self, tenant_id: str, query: str, results_count: int,
                          user_id: str = None) -> None:
         """Log policy search activities."""
-        event = AuditEvent(
-            event_type="policy_search",
-            tenant_id=tenant_id,
-            user_id=user_id or "system",
-            resource_id=None,
-            resource_type="policy_search",
+        self.audit_logger.log_event(
+            event_type=AuditEventType.SEARCH_QUERY,
+            resource_id="policy_search",
             action="search",
-            details={
+            user_id=user_id or "system",
+            tenant_id=tenant_id,
+            metadata={
                 "search_query": query,
                 "results_count": results_count,
                 "search_type": "semantic"
             },
-            success=True
+            status="success"
         )
-        
-        self.audit_logger.log_event(event)
-    
+
     def log_policy_update(self, tenant_id: str, policy_id: str, old_version: str,
                          new_version: str, user_id: str = None) -> None:
         """Log policy updates and versioning."""
-        event = AuditEvent(
-            event_type="policy_update",
-            tenant_id=tenant_id,
-            user_id=user_id or "system",
+        self.audit_logger.log_event(
+            event_type=AuditEventType.DOCUMENT_UPDATE,
             resource_id=policy_id,
-            resource_type="policy_document",
             action="update",
-            details={
+            user_id=user_id or "system",
+            tenant_id=tenant_id,
+            metadata={
                 "old_version": old_version,
                 "new_version": new_version,
                 "update_type": "version_update"
             },
-            success=True
+            status="success"
         )
-        
-        self.audit_logger.log_event(event)
-    
+
     def log_policy_deletion(self, tenant_id: str, policy_id: str, policy_name: str,
                           user_id: str = None) -> None:
         """Log policy deletion (soft delete)."""
-        event = AuditEvent(
-            event_type="policy_deletion",
-            tenant_id=tenant_id,
-            user_id=user_id or "system",
+        self.audit_logger.log_event(
+            event_type=AuditEventType.DOCUMENT_DELETE,
             resource_id=policy_id,
-            resource_type="policy_document",
             action="delete",
-            details={
+            user_id=user_id or "system",
+            tenant_id=tenant_id,
+            metadata={
                 "policy_name": policy_name,
                 "deletion_type": "soft_delete"
             },
-            success=True
+            status="success"
         )
-        
-        self.audit_logger.log_event(event)
     
     def _calculate_compliance_score(self, compliance_result: Dict[str, Any]) -> float:
         """Calculate compliance score based on violations."""

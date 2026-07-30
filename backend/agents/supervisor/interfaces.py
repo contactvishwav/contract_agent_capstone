@@ -1,7 +1,10 @@
 from abc import ABC, abstractmethod
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, TYPE_CHECKING
 from dataclasses import dataclass
 from enum import Enum
+
+if TYPE_CHECKING:
+    from backend.agents.supervisor.workflow_engine import Workflow
 
 class MessageType(Enum):
     REQUEST = "request"

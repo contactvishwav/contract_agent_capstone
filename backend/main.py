@@ -22,7 +22,7 @@ from backend.shared.utils.logger import get_logger, correlation_id_var
 from backend.governance.prompt_guard import PromptGuard
 from backend.governance.output_guard import OutputGuard
 from backend.governance.rbac import Permission, requires_permission
-from backend.infrastructure.audit_logger import AuditLogger
+from backend.infrastructure.audit_logger import AuditLogger, AuditEventType
 
 logger = get_logger(__name__)
 

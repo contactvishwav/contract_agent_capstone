@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
 import logging
 
+from backend.shared.utils.vector_index_config import SECTION_EMBEDDING_INDEX, CLAUSE_EMBEDDING_INDEX
 from backend.shared.utils.logger import get_logger
 logger = get_logger(__name__)
 
@@ -128,10 +129,9 @@ class EmbeddingService:
             if not query_embedding:
                 return []
             
-            cypher_query = """
-            MATCH (s:Section)
-            WHERE s.embedding IS NOT NULL
-            WITH s, vector.similarity.cosine(s.embedding, $query_embedding) AS similarity
+            cypher_query = f"""
+            CALL db.index.vector.queryNodes('{SECTION_EMBEDDING_INDEX}', $limit, $query_embedding)
+            YIELD node AS s, score AS similarity
             WHERE similarity > 0.8
             RETURN s.section_id as section_id,
                    s.title as title,
@@ -140,7 +140,7 @@ class EmbeddingService:
             ORDER BY similarity DESC
             LIMIT $limit
             """
-            
+
             result = self.repository.graph.query(cypher_query, {
                 "query_embedding": query_embedding,
                 "limit": limit
@@ -160,10 +160,9 @@ class EmbeddingService:
             if not query_embedding:
                 return []
             
-            cypher_query = """
-            MATCH (cl:Clause)
-            WHERE cl.embedding IS NOT NULL
-            WITH cl, vector.similarity.cosine(cl.embedding, $query_embedding) AS similarity
+            cypher_query = f"""
+            CALL db.index.vector.queryNodes('{CLAUSE_EMBEDDING_INDEX}', $limit, $query_embedding)
+            YIELD node AS cl, score AS similarity
             WHERE similarity > 0.8
             RETURN cl.clause_id as clause_id,
                    cl.content as content,
@@ -172,7 +171,7 @@ class EmbeddingService:
             ORDER BY similarity DESC
             LIMIT $limit
             """
-            
+
             result = self.repository.graph.query(cypher_query, {
                 "query_embedding": query_embedding,
                 "limit": limit

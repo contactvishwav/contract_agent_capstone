@@ -6,6 +6,7 @@ from backend.shared.utils.gemini_embedding_service import embedding
 from langchain_neo4j import Neo4jGraph
 from pydantic import BaseModel, Field
 from enum import Enum
+from backend.shared.utils.vector_index_config import CONTRACT_EMBEDDING_INDEX, VECTOR_SEARCH_OVERFETCH
 
 load_dotenv()
 
@@ -92,7 +93,6 @@ def get_contracts(
 ):  
     params: dict[str, Any] = {"tenant_id": tenant_id}
     filters: list[str] = ["c.tenant_id = $tenant_id"]
-    cypher_statement = "MATCH (c:Contract) "
 
     if governing_law:
         if governing_law.country:
@@ -138,32 +138,40 @@ def get_contracts(
         operator = ">=" if active else "<"
         filters.append(f"c.end_date {operator} date()")
 
-    if filters:
-        cypher_statement += f"WHERE {' AND '.join(filters)} "
-
     if summary_search:
         summary_embedding = embeddings.embed_query(summary_search)
         params["summary_embedding"] = summary_embedding
-        
+        params["k"] = VECTOR_SEARCH_OVERFETCH
+
+        # Query the vector index for the top-K candidates by similarity
+        # (instead of scoring every Contract node), then apply the same
+        # non-vector filters (including the mandatory tenant_id scope)
+        # afterward - a vector index query has no way to pre-filter by an
+        # arbitrary property before ranking globally.
+        cypher_statement = f"""
+        CALL db.index.vector.queryNodes('{CONTRACT_EMBEDDING_INDEX}', $k, $summary_embedding)
+        YIELD node AS c, score AS doc_score
+        """
+
         # Determine search type based on query tokens
         query_tokens = summary_search.upper().split()
         exact_match_type = next((t for t in query_tokens if t in CONTRACT_TYPES), None)
-        
+
         if exact_match_type:
             # Boost exact type matches
-            cypher_statement += """
-            WITH c, vector.similarity.cosine(c.embedding, $summary_embedding) AS doc_score
-            WHERE c.contract_type = $exact_type OR doc_score > 0.8
-            ORDER BY c.contract_type = $exact_type DESC, doc_score DESC
-            """
             params["exact_type"] = exact_match_type
+            all_filters = filters + ["(c.contract_type = $exact_type OR doc_score > 0.8)"]
+            cypher_statement += f"WHERE {' AND '.join(all_filters)} "
+            cypher_statement += "ORDER BY c.contract_type = $exact_type DESC, doc_score DESC "
         else:
             # Pure semantic search
-            cypher_statement += """
-            WITH c, vector.similarity.cosine(c.embedding, $summary_embedding) AS doc_score
-            WHERE doc_score > 0.8
-            ORDER BY doc_score DESC
-            """
+            all_filters = filters + ["doc_score > 0.8"]
+            cypher_statement += f"WHERE {' AND '.join(all_filters)} "
+            cypher_statement += "ORDER BY doc_score DESC "
+    else:
+        cypher_statement = "MATCH (c:Contract) "
+        if filters:
+            cypher_statement += f"WHERE {' AND '.join(filters)} "
 
     if cypher_aggregation:
         cypher_statement += f"\n {cypher_aggregation}"

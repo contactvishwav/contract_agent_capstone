@@ -17,6 +17,7 @@ not async def.
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 with patch("langchain_neo4j.Neo4jGraph"), \
@@ -27,16 +28,31 @@ with patch("langchain_neo4j.Neo4jGraph"), \
     from backend.agents.planning.execution_engine import StepExecutor, ExecutionResult
     from backend.agents.planning.planning_agent import ExecutionStep, StepType
 
+# This file tests concurrency/retry behavior, not caching - disable the P3-
+# item-20 content-hash cache so repeated identical inputs across tests
+# always exercise a real (fake) LLM call rather than returning a stale
+# cached result.
+_cache_disabled_patcher = patch("backend.shared.config.phase3_config.Phase3Config.CACHE_ENABLED", False)
+_cache_disabled_patcher.start()
+
+
+def _wrap_raw(response):
+    return {
+        "raw": SimpleNamespace(usage_metadata={"input_tokens": 1, "output_tokens": 1}),
+        "parsed": response,
+        "parsing_error": None,
+    }
+
 
 class FakeLLM:
     def __init__(self, response):
         self._response = response
 
-    def with_structured_output(self, schema):
+    def with_structured_output(self, schema, include_raw=True):
         return self
 
     def invoke(self, prompt):
-        return self._response
+        return _wrap_raw(self._response)
 
 
 class ConcurrencySemaphoreAppliedTests(unittest.TestCase):
@@ -80,7 +96,7 @@ class RealSemaphoreLimitsConcurrencyTests(unittest.TestCase):
         lock = threading.Lock()
 
         class SlowFakeLLM:
-            def with_structured_output(self, schema):
+            def with_structured_output(self, schema, include_raw=True):
                 return self
 
             def invoke(self, prompt):
@@ -91,7 +107,7 @@ class RealSemaphoreLimitsConcurrencyTests(unittest.TestCase):
                 time.sleep(0.2)
                 with lock:
                     currently_inside["count"] -= 1
-                return _LLMExtractionResponse(clauses=[])
+                return _wrap_raw(_LLMExtractionResponse(clauses=[]))
 
         # Temporarily tighten the shared semaphore to 1 for this test only.
         original_value = llm_call_semaphore._value

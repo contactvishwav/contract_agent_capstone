@@ -3,6 +3,7 @@ from backend.governance.rbac import Permission, requires_permission
 from typing import Dict, List, Any, Optional
 import logging
 from backend.shared.monitoring.performance_monitor import monitor
+from backend.shared.monitoring.llm_usage_tracker import llm_usage_tracker
 from backend.shared.cache.redis_cache import cache
 from backend.agents.optimized_cuad_tools import BatchProcessor
 import asyncio
@@ -54,6 +55,15 @@ async def get_operation_performance(operation: str, hours: int = 1):
     except Exception as e:
         logger.error(f"Failed to get operation performance for {operation}: {e}")
         raise HTTPException(status_code=500, detail=f"Operation metrics failed: {str(e)}")
+
+@router.get("/llm-usage", dependencies=[Depends(requires_permission(Permission.VIEW_REPORTS))])
+async def get_llm_usage():
+    """Get running LLM token usage, estimated cost, and cache-hit totals (P3 item 20)"""
+    try:
+        return llm_usage_tracker.get_summary()
+    except Exception as e:
+        logger.error(f"Failed to get LLM usage summary: {e}")
+        raise HTTPException(status_code=500, detail=f"LLM usage retrieval failed: {str(e)}")
 
 @router.get("/health")
 async def health_check():

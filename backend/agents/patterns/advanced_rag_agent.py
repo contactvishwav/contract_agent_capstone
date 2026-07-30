@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import logging
 
 from backend.shared.utils.contract_search_tool import graph, embedding
+from backend.shared.utils.vector_index_config import CONTRACT_EMBEDDING_INDEX, VECTOR_SEARCH_OVERFETCH
 
 from backend.shared.utils.logger import get_logger
 logger = get_logger(__name__)
@@ -68,22 +69,23 @@ class AdvancedRAGAgent:
     async def _find_similar_contracts(self, query_embedding: List[float], 
                                     exclude_contract_id: str) -> List[Dict[str, Any]]:
         try:
-            # Use existing Neo4j vector search
-            cypher_query = """
-            MATCH (c:Contract)
-            WHERE c.file_id <> $exclude_id AND c.embedding IS NOT NULL
-            WITH c, gds.similarity.cosine(c.embedding, $query_embedding) AS similarity
-            WHERE similarity > 0.7
-            RETURN c.file_id as contract_id, c.summary as summary, 
+            # Query the vector index for candidates (instead of scoring
+            # every Contract node), then exclude the source contract itself.
+            cypher_query = f"""
+            CALL db.index.vector.queryNodes('{CONTRACT_EMBEDDING_INDEX}', $k, $query_embedding)
+            YIELD node AS c, score AS similarity
+            WHERE c.file_id <> $exclude_id AND similarity > 0.7
+            RETURN c.file_id as contract_id, c.summary as summary,
                    c.contract_type as contract_type, c.effective_date as effective_date,
                    similarity
             ORDER BY similarity DESC
             LIMIT 5
             """
-            
+
             result = graph.query(cypher_query, {
                 'query_embedding': query_embedding,
-                'exclude_id': exclude_contract_id
+                'exclude_id': exclude_contract_id,
+                'k': VECTOR_SEARCH_OVERFETCH,
             })
             
             return [dict(record) for record in result]

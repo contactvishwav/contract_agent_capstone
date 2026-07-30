@@ -18,6 +18,7 @@ the real-data precision/recall/F1 benchmark against CUAD ground truth.
 import json
 import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from backend.agents.llm_extraction_service import (
@@ -40,6 +41,26 @@ from backend.agents.intelligence_tools import ClauseDetectorTool
 _audit_logger_patcher = patch("backend.agents.intelligence_tools.AuditLogger", return_value=MagicMock())
 _audit_logger_patcher.start()
 
+# This file tests real extraction behavior for varying inputs, not caching -
+# disable the P3-item-20 content-hash cache so it can't return a stale
+# result cached under identical text by an earlier test/run.
+_cache_disabled_patcher = patch("backend.shared.config.phase3_config.Phase3Config.CACHE_ENABLED", False)
+_cache_disabled_patcher.start()
+
+
+def _wrap_raw(response):
+    """
+    LLMExtractionService now calls with_structured_output(..., include_raw=
+    True), which returns {"raw": AIMessage, "parsed": ..., "parsing_error":
+    ...} instead of the parsed object directly - this wraps a fake parsed
+    response in that shape.
+    """
+    return {
+        "raw": SimpleNamespace(usage_metadata={"input_tokens": 100, "output_tokens": 20}),
+        "parsed": response,
+        "parsing_error": None,
+    }
+
 
 def make_fake_llm(response: _LLMExtractionResponse):
     """
@@ -49,7 +70,7 @@ def make_fake_llm(response: _LLMExtractionResponse):
     the structured mock's invoke() behavior.
     """
     structured = MagicMock()
-    structured.invoke.return_value = response
+    structured.invoke.return_value = _wrap_raw(response)
     fake_llm = MagicMock()
     fake_llm.with_structured_output.return_value = structured
     return fake_llm, structured
@@ -192,7 +213,7 @@ class TestClauseDetectorToolRealExtraction(unittest.TestCase):
         response_b = _LLMExtractionResponse(clauses=[])
 
         fake_llm, structured = make_fake_llm(response_a)
-        structured.invoke.side_effect = [response_a, response_b]
+        structured.invoke.side_effect = [_wrap_raw(response_a), _wrap_raw(response_b)]
 
         tool = ClauseDetectorTool(llm=fake_llm)
         result_a = json.loads(tool._run(contract_a_text))
