@@ -89,7 +89,7 @@ class TenantUploadedPolicyCitationTests(unittest.TestCase):
 
             clauses = [{"clause_id": "c1_exclusivity_0", "clause_type": "Exclusivity", "content": "Vendor is the exclusive supplier."}]
             tool = PolicyCheckerTool(llm=FakePolicyLLM("tenant_acme_rule_7"))
-            violations = json.loads(tool._run(json.dumps(clauses), tenant_id="tenant_acme", contract_type="general"))
+            violations = json.loads(tool._run(json.dumps(clauses), tenant_id="tenant_acme", contract_type="general"))["violations"]
 
         self.assertEqual(len(violations), 1)
         self.assertEqual(violations[0]["rule_id"], "tenant_acme_rule_7")
@@ -104,7 +104,7 @@ class DefaultPolicySetFallbackTests(unittest.TestCase):
 
             clauses = [{"clause_id": "c1_exclusivity_0", "clause_type": "Exclusivity", "content": "Vendor is the exclusive supplier, indefinitely."}]
             tool = PolicyCheckerTool(llm=FakePolicyLLM("default_exclusivity_scope"))
-            violations = json.loads(tool._run(json.dumps(clauses), tenant_id="tenant_new", contract_type="general"))
+            violations = json.loads(tool._run(json.dumps(clauses), tenant_id="tenant_new", contract_type="general"))["violations"]
 
         self.assertEqual(len(violations), 1)
         self.assertEqual(violations[0]["rule_id"], "default_exclusivity_scope")
@@ -121,7 +121,7 @@ class DeterministicTableNoLLMTests(unittest.TestCase):
         # it - proves the deterministic table short-circuits the LLM path
         # entirely for this category.
         tool = PolicyCheckerTool(llm=NeverCalledLLM())
-        violations = json.loads(tool._run(json.dumps(clauses)))
+        violations = json.loads(tool._run(json.dumps(clauses)))["violations"]
 
         self.assertEqual(len(violations), 1)
         self.assertEqual(violations[0]["rule_id"], "deterministic_cap_on_liability")
@@ -133,7 +133,7 @@ class DeterministicTableNoLLMTests(unittest.TestCase):
             "content": "Liability shall not exceed 1 times the total fees paid.",
         }]
         tool = PolicyCheckerTool(llm=NeverCalledLLM())
-        violations = json.loads(tool._run(json.dumps(clauses)))
+        violations = json.loads(tool._run(json.dumps(clauses)))["violations"]
 
         self.assertEqual(violations, [])
 
@@ -148,7 +148,7 @@ class AntiHallucinationTests(unittest.TestCase):
         with patch("backend.agents.intelligence_tools.get_applicable_rules", return_value=[]):
             clauses = [{"clause_id": "c1_governing_law_0", "clause_type": "Governing Law", "content": "California law applies."}]
             tool = PolicyCheckerTool(llm=NeverCalledLLM())
-            violations = json.loads(tool._run(json.dumps(clauses), tenant_id="tenant_x"))
+            violations = json.loads(tool._run(json.dumps(clauses), tenant_id="tenant_x"))["violations"]
 
         self.assertEqual(violations, [])
 

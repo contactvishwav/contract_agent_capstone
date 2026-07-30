@@ -145,21 +145,35 @@ class IntelligenceOrchestrator:
         try:
             tool = PolicyCheckerTool()
             clauses_json = json.dumps(state["extracted_clauses"])
-            violations_json = tool._run(
+            result_json = tool._run(
                 clauses_json,
                 contract_id=state.get("contract_id"),
                 tenant_id=state.get("tenant_id"),
                 contract_type=state.get("contract_type") or "general",
             )
-            violations_list = json.loads(violations_json)
+            result = json.loads(result_json)
+            violations_list = result.get("violations", [])
+            # PolicyCheckerTool's own status: "success" (every clause
+            # evaluated cleanly), "partial" (some clauses failed to
+            # evaluate - quota/network/parsing errors - but others
+            # succeeded), or "failure" (every clause failed). Map "failure"
+            # onto this node's existing "error" vocabulary since the data is
+            # just as unreliable as a hard crash; "partial" is a new,
+            # honest middle state - some real violations may still be in
+            # violations_list, but it is not a complete picture.
+            tool_status = result.get("status", "success")
+            node_status_value = {"success": "success", "partial": "partial", "failure": "error"}.get(tool_status, "success")
 
             critical_count = len([v for v in violations_list if v.get("severity") == "CRITICAL"])
-            workflow_tracker.complete_agent(execution, f"Found {len(violations_list)} violations ({critical_count} critical)")
+            summary = f"Found {len(violations_list)} violations ({critical_count} critical)"
+            if tool_status != "success":
+                summary += f" - {len(result.get('failed_clause_ids', []))} clauses failed evaluation"
+            workflow_tracker.complete_agent(execution, summary)
 
             return {**state,
                 "policy_violations": violations_list,
                 "current_step": "policy_checking",
-                "node_status": {**state.get("node_status", {}), "policy_checking": "success"},
+                "node_status": {**state.get("node_status", {}), "policy_checking": node_status_value},
             }
         except Exception as e:
             workflow_tracker.error_agent(execution, f"Policy checking failed: {e}")
@@ -519,7 +533,11 @@ class IntelligenceOrchestrator:
         workflow_tracker.complete_workflow()
 
         node_status = final_state.get("node_status", {})
-        processing_complete = bool(final_state["is_complete"]) and not any(v == "error" for v in node_status.values())
+        # "partial" (e.g. policy_checking: some clauses failed to evaluate)
+        # must also prevent a dishonest "completed" result, not just a hard
+        # "error" - a caller can't tell a genuine clean result from one with
+        # gaps otherwise.
+        processing_complete = bool(final_state["is_complete"]) and not any(v in ("error", "partial") for v in node_status.values())
 
         # Return structured results with CUAD data and validation
         return {

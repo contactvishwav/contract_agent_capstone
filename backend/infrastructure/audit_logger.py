@@ -106,9 +106,24 @@ class AuditLogger:
                 "resource_id": resource_id,
                 "limit": limit
             })
-            
-            return [dict(row) for row in result]
-            
+
+            events = []
+            for row in result:
+                event = dict(row)
+                # a.timestamp comes back as a neo4j.time.DateTime object,
+                # not a plain string/datetime - left as-is, FastAPI's default
+                # JSON encoder doesn't know how to serialize it and falls
+                # back to dumping its __dict__ internals (nonsensical fields
+                # like "_Date__day": -2) instead of raising or producing a
+                # readable value. Convert to a real ISO 8601 string here, at
+                # the source, rather than downstream in every consumer.
+                timestamp = event.get("timestamp")
+                if hasattr(timestamp, "iso_format"):
+                    event["timestamp"] = timestamp.iso_format()
+                events.append(event)
+
+            return events
+
         except Exception as e:
             logger.error(f"Failed to retrieve audit trail: {e}")
             return []

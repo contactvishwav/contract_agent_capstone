@@ -96,7 +96,7 @@ class ViolationClauseIdTests(unittest.TestCase):
             "clause_id": "c1_cap_on_liability_0", "clause_type": "Cap On Liability",
             "content": "Liability shall not exceed 3 times the total fees paid.",
         }]
-        violations = json.loads(PolicyCheckerTool()._run(json.dumps(clauses)))
+        violations = json.loads(PolicyCheckerTool()._run(json.dumps(clauses)))["violations"]
 
         self.assertEqual(len(violations), 1)
         self.assertEqual(violations[0]["clause_id"], "c1_cap_on_liability_0")

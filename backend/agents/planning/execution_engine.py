@@ -17,6 +17,24 @@ import json
 from backend.shared.utils.logger import get_logger
 logger = get_logger(__name__)
 
+
+def _is_quota_exhausted(e: Exception) -> bool:
+    """
+    True for google.api_core.exceptions.ResourceExhausted directly (kept for
+    any client that does raise it), and also for the real exception this
+    app's actual Gemini client raises: langchain_google_genai wraps a real
+    429 RESOURCE_EXHAUSTED into its own ChatGoogleGenerativeAIError (see
+    langchain_google_genai.chat_models._handle_client_error), which is not a
+    ResourceExhausted subclass - so `except ResourceExhausted` alone never
+    actually matches it, and the "fail fast, don't retry into a 429" logic
+    below it silently never fired for a real quota exhaustion. Confirmed via
+    live end-to-end testing against the real API (not a mock).
+    """
+    if isinstance(e, ResourceExhausted):
+        return True
+    message = str(e)
+    return "RESOURCE_EXHAUSTED" in message or "429" in message
+
 @dataclass
 class ExecutionResult:
     step_id: str
@@ -125,6 +143,21 @@ class StepExecutor:
                     error_message=f"Rate limit or quota exceeded - not retrying: {e}"
                 )
             except Exception as e:
+                if _is_quota_exhausted(e):
+                    # Same real-world case as the ResourceExhausted branch
+                    # above, just raised as a different exception type by
+                    # this app's actual Gemini client - see _is_quota_
+                    # exhausted's docstring. Fail fast here too.
+                    execution_time = int((datetime.now() - start_time).total_seconds() * 1000)
+                    workflow_tracker.error_agent(execution, f"Rate limit/quota exceeded: {e}")
+                    return ExecutionResult(
+                        step_id=step.step_id,
+                        success=False,
+                        output_data=None,
+                        execution_time_ms=execution_time,
+                        confidence_score=0.0,
+                        error_message=f"Rate limit or quota exceeded - not retrying: {e}"
+                    )
                 if attempt == max_retries:  # Last attempt failed
                     execution_time = int((datetime.now() - start_time).total_seconds() * 1000)
                     workflow_tracker.error_agent(execution, str(e))
@@ -148,8 +181,11 @@ class StepExecutor:
         result_json = tool._run(contract_text, contract_id=context.get("contract_id"), tenant_id=context.get("tenant_id"))
         return json.loads(result_json)
 
-    async def _execute_policy_check(self, step: ExecutionStep, context: Dict[str, Any]) -> List[Dict]:
-        """Execute policy checking with dependency results"""
+    async def _execute_policy_check(self, step: ExecutionStep, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute policy checking with dependency results. Returns
+        PolicyCheckerTool's {"violations": [...], "failed_clause_ids": [...],
+        "status": ...} dict as-is - see _update_context_with_result and
+        _compute_step_status for how the pieces get unpacked."""
         clauses = context.get("extracted_clauses", [])
         tool = self.tools[StepType.CHECK_POLICIES]
         result_json = tool._run(
@@ -368,7 +404,7 @@ class PlanExecutionEngine:
                 logger.info(f"🚀 EXEC STEP 4.{i+1}b: Executing step {step.step_id}")
                 result = await self.step_executor.execute_step(step, self.execution_context)
                 step_results[step.step_id] = result
-                step_status[step.step_type.value] = "success" if result.success else "failed"
+                step_status[step.step_type.value] = self._compute_step_status(result)
                 logger.info(f"🚀 EXEC STEP 4.{i+1}c: Step {step.step_id} completed, success: {result.success}")
 
                 # Update context with results
@@ -399,12 +435,37 @@ class PlanExecutionEngine:
             if not step_results[dep_id].success:
                 logger.warning(f"Dependency {dep_id} failed for step {step.step_id}")
     
+    def _compute_step_status(self, result: ExecutionResult) -> str:
+        """
+        "success" / "failed" as before, plus a new "partial" state for a
+        step that completed (no exception, ExecutionResult.success=True) but
+        whose own output reports it didn't fully succeed - currently just
+        PolicyCheckerTool's per-clause partial-failure status
+        (backend/agents/intelligence_tools.py's PolicyCheckerTool._run),
+        threaded through as output_data["status"] when output_data is a
+        dict. Anything else keeps the original binary success/failed.
+        """
+        if not result.success:
+            return "failed"
+        if isinstance(result.output_data, dict):
+            tool_status = result.output_data.get("status")
+            if tool_status == "partial":
+                return "partial"
+            if tool_status == "failure":
+                return "failed"
+        return "success"
+
     def _update_context_with_result(self, step: ExecutionStep, result: ExecutionResult):
         """Update execution context with step results"""
         if step.step_type == StepType.EXTRACT_CLAUSES:
             self.execution_context["extracted_clauses"] = result.output_data
         elif step.step_type == StepType.CHECK_POLICIES:
-            self.execution_context["policy_violations"] = result.output_data
+            output = result.output_data
+            if isinstance(output, dict) and "violations" in output:
+                self.execution_context["policy_violations"] = output["violations"]
+                self.execution_context["policy_check_failed_clause_ids"] = output.get("failed_clause_ids", [])
+            else:
+                self.execution_context["policy_violations"] = output
         elif step.step_type == StepType.ASSESS_RISK:
             self.execution_context["risk_data"] = result.output_data
         elif step.step_type == StepType.GENERATE_REDLINES:
@@ -420,7 +481,11 @@ class PlanExecutionEngine:
     def _format_final_results(self, step_status: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """Format results in the expected contract intelligence format"""
         step_status = step_status or {}
-        any_failed = any(s == "failed" for s in step_status.values())
+        # "partial" (some, but not all, of a step's inputs failed - e.g.
+        # policy_checking with some clauses that couldn't be evaluated)
+        # must also block a dishonest "processing_complete: True", not just
+        # a hard "failed".
+        any_failed = any(s in ("failed", "partial") for s in step_status.values())
         return {
             "clauses": self.execution_context.get("extracted_clauses", []),
             "violations": self.execution_context.get("policy_violations", []),

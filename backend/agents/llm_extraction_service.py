@@ -139,7 +139,20 @@ def get_default_llm(model: str = DEFAULT_MODEL):
     # practice after this process's environment was suspended/resumed mid-
     # request. 120s is generous for a single-pass extraction call but still
     # bounded.
-    return ChatGoogleGenerativeAI(model=model, temperature=0, request_timeout=120)
+    #
+    # max_retries defaults to 6 in this client (langchain_google_genai maps
+    # it directly to google.genai.types.HttpRetryOptions(attempts=6)), which
+    # retries a 429 RESOURCE_EXHAUSTED with exponential backoff (up to 60s
+    # between attempts) before finally giving up - observed in practice
+    # taking several minutes across a handful of clause/policy evaluations,
+    # each independently retrying up to 6 times. A per-day quota wall cannot
+    # be waited out within one request's lifetime regardless (see
+    # execution_engine.py's StepExecutor, which already fails fast rather
+    # than retrying on a quota error at its own layer) - attempts=1 ("1 or 0
+    # means no retries" per HttpRetryOptions) means a real quota/rate-limit
+    # error surfaces immediately instead of after minutes of internal SDK
+    # backoff.
+    return ChatGoogleGenerativeAI(model=model, temperature=0, request_timeout=120, max_retries=1)
 
 
 class LLMExtractionService:

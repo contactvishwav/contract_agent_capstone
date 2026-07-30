@@ -88,19 +88,21 @@ class PolicyEvaluationService:
 
         prompt = self._build_prompt(clause_type, clause_text, rules)
 
-        try:
-            with llm_call_semaphore:
-                raw_result = self._structured_llm.invoke(prompt)
-        except Exception as e:
-            logger.error(f"Policy evaluation failed: {e}")
-            return []
+        # Let a real call/parse failure propagate rather than swallowing it
+        # here: returning [] on an exception is indistinguishable from "the
+        # model genuinely found zero violations for this clause" to every
+        # caller upstream (PolicyCheckerTool, node_status, the audit trail,
+        # the API response). PolicyCheckerTool._run is responsible for
+        # catching this per-clause and honestly reporting which clauses
+        # failed to evaluate vs. which were evaluated and came back clean.
+        with llm_call_semaphore:
+            raw_result = self._structured_llm.invoke(prompt)
 
         response = raw_result.get("parsed")
         if response is None:
-            logger.error(
+            raise RuntimeError(
                 f"Policy evaluation returned no parsed result (parsing_error={raw_result.get('parsing_error')})"
             )
-            return []
 
         usage_metadata = getattr(raw_result.get("raw"), "usage_metadata", None)
         llm_usage_tracker.record_call(

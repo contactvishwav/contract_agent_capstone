@@ -138,6 +138,7 @@ class PolicyCheckerTool(BaseTool):
         try:
             clauses = json.loads(clauses_json)
             violations = []
+            failed_clause_ids = []
 
             applicable_rules = get_applicable_rules(tenant_id, contract_type)
             evaluation_service = PolicyEvaluationService(self._llm or get_default_llm())
@@ -145,38 +146,74 @@ class PolicyCheckerTool(BaseTool):
             for clause in clauses:
                 clause_type = clause.get("clause_type", "")
                 content = clause.get("content", "")
+                clause_id = clause.get("clause_id", "unknown")
 
                 deterministic_violation = evaluate_deterministic(clause_type, content)
                 if deterministic_violation:
                     deterministic_violation.update({
                         "clause_type": clause_type,
                         "clause_content": content,
-                        "clause_id": clause.get("clause_id", "unknown"),
+                        "clause_id": clause_id,
                         "clause_grounded": clause.get("grounded", True),
                     })
                     violations.append(deterministic_violation)
                     continue
 
-                for v in evaluation_service.evaluate_clause(clause_type, content, applicable_rules):
+                # Per-clause try/except: evaluate_clause now raises on a
+                # real failure (quota exhaustion, network error, parsing
+                # failure) instead of silently returning [] - which used to
+                # be indistinguishable from "the model checked this clause
+                # and found nothing." Catching it here, per clause, means
+                # one failed clause doesn't abort evaluation of the rest,
+                # while still honestly tracking that it happened.
+                try:
+                    clause_violations = evaluation_service.evaluate_clause(clause_type, content, applicable_rules)
+                except Exception as e:
+                    logger.error(f"Policy evaluation failed for clause {clause_id}: {e}")
+                    failed_clause_ids.append(clause_id)
+                    continue
+
+                for v in clause_violations:
                     v.update({
                         "clause_type": clause_type,
                         "clause_content": content,
-                        "clause_id": clause.get("clause_id", "unknown"),
+                        "clause_id": clause_id,
                         "clause_grounded": clause.get("grounded", True),
                     })
                     violations.append(v)
 
-            logger.info(f"Found {len(violations)} policy violations against {len(applicable_rules)} applicable rules")
+            total_clauses = len(clauses)
+            failed_count = len(failed_clause_ids)
+            if failed_count == 0:
+                eval_status = "success"
+            elif failed_count < total_clauses:
+                eval_status = "partial"
+            else:
+                eval_status = "failure"
+
+            logger.info(
+                f"Found {len(violations)} policy violations against {len(applicable_rules)} applicable rules"
+                + (f" ({failed_count} of {total_clauses} clauses failed evaluation)" if failed_count else "")
+            )
             critical_count = len([v for v in violations if v.get("severity") == "CRITICAL"])
             AuditLogger().log_event(
                 event_type=AuditEventType.AGENT_TOOL_CALL,
                 resource_id=contract_id or "unknown",
                 tenant_id=tenant_id or "demo_tenant_1",
                 action="policy_check",
-                metadata={"violation_count": len(violations), "critical_count": critical_count},
-                status="success",
+                metadata={
+                    "violation_count": len(violations),
+                    "critical_count": critical_count,
+                    "failed_clause_count": failed_count,
+                    "failed_clause_ids": failed_clause_ids,
+                },
+                status=eval_status if eval_status == "success" else ("failure" if eval_status == "failure" else "partial"),
             )
-            return json.dumps(violations)
+            return json.dumps({
+                "violations": violations,
+                "failed_clause_ids": failed_clause_ids,
+                "status": eval_status,
+            })
 
         except Exception as e:
             logger.error(f"Policy checking failed: {e}")
@@ -188,7 +225,7 @@ class PolicyCheckerTool(BaseTool):
                 status="failure",
                 error_details=str(e),
             )
-            return json.dumps([])
+            return json.dumps({"violations": [], "failed_clause_ids": [], "status": "failure", "error": str(e)})
 
 # Risk Assessment Agent Tools
 class RiskCalculatorInput(BaseModel):

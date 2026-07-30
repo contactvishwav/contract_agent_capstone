@@ -197,7 +197,13 @@ class ContractIntelligenceService:
                 "violations_count": len(intelligence.violations),
                 "clauses_count": len(intelligence.clauses),
                 "redlines_count": len(intelligence.redlines),
-                "intelligence_status": "completed",
+                # Honest partial-failure state: don't persist "completed" if
+                # node_status/processing_complete say some or all of the
+                # analysis didn't actually run (e.g. policy checking hit a
+                # quota/network error on some clauses) - GET .../status reads
+                # this field straight back, so a caller polling status must
+                # not see a false "completed" for a result with real gaps.
+                "intelligence_status": "completed" if intelligence.processing_complete else "completed_with_errors",
                 "processing_time": intelligence.processing_time,
                 # CUAD-specific fields
                 "cuad_analysis_status": "completed",
