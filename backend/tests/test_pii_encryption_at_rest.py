@@ -17,13 +17,14 @@ Covers:
 """
 
 import ast
+import base64
 import os
 import unittest
 from unittest.mock import MagicMock, patch
 
 from backend.governance.pii_engine import PIIEngine
 from backend.infrastructure.content_validator import ContentValidationService, SecurityValidator
-from backend.infrastructure.encryption import EnvKeyProvider, FieldEncryptor
+from backend.infrastructure.encryption import DecryptionError, EnvKeyProvider, FieldEncryptor
 
 BACKEND_DIR = os.path.join(os.path.dirname(__file__), "..")
 
@@ -80,11 +81,32 @@ class FieldEncryptorTests(unittest.TestCase):
     def test_empty_string_round_trips_as_empty(self):
         self.assertEqual(self.encryptor.decrypt(self.encryptor.encrypt("")), "")
 
-    def test_decrypt_falls_back_to_input_on_invalid_ciphertext(self):
-        # Safety net for legacy plaintext data written before encryption
-        # existed - must not crash, must not silently return garbage.
-        legacy_plaintext = "this was never encrypted"
-        self.assertEqual(self.encryptor.decrypt(legacy_plaintext), legacy_plaintext)
+    def test_decrypt_raises_on_data_that_was_never_encrypted(self):
+        # No legacy-plaintext fallback exists (every write site has always
+        # encrypted before persisting) - unrecognized input must raise, not
+        # silently pass through as if it were a successful decrypt.
+        never_encrypted = "this was never encrypted"
+        with self.assertRaises(DecryptionError):
+            self.encryptor.decrypt(never_encrypted)
+
+    def test_decrypt_raises_on_tampered_ciphertext_not_the_original_plaintext(self):
+        # The actual security property under test: AES-GCM's auth tag must
+        # detect tampering, and that detection must surface as a raised
+        # error - not the pre-fix behavior of silently handing back
+        # whatever (possibly-garbage) bytes the corrupted input decoded to,
+        # and not a false "success" that happens to return the original
+        # plaintext.
+        ciphertext = self.encryptor.encrypt(SSN_TEXT)
+        raw = bytearray(base64.b64decode(ciphertext))
+        raw[-1] ^= 0xFF  # flip the last byte of the auth tag
+        tampered = base64.b64encode(bytes(raw)).decode("ascii")
+
+        with self.assertRaises(DecryptionError):
+            self.encryptor.decrypt(tampered)
+
+    def test_decrypt_raises_on_corrupted_base64(self):
+        with self.assertRaises(DecryptionError):
+            self.encryptor.decrypt("not-valid-base64-!!!")
 
     def test_env_key_provider_falls_back_to_dev_default_when_unset(self):
         with patch.dict(os.environ, {}, clear=False):

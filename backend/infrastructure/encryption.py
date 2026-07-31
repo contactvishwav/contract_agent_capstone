@@ -65,16 +65,30 @@ class EnvKeyProvider(IKeyProvider):
         return hashlib.sha256(key_source.encode("utf-8")).digest()
 
 
+class DecryptionError(Exception):
+    """Raised when a stored field can't be decrypted - wrong/rotated key,
+    corrupted data, or a tampered ciphertext. Deliberately distinct from a
+    bare Exception so callers that need to react to a decrypt failure
+    specifically (as opposed to any other error) can catch this one type."""
+
+
 class FieldEncryptor:
     """
     AES-256-GCM encryption for individual text fields. Output is
     base64(nonce || ciphertext-with-auth-tag) as a single string, so it
     round-trips cleanly through Neo4j's string properties.
 
-    decrypt() falls back to returning its input unchanged if it can't be
-    decrypted (bad base64, wrong key, or genuinely-plaintext legacy data) -
-    a safety net for any data written before encryption was added, not a
-    security boundary.
+    decrypt() raises DecryptionError on any failure (bad base64, wrong key,
+    or a corrupted/tampered ciphertext) rather than silently returning the
+    input unchanged. There is no legacy-plaintext fallback: every write
+    site for every encrypted field (Contract.full_text, Clause.content,
+    Chunk.content/DocumentChunk.content - P3 item 21 and its follow-up)
+    has encrypted before persisting since the field was introduced, so
+    there is no real plaintext-written-before-encryption data this system
+    has ever needed to tolerate. A silent pass-through here would make a
+    genuinely corrupted or tampered field indistinguishable from a
+    successful decrypt of garbage bytes - the opposite of what encryption
+    at rest is supposed to guarantee.
     """
 
     def __init__(self, key_provider: IKeyProvider = None):
@@ -97,8 +111,8 @@ class FieldEncryptor:
             aesgcm = AESGCM(self._key_provider.get_key())
             return aesgcm.decrypt(nonce, ciphertext, None).decode("utf-8")
         except Exception as e:
-            logger.warning(f"Could not decrypt field, returning as-is (legacy plaintext?): {e}")
-            return encoded
+            logger.error(f"Failed to decrypt field - corrupted, tampered, or wrong key: {e}")
+            raise DecryptionError(f"Could not decrypt field: {e}") from e
 
 
 # Module-level default instance, matching this codebase's existing

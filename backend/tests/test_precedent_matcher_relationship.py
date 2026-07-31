@@ -27,6 +27,8 @@ with patch("langchain_neo4j.Neo4jGraph"), \
      patch("backend.shared.utils.gemini_embedding_service.embedding"):
     from backend.agents.enhanced_cuad_tools import EnhancedPrecedentMatcherTool
 
+from backend.infrastructure.encryption import field_encryptor
+
 
 class FakeGraph:
     """
@@ -80,7 +82,9 @@ class FakeGraph:
 
 class TestPrecedentSearchRelationshipType(unittest.TestCase):
     def _ingest_sample_clause(self, graph, tenant_id, contract_id, clause_type, content):
-        """Mirrors the real ingestion write in enhanced_document_processing_service.py:246-258."""
+        """Mirrors the real ingestion write in enhanced_document_processing_service.py:246-258 -
+        including encrypting content before storage (P3 item 21), since
+        FieldEncryptor.decrypt() no longer tolerates unencrypted input."""
         graph.query(
             """
             MATCH (c:Contract {file_id: $file_id})
@@ -94,7 +98,7 @@ class TestPrecedentSearchRelationshipType(unittest.TestCase):
                 "clause_id": f"{contract_id}_clause_0",
                 "tenant_id": tenant_id,
                 "clause_type": clause_type,
-                "content": content,
+                "content": field_encryptor.encrypt(content),
             },
         )
 

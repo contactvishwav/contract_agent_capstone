@@ -25,6 +25,8 @@ identical call took the cache path instead of re-querying.
 import unittest
 from unittest.mock import MagicMock, patch
 
+from backend.infrastructure.encryption import field_encryptor
+
 
 def _async_return(value):
     async def _coro():
@@ -134,8 +136,8 @@ class ChunkEmbeddingSearchCachingTests(unittest.IsolatedAsyncioTestCase):
             side_effect=lambda *_: _async_return([0.1, 0.2])
         )
         fake_graph = CountingFakeGraph(response=[{
-            "chunk_id": "c1", "content": "plain unencrypted chunk text", "chunk_type": "sentence",
-            "start_position": 0, "end_position": 10, "similarity": 0.9,
+            "chunk_id": "c1", "content": field_encryptor.encrypt("real chunk text, encrypted at rest"),
+            "chunk_type": "sentence", "start_position": 0, "end_position": 10, "similarity": 0.9,
         }])
         service.graph = fake_graph
 
@@ -194,7 +196,8 @@ class TenantScopedChunkGraph:
         self.chunks = []
 
     def add_chunk(self, tenant_id: str, chunk_id: str, content: str):
-        self.chunks.append({"tenant_id": tenant_id, "chunk_id": chunk_id, "content": content})
+        """content is the plaintext - stored encrypted, matching real ingestion."""
+        self.chunks.append({"tenant_id": tenant_id, "chunk_id": chunk_id, "content": field_encryptor.encrypt(content)})
 
     def query(self, cypher: str, params: dict = None):
         params = params or {}
