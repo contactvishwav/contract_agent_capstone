@@ -8,6 +8,7 @@ import { ClausesDetail } from './ClausesDetail';
 import { ViolationsDetail } from './ViolationsDetail';
 import { RiskDetail } from './RiskDetail';
 import { useModal } from '../../../lib/useModal';
+import { apiFetch } from '../../../lib/apiClient';
 
 interface ContractClause {
   clause_type: string;
@@ -53,7 +54,7 @@ async function pollTaskStatus(statusUrl: string): Promise<any> {
   const deadline = Date.now() + TASK_POLL_TIMEOUT_MS;
 
   while (Date.now() < deadline) {
-    const response = await fetch(statusUrl);
+    const response = await apiFetch(statusUrl);
     if (!response.ok) {
       throw new Error(`Failed to check analysis status: ${response.statusText}`);
     }
@@ -92,7 +93,7 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
     // Start polling for workflow status
     const pollWorkflow = setInterval(async () => {
       try {
-        const workflowResponse = await fetch('/api/workflow/status');
+        const workflowResponse = await apiFetch('/api/workflow/status');
         if (workflowResponse.ok) {
           const workflowData = await workflowResponse.json();
           onWorkflowUpdate?.(workflowData);
@@ -103,7 +104,7 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
     }, 500);
     
     try {
-      const response = await fetch(`/api/intelligence/contracts/${contractId}/analyze?model=${model}`, {
+      const response = await apiFetch(`/api/intelligence/contracts/${contractId}/analyze?model=${model}`, {
         method: 'POST',
       });
 
@@ -138,7 +139,7 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
       // Final workflow status update
       setTimeout(async () => {
         try {
-          const workflowResponse = await fetch('/api/workflow/status');
+          const workflowResponse = await apiFetch('/api/workflow/status');
           if (workflowResponse.ok) {
             const workflowData = await workflowResponse.json();
             onWorkflowUpdate?.(workflowData);

@@ -7,10 +7,12 @@ import { DocumentationPage } from './pages/DocumentationPage';
 import { SearchPage } from './pages/SearchPage';
 import { ErrorBoundary } from './components/shared/ErrorBoundary';
 import { ContractHistoryProvider } from './contexts/ContractHistoryContext';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { LoginScreen } from './components/features/auth/LoginScreen';
 import { useRouter } from './lib/useRouter';
 import './App.css';
 
-function App() {
+function AuthenticatedApp() {
   const { currentPage, navigate } = useRouter();
 
   const renderPage = () => {
@@ -33,16 +35,29 @@ function App() {
   };
 
   return (
-    <ContractHistoryProvider>
-      <ThemeProvider defaultTheme="light" storageKey="vite-ui-theme">
-        <div className="min-h-screen bg-slate-50">
-          <div className="mx-auto max-w-7xl p-6">
-            <Navigation currentPage={currentPage} onNavigate={navigate} />
-            {renderPage()}
-          </div>
-        </div>
-      </ThemeProvider>
-    </ContractHistoryProvider>
+    <div className="min-h-screen bg-slate-50">
+      <div className="mx-auto max-w-7xl p-6">
+        <Navigation currentPage={currentPage} onNavigate={navigate} />
+        {renderPage()}
+      </div>
+    </div>
+  );
+}
+
+function Gate() {
+  const { isAuthenticated } = useAuth();
+  return isAuthenticated ? <AuthenticatedApp /> : <LoginScreen />;
+}
+
+function App() {
+  return (
+    <AuthProvider>
+      <ContractHistoryProvider>
+        <ThemeProvider defaultTheme="light" storageKey="vite-ui-theme">
+          <Gate />
+        </ThemeProvider>
+      </ContractHistoryProvider>
+    </AuthProvider>
   );
 }
 

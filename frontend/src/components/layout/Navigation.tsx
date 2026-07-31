@@ -1,5 +1,7 @@
 import React from 'react';
 import { Button } from '../shared/ui/button';
+import { UserCircle2, LogOut } from 'lucide-react';
+import { useAuth } from '../../contexts/AuthContext';
 
 interface NavigationProps {
   currentPage: 'chat' | 'intelligence' | 'agents' | 'search';
@@ -7,6 +9,8 @@ interface NavigationProps {
 }
 
 export const Navigation: React.FC<NavigationProps> = ({ currentPage, onNavigate }) => {
+  const { session, logout } = useAuth();
+
   return (
     <nav className="mb-8 border-b border-slate-200 bg-white rounded-lg shadow-sm">
       <div className="px-6 py-4">
@@ -44,9 +48,27 @@ export const Navigation: React.FC<NavigationProps> = ({ currentPage, onNavigate 
               </Button>
             </div>
           </div>
-          <div className="text-sm text-slate-500">
-            AI-Powered Legal Document Analysis
-          </div>
+          {session && (
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1.5 text-sm text-slate-600">
+                <UserCircle2 className="h-4 w-4 text-slate-400" />
+                <span>
+                  Logged in as <span className="font-medium text-slate-800">{session.tenantId}</span>
+                  {' · '}
+                  <span className="font-medium text-slate-800">{session.role}</span>
+                </span>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={logout}
+                className="text-slate-500 hover:text-red-600 hover:bg-red-50"
+              >
+                <LogOut className="h-3.5 w-3.5 mr-1.5" />
+                Log out
+              </Button>
+            </div>
+          )}
         </div>
       </div>
     </nav>

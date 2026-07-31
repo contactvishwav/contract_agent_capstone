@@ -1,4 +1,5 @@
 import { EnhancedSearchParams } from '../components/search/EnhancedSearchInterface';
+import { apiFetch } from '../lib/apiClient';
 
 const API_BASE_URL = 'http://localhost:8000';
 
@@ -17,7 +18,7 @@ export interface SectionType {
 class EnhancedSearchApi {
   
   async searchContracts(params: EnhancedSearchParams): Promise<EnhancedSearchResponse> {
-    const response = await fetch(`${API_BASE_URL}/api/contracts/search/enhanced`, {
+    const response = await apiFetch(`${API_BASE_URL}/api/contracts/search/enhanced`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -41,7 +42,7 @@ class EnhancedSearchApi {
   }
 
   async getClauseTypes(): Promise<string[]> {
-    const response = await fetch(`${API_BASE_URL}/api/contracts/search/clause-types`);
+    const response = await apiFetch(`${API_BASE_URL}/api/contracts/search/clause-types`);
     
     if (!response.ok) {
       throw new Error(`Failed to get clause types: ${response.statusText}`);
@@ -52,7 +53,7 @@ class EnhancedSearchApi {
   }
 
   async getSectionTypes(): Promise<SectionType[]> {
-    const response = await fetch(`${API_BASE_URL}/api/contracts/search/section-types`);
+    const response = await apiFetch(`${API_BASE_URL}/api/contracts/search/section-types`);
     
     if (!response.ok) {
       throw new Error(`Failed to get section types: ${response.statusText}`);
@@ -70,7 +71,7 @@ class EnhancedSearchApi {
     const formData = new FormData();
     formData.append('file', file);
 
-    const response = await fetch(
+    const response = await apiFetch(
       `${API_BASE_URL}/documents/enhanced/upload?model=${model}&enable_embeddings=${enableEmbeddings}`,
       {
         method: 'POST',
@@ -86,7 +87,7 @@ class EnhancedSearchApi {
   }
 
   async getEmbeddingStatus(contractId: string): Promise<any> {
-    const response = await fetch(`${API_BASE_URL}/documents/enhanced/embedding-status/${contractId}`);
+    const response = await apiFetch(`${API_BASE_URL}/documents/enhanced/embedding-status/${contractId}`);
     
     if (!response.ok) {
       throw new Error(`Failed to get embedding status: ${response.statusText}`);

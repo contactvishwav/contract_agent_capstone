@@ -2,6 +2,7 @@ import React, { useState, useCallback } from 'react';
 import { Button } from '../../shared/ui/button';
 import { Card } from '../../shared/ui/card';
 import { Loader } from '../../shared/ui/loader';
+import { apiFetch } from '../../../lib/apiClient';
 
 interface DocumentUploadProps {
   onUploadComplete?: (result: UploadResult) => void;
@@ -51,7 +52,7 @@ export const DocumentUpload: React.FC<DocumentUploadProps> = ({
     // Start polling for workflow status
     const pollWorkflow = setInterval(async () => {
       try {
-        const workflowResponse = await fetch('/api/workflow/status');
+        const workflowResponse = await apiFetch('/api/workflow/status');
         if (workflowResponse.ok) {
           const workflowData = await workflowResponse.json();
           onWorkflowUpdate?.(workflowData);
@@ -66,7 +67,7 @@ export const DocumentUpload: React.FC<DocumentUploadProps> = ({
       formData.append('file', file);
       formData.append('model', modelSelection);
 
-      const response = await fetch('/api/documents/upload', {
+      const response = await apiFetch('/api/documents/upload', {
         method: 'POST',
         body: formData
       });
@@ -96,7 +97,7 @@ export const DocumentUpload: React.FC<DocumentUploadProps> = ({
       // Final workflow status update
       setTimeout(async () => {
         try {
-          const workflowResponse = await fetch('/api/workflow/status');
+          const workflowResponse = await apiFetch('/api/workflow/status');
           if (workflowResponse.ok) {
             const workflowData = await workflowResponse.json();
             onWorkflowUpdate?.(workflowData);

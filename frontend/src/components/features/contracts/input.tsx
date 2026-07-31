@@ -13,6 +13,7 @@ import { fetchEventSource } from '@microsoft/fetch-event-source';
 import { MouseEvent } from 'react';
 import { SendHorizontal } from "lucide-react";
 import { Message, MessagePart, useChat } from "./provider";
+import { authHeader, clearSession } from "../../../lib/authStore";
 
 export function ChatInput() {
     const history = useRef<string[]>([])
@@ -51,10 +52,12 @@ export function ChatInput() {
         // Clear the form after submission
         event.target.reset();
 
+        const auth = authHeader();
         await fetchEventSource('/api/run/', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
+                ...(auth ? { Authorization: auth } : {}),
             },
             body: JSON.stringify({ model, prompt, history: JSON.stringify(history.current) }),
             onmessage(event) {
@@ -68,7 +71,14 @@ export function ChatInput() {
                     addMessagePart(aiMessage.id, data);
                 }
             },
-            async onopen() {
+            async onopen(response) {
+                if (response.status === 401) {
+                    // Session expired/invalid - matches apiClient.ts's handling
+                    // for regular fetch calls, so the login gate takes over
+                    // instead of leaving the chat silently stuck.
+                    clearSession();
+                    throw new Error('Session expired - please sign in again');
+                }
                 setSubmiting(true);
             },
             onclose() {
