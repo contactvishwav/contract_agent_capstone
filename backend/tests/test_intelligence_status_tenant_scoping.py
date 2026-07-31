@@ -4,12 +4,15 @@ Regression test: get_intelligence_status and get_intelligence_dashboard
 "default-tenant" into their Cypher query params regardless of who called
 them, ignoring the actual caller entirely - two tenants' status/dashboard
 requests could never be distinguished, and neither could read its own real
-data unless it happened to be named "default-tenant".
+data unless it happened to be named "default-tenant". Later (P1) this
+became a client-supplied tenant_id query param; now (JWT migration)
+tenant_id comes from a validated TokenIdentity instead - these tests updated
+accordingly, same assertions.
 
-This test confirms both endpoints now accept and use the caller-supplied
-tenant_id in the actual query sent to Neo4j, and that two different tenants
-querying the same contract_id get separately-scoped queries (not a shared
-"default-tenant" bucket).
+This test confirms both endpoints use the caller's real tenant_id (from
+their token) in the actual query sent to Neo4j, and that two different
+tenants querying the same contract_id get separately-scoped queries (not a
+shared bucket).
 """
 
 import asyncio
@@ -19,6 +22,7 @@ from unittest.mock import patch, MagicMock
 with patch("langchain_neo4j.Neo4jGraph"), \
      patch("backend.shared.utils.gemini_embedding_service.embedding"):
     from backend.api import contract_intelligence
+    from backend.governance.auth import TokenIdentity
 
 
 class TestIntelligenceStatusTenantScoping(unittest.TestCase):
@@ -35,17 +39,21 @@ class TestIntelligenceStatusTenantScoping(unittest.TestCase):
 
     def test_get_intelligence_status_uses_caller_tenant_id(self):
         asyncio.run(contract_intelligence.get_intelligence_status(
-            contract_id="CNT1", tenant_id="tenant_b"
+            contract_id="CNT1", identity=TokenIdentity(tenant_id="tenant_b", role="ADMIN")
         ))
         _, params = self.fake_graph.query.call_args[0]
         self.assertEqual(params["tenant_id"], "tenant_b")
         self.assertNotEqual(params["tenant_id"], "default-tenant")
 
     def test_get_intelligence_status_scopes_differently_per_tenant(self):
-        asyncio.run(contract_intelligence.get_intelligence_status(contract_id="CNT1", tenant_id="tenant_a"))
+        asyncio.run(contract_intelligence.get_intelligence_status(
+            contract_id="CNT1", identity=TokenIdentity(tenant_id="tenant_a", role="ADMIN")
+        ))
         _, params_a = self.fake_graph.query.call_args[0]
 
-        asyncio.run(contract_intelligence.get_intelligence_status(contract_id="CNT1", tenant_id="tenant_b"))
+        asyncio.run(contract_intelligence.get_intelligence_status(
+            contract_id="CNT1", identity=TokenIdentity(tenant_id="tenant_b", role="ADMIN")
+        ))
         _, params_b = self.fake_graph.query.call_args[0]
 
         self.assertNotEqual(params_a["tenant_id"], params_b["tenant_id"])
@@ -63,16 +71,22 @@ class TestIntelligenceDashboardTenantScoping(unittest.TestCase):
         self.addCleanup(self._patcher.stop)
 
     def test_get_intelligence_dashboard_uses_caller_tenant_id(self):
-        asyncio.run(contract_intelligence.get_intelligence_dashboard(tenant_id="tenant_b"))
+        asyncio.run(contract_intelligence.get_intelligence_dashboard(
+            identity=TokenIdentity(tenant_id="tenant_b", role="ADMIN")
+        ))
         _, params = self.fake_graph.query.call_args[0]
         self.assertEqual(params["tenant_id"], "tenant_b")
         self.assertNotEqual(params["tenant_id"], "default-tenant")
 
     def test_get_intelligence_dashboard_scopes_differently_per_tenant(self):
-        asyncio.run(contract_intelligence.get_intelligence_dashboard(tenant_id="tenant_a"))
+        asyncio.run(contract_intelligence.get_intelligence_dashboard(
+            identity=TokenIdentity(tenant_id="tenant_a", role="ADMIN")
+        ))
         _, params_a = self.fake_graph.query.call_args[0]
 
-        asyncio.run(contract_intelligence.get_intelligence_dashboard(tenant_id="tenant_b"))
+        asyncio.run(contract_intelligence.get_intelligence_dashboard(
+            identity=TokenIdentity(tenant_id="tenant_b", role="ADMIN")
+        ))
         _, params_b = self.fake_graph.query.call_args[0]
 
         self.assertNotEqual(params_a["tenant_id"], params_b["tenant_id"])

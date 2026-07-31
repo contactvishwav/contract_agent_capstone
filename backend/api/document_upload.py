@@ -1,5 +1,6 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Query, Depends, Request
 from backend.governance.rbac import Permission, requires_permission
+from backend.governance.auth import TokenIdentity
 from fastapi.responses import StreamingResponse
 from backend.application.services.document_processing_service import DocumentServiceFactory
 from backend.domain.entities import DocumentProcessingRequest
@@ -84,15 +85,15 @@ async def debug_contract_types():
         logger.error(f"Debug contract types failed: {e}")
         return {"error": str(e)}
 
-@router.post("/upload", dependencies=[Depends(requires_permission(Permission.UPLOAD))])
+@router.post("/upload")
 @audit_log(AuditEventType.DOCUMENT_UPLOAD, "upload_pdf")
 async def upload_pdf(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    tenant_id: str = Query(..., description="Tenant ID for data isolation (required)"),
     model: str = Query(default="gemini-2.5-flash", description="LLM model to use for processing"),
     enable_enhanced: bool = Query(default=False, description="Enable enhanced processing with sections/clauses"),
-    llm_mgr: LLMManager = Depends(get_llm_manager)
+    llm_mgr: LLMManager = Depends(get_llm_manager),
+    identity: TokenIdentity = Depends(requires_permission(Permission.UPLOAD)),
 ):
     """
     Upload and process PDF contract
@@ -100,7 +101,8 @@ async def upload_pdf(
     - Processes using PDF processing agent
     - Returns processing status
     """
-    
+    tenant_id = identity.tenant_id
+
     logger.info(f"=== UPLOAD START: {file.filename if file else 'NO FILE'} ===")
     
     # Initialize services
@@ -415,18 +417,19 @@ async def upload_pdf(
                     logger.error(f"Failed to cleanup temp file: {cleanup_error}")
             logger.info(f"=== UPLOAD END: {file.filename if file else 'unknown'} ===")
 
-@router.post("/upload-stream", dependencies=[Depends(requires_permission(Permission.UPLOAD))])
+@router.post("/upload-stream")
 async def upload_pdf_stream(
     file: UploadFile = File(...),
-    tenant_id: str = Query(..., description="Tenant ID for data isolation (required)"),
     model: str = Query(default="gemini-2.5-flash", description="LLM model to use for processing"),
-    llm_mgr: LLMManager = Depends(get_llm_manager)
+    llm_mgr: LLMManager = Depends(get_llm_manager),
+    identity: TokenIdentity = Depends(requires_permission(Permission.UPLOAD)),
 ):
     """
     Upload and process PDF with streaming response
     Similar to existing /run/ endpoint pattern
     """
-    
+    tenant_id = identity.tenant_id
+
     try:
         # Validation (same as above)
         if not file.filename or not file.filename.lower().endswith('.pdf'):

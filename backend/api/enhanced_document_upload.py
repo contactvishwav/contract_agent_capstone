@@ -1,5 +1,6 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Depends, Request
 from backend.governance.rbac import Permission, requires_permission
+from backend.governance.auth import TokenIdentity
 from backend.application.services.enhanced_document_processing_service import EnhancedDocumentServiceFactory
 from backend.domain.entities import DocumentProcessingRequest
 from backend.infrastructure.content_validator import ContentValidationService
@@ -19,13 +20,13 @@ router = APIRouter(prefix="/api/documents/enhanced", tags=["enhanced-documents"]
 def get_llm_manager(request: Request):
     return request.app.state.llm_manager
 
-@router.post("/upload", dependencies=[Depends(requires_permission(Permission.UPLOAD))])
+@router.post("/upload")
 async def upload_pdf_enhanced(
     file: UploadFile = File(...),
-    tenant_id: str = Query(..., description="Tenant ID for data isolation (required)"),
     model: str = Query(default="gemini-2.5-flash", description="LLM model to use for processing"),
     enable_embeddings: bool = Query(default=True, description="Enable multi-level embeddings processing"),
-    llm_mgr: LLMManager = Depends(get_llm_manager)
+    llm_mgr: LLMManager = Depends(get_llm_manager),
+    identity: TokenIdentity = Depends(requires_permission(Permission.UPLOAD)),
 ):
     """
     Upload and process PDF contract with enhanced multi-level embeddings
@@ -34,7 +35,8 @@ async def upload_pdf_enhanced(
     - Generates document, section, clause, and relationship embeddings
     - Returns processing status with embedding details
     """
-    
+    tenant_id = identity.tenant_id
+
     logger.info(f"=== ENHANCED UPLOAD START: {file.filename if file else 'NO FILE'} ===")
     
     try:

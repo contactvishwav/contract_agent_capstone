@@ -46,7 +46,33 @@ interface ContractIntelligenceProps {
   onAnalysisComplete?: (contractId: string, riskScore?: number, riskLevel?: string) => void;
 }
 
-export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({ 
+const TASK_POLL_INTERVAL_MS = 1500;
+const TASK_POLL_TIMEOUT_MS = 5 * 60 * 1000;
+
+async function pollTaskStatus(statusUrl: string): Promise<any> {
+  const deadline = Date.now() + TASK_POLL_TIMEOUT_MS;
+
+  while (Date.now() < deadline) {
+    const response = await fetch(statusUrl);
+    if (!response.ok) {
+      throw new Error(`Failed to check analysis status: ${response.statusText}`);
+    }
+    const body = await response.json();
+
+    if (body.status === 'SUCCESS') {
+      return body.result;
+    }
+    if (body.status === 'FAILURE') {
+      throw new Error(body.error || 'Analysis task failed');
+    }
+    // PENDING / STARTED - keep polling.
+    await new Promise((resolve) => setTimeout(resolve, TASK_POLL_INTERVAL_MS));
+  }
+
+  throw new Error('Analysis is taking longer than expected. Please check back shortly.');
+}
+
+export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
   contractId, 
   model = 'gemini-2.5-flash',
   onWorkflowUpdate,
@@ -80,7 +106,7 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
       const response = await fetch(`/api/intelligence/contracts/${contractId}/analyze?model=${model}`, {
         method: 'POST',
       });
-      
+
       if (!response.ok) {
         if (response.status === 404) {
           throw new Error('Contract not found. Please verify the contract ID.');
@@ -90,15 +116,20 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
         }
         throw new Error(`Analysis failed: ${response.statusText}`);
       }
-      
-      const data = await response.json();
-      
+
+      // Analysis now runs as a Celery task - the POST above just enqueues
+      // it and returns a task_id immediately. Poll the real task status
+      // until it reaches a terminal state (SUCCESS/FAILURE) instead of
+      // expecting the results inline in this response.
+      const { status_url } = await response.json();
+      const data = await pollTaskStatus(status_url);
+
       if (!data.results) {
         throw new Error('No analysis results returned. The contract may be invalid or corrupted.');
       }
-      
+
       setResults(data.results);
-      
+
       // Report analysis completion with full results
       if (data.results?.risk_assessment) {
         onAnalysisComplete?.(contractId, data.results.risk_assessment.overall_risk_score, data.results.risk_assessment.risk_level, data.results);

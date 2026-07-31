@@ -29,6 +29,8 @@ dependencies = [
     "fastmcp>=0.1.0",
     "nest_asyncio>=1.6.0",
     "cryptography>=49.0.0",
+    "pyjwt>=2.10.0",
+    "celery[redis]>=5.4.0",
 ]
 
 [tool.ruff]

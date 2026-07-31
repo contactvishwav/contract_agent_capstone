@@ -90,6 +90,10 @@ app.include_router(monitoring_router)
 from backend.api.audit_api import router as audit_router
 app.include_router(audit_router)
 
+# Auth API (JWT token issuance)
+from backend.api.auth_api import router as auth_router
+app.include_router(auth_router)
+
 # AI Patterns API
 from backend.api.patterns_api import router as patterns_router
 app.include_router(patterns_router)

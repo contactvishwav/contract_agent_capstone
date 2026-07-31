@@ -30,6 +30,7 @@ with patch("langchain_neo4j.Neo4jGraph"), \
      patch("backend.shared.utils.gemini_embedding_service.embedding"):
     from backend.infrastructure.policy_repository import PolicyRepository
     from backend.api import policy_api
+    from backend.governance.auth import TokenIdentity
 
 
 class FakePolicyGraph:
@@ -185,7 +186,7 @@ class TestPolicyApiRoutesRejectCrossTenant(unittest.TestCase):
         with patch.object(self.policy_api, "PolicyRepository", return_value=self.repo):
             with self.assertRaises(HTTPException) as cm:
                 asyncio.run(self.policy_api.get_policy_details(
-                    policy_id="policy_tenant_a_20260101", tenant_id="tenant_b"
+                    policy_id="policy_tenant_a_20260101", identity=TokenIdentity(tenant_id="tenant_b", role="ADMIN")
                 ))
         # A pre-existing (separate, out-of-scope) broad `except Exception` in
         # this route re-wraps the intended 404 into a 500 - not something
@@ -196,7 +197,7 @@ class TestPolicyApiRoutesRejectCrossTenant(unittest.TestCase):
         # Confirm the own-tenant path still works through the same route.
         with patch.object(self.policy_api, "PolicyRepository", return_value=self.repo):
             result = asyncio.run(self.policy_api.get_policy_details(
-                policy_id="policy_tenant_a_20260101", tenant_id="tenant_a"
+                policy_id="policy_tenant_a_20260101", identity=TokenIdentity(tenant_id="tenant_a", role="ADMIN")
             ))
         self.assertTrue(result["success"])
         self.assertEqual(result["policy"]["tenant_id"], "tenant_a")
@@ -205,7 +206,7 @@ class TestPolicyApiRoutesRejectCrossTenant(unittest.TestCase):
         with patch.object(self.policy_api, "PolicyRepository", return_value=self.repo):
             with self.assertRaises(HTTPException) as cm:
                 asyncio.run(self.policy_api.delete_policy(
-                    policy_id="policy_tenant_a_20260101", tenant_id="tenant_b"
+                    policy_id="policy_tenant_a_20260101", identity=TokenIdentity(tenant_id="tenant_b", role="ADMIN")
                 ))
         self.assertIn("not found", cm.exception.detail.lower())
         # The policy must still be active/untouched for its real tenant.
@@ -213,7 +214,7 @@ class TestPolicyApiRoutesRejectCrossTenant(unittest.TestCase):
 
         with patch.object(self.policy_api, "PolicyRepository", return_value=self.repo):
             result = asyncio.run(self.policy_api.delete_policy(
-                policy_id="policy_tenant_a_20260101", tenant_id="tenant_a"
+                policy_id="policy_tenant_a_20260101", identity=TokenIdentity(tenant_id="tenant_a", role="ADMIN")
             ))
         self.assertTrue(result["success"])
         self.assertFalse(self.graph.documents["policy_tenant_a_20260101"]["active"])

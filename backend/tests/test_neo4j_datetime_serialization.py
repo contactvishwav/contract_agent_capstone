@@ -31,6 +31,7 @@ with patch("langchain_neo4j.Neo4jGraph"), \
     from backend.shared.utils.utils import serialize_neo4j_datetime
     from backend.api import contract_intelligence
     from backend.infrastructure.error_tracker import ErrorTracker
+    from backend.governance.auth import TokenIdentity
 
 _FIXED_DATETIME = DateTime(2026, 7, 30, 23, 36, 58, 813000000)
 
@@ -67,7 +68,7 @@ class IntelligenceStatusLastUpdatedSerializationTests(unittest.TestCase):
     def test_last_updated_is_a_valid_iso_string_not_raw_datetime(self):
         import asyncio
         response = asyncio.run(contract_intelligence.get_intelligence_status(
-            contract_id="CNT1", tenant_id="tenant_a"
+            contract_id="CNT1", identity=TokenIdentity(tenant_id="tenant_a", role="ADMIN")
         ))
 
         last_updated = response["last_updated"]
@@ -80,7 +81,7 @@ class IntelligenceStatusLastUpdatedSerializationTests(unittest.TestCase):
         import json
 
         response = asyncio.run(contract_intelligence.get_intelligence_status(
-            contract_id="CNT1", tenant_id="tenant_a"
+            contract_id="CNT1", identity=TokenIdentity(tenant_id="tenant_a", role="ADMIN")
         ))
 
         # Would raise TypeError before the fix - neo4j.time.DateTime has no

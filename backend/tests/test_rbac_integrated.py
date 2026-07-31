@@ -7,6 +7,11 @@ zero patching. It only worked because pytest's alphabetical collection
 order left an earlier test file's Neo4jGraph mock cached in sys.modules by
 the time this file's tests ran - run it alone and it would attempt a real
 Neo4j connection.
+
+JWT migration: the old X-User-Role header mechanism is gone entirely -
+every request now needs a real, signed Authorization: Bearer token
+(backend/governance/auth.py). Uses the shared auth_headers helper
+(backend/tests/conftest.py) rather than hand-building tokens per test.
 """
 
 import unittest
@@ -19,6 +24,9 @@ with patch("langchain_neo4j.Neo4jGraph") as _MockNeo4jGraph, \
     from backend.main import app
     from backend.governance.rbac import UserRole, Permission
 
+from backend.tests.conftest import auth_headers
+
+
 class TestRBACIntegrated(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
@@ -28,15 +36,15 @@ class TestRBACIntegrated(unittest.TestCase):
         # Test Search
         response = self.client.post(
             "/api/contracts/search/enhanced",
-            headers={"X-User-Role": UserRole.ADMIN},
+            headers=auth_headers(role=UserRole.ADMIN.value),
             json={"search_level": "document", "query": "test"}
         )
         self.assertNotEqual(response.status_code, 403)
-        
+
         # Test Audit
         response = self.client.get(
             "/api/audit/trail/test-resource",
-            headers={"X-User-Role": UserRole.ADMIN}
+            headers=auth_headers(role=UserRole.ADMIN.value)
         )
         self.assertNotEqual(response.status_code, 403)
 
@@ -45,15 +53,15 @@ class TestRBACIntegrated(unittest.TestCase):
         # Test Search (ALLOWED)
         response = self.client.post(
             "/api/contracts/search/enhanced",
-            headers={"X-User-Role": UserRole.VIEWER},
+            headers=auth_headers(role=UserRole.VIEWER.value),
             json={"search_level": "document", "query": "test"}
         )
         self.assertNotEqual(response.status_code, 403)
-        
+
         # Test Audit Trail (DENIED)
         response = self.client.get(
             "/api/audit/trail/test-resource",
-            headers={"X-User-Role": UserRole.VIEWER}
+            headers=auth_headers(role=UserRole.VIEWER.value)
         )
         self.assertEqual(response.status_code, 403)
         self.assertIn("VIEW_AUDIT", response.json()["detail"])
@@ -63,42 +71,41 @@ class TestRBACIntegrated(unittest.TestCase):
         # Test Search (ALLOWED)
         response = self.client.post(
             "/api/contracts/search/enhanced",
-            headers={"X-User-Role": UserRole.LEGAL_REVIEWER},
+            headers=auth_headers(role=UserRole.LEGAL_REVIEWER.value),
             json={"search_level": "document", "query": "test"}
         )
         self.assertNotEqual(response.status_code, 403)
-        
+
         # Test Audit Trail (DENIED)
         response = self.client.get(
             "/api/audit/trail/test-resource",
-            headers={"X-User-Role": UserRole.LEGAL_REVIEWER}
+            headers=auth_headers(role=UserRole.LEGAL_REVIEWER.value)
         )
         self.assertEqual(response.status_code, 403)
 
-    def test_invalid_role_blocked(self):
-        """Request with invalid role should be blocked (401)"""
+    def test_invalid_role_claim_blocked(self):
+        """A validly-signed token whose role claim isn't a real UserRole
+        should be blocked (401) - was "invalid X-User-Role header" before
+        the JWT migration; same outcome, different mechanism."""
         response = self.client.get(
             "/api/audit/trail/test-resource",
-            headers={"X-User-Role": "HACKER"}
+            headers=auth_headers(role="HACKER")
         )
         self.assertEqual(response.status_code, 401)
-        self.assertIn("Invalid user role", response.json()["detail"])
 
-    def test_missing_role_defaults_to_viewer(self):
-        """Request without header should default to VIEWER (if configured) or block"""
-        # In our implementation it defaults to VIEWER in get_current_user_role
-        # Let's verify a VIEWER action (search) and an ADMIN action (audit)
-        
-        # Search (ALLOWED for VIEWER)
+    def test_missing_token_is_401_not_a_default_role(self):
+        """Was "request without header defaults to VIEWER" - the JWT
+        migration deliberately removes that default entirely: no token
+        means no access at all, not a silent minimal-permission fallback."""
         response = self.client.post(
             "/api/contracts/search/enhanced",
             json={"search_level": "document", "query": "test"}
         )
-        self.assertNotEqual(response.status_code, 403)
-        
-        # Audit (DENIED for VIEWER)
+        self.assertEqual(response.status_code, 401)
+
         response = self.client.get("/api/audit/trail/test-resource")
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 401)
+
 
 if __name__ == "__main__":
     unittest.main()

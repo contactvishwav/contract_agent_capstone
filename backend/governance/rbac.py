@@ -1,6 +1,7 @@
 from enum import Enum
 from typing import List, Dict, Set, Optional
-from fastapi import Header, HTTPException, Depends, status
+from fastapi import HTTPException, Depends, status
+from backend.governance.auth import get_current_identity, TokenIdentity
 from backend.shared.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -48,39 +49,40 @@ class RBACManager:
         allowed_permissions = cls.ROLE_PERMISSIONS.get(role, set())
         return permission in allowed_permissions
 
-async def get_current_user_role(x_user_role: Optional[str] = Header(None)) -> UserRole:
-    """
-    FastAPI dependency to extract user role from header.
-    Mock implementation - in production this would validate a JWT token.
-    """
-    if not x_user_role:
-        logger.warning("Access attempted without user role header")
-        # Default to VIEWER for safety - matches test_missing_role_defaults_to_viewer
-        return UserRole.VIEWER
-        
-    try:
-        role = UserRole(x_user_role.upper())
-        return role
-    except ValueError:
-        logger.error(f"Invalid user role provided: {x_user_role}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid user role: {x_user_role}"
-        )
-
 def requires_permission(permission: Permission):
     """
-    FastAPI dependency factory for RBAC.
-    Usage: @app.get("/...", dependencies=[Depends(requires_permission(Permission.UPLOAD))])
+    FastAPI dependency factory for RBAC - now resolves role (and tenant_id)
+    from a validated JWT (governance/auth.py) instead of a bare, unsigned
+    X-User-Role header. Returns the resolved TokenIdentity (not just True)
+    so a route can do:
+
+        identity: TokenIdentity = Depends(requires_permission(Permission.ANALYZE))
+        ... use identity.tenant_id ...
+
+    collapsing what used to be two separate concerns per route (permission
+    check via this dependency, tenant_id via a separate `Query(...)`
+    parameter) into the one verified source of truth for both.
+
+    Usage as a gate only (no route body access to identity needed):
+        dependencies=[Depends(requires_permission(Permission.UPLOAD))]
     """
-    async def permission_dependency(role: UserRole = Depends(get_current_user_role)):
+    async def permission_dependency(identity: TokenIdentity = Depends(get_current_identity)) -> TokenIdentity:
+        try:
+            role = UserRole(identity.role.upper())
+        except ValueError:
+            logger.error(f"Invalid role claim in token: {identity.role}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Invalid role claim in token: {identity.role}"
+            )
+
         if not RBACManager.has_permission(role, permission):
-            logger.error(f"RBAC Denied: Role '{role}' attempted action requiring '{permission}'")
+            logger.error(f"RBAC Denied: Role '{role}' (tenant '{identity.tenant_id}') attempted action requiring '{permission}'")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Resource requires '{permission}' permission which is not assigned to role '{role}'"
             )
-        logger.info(f"RBAC Allowed: Role '{role}' authorized for '{permission}'")
-        return True
-        
+        logger.info(f"RBAC Allowed: Role '{role}' (tenant '{identity.tenant_id}') authorized for '{permission}'")
+        return identity
+
     return permission_dependency

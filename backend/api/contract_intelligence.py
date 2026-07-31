@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks, Depends, Request
 from backend.governance.rbac import Permission, requires_permission
+from backend.governance.auth import TokenIdentity, get_current_identity
 from fastapi.responses import StreamingResponse
 from backend.application.services.contract_intelligence_service import ContractIntelligenceServiceFactory
 from backend.llm_manager import LLMManager
@@ -22,110 +23,76 @@ repository = Neo4jContractRepository()
 def get_llm_manager(request: Request):
     return request.app.state.llm_manager
 
-@router.post("/contracts/{contract_id}/analyze", dependencies=[Depends(requires_permission(Permission.ANALYZE))])
+@router.post("/contracts/{contract_id}/analyze", status_code=202)
 async def analyze_contract_intelligence(
     contract_id: str,
-    tenant_id: str = Query(..., description="Tenant ID for data isolation (required)"),
     model: str = Query(default="gemini-2.5-flash", description="LLM model to use for analysis"),
     use_planning: bool = Query(default=True, description="Use autonomous planning agent"),
-    llm_mgr: LLMManager = Depends(get_llm_manager)
+    identity: TokenIdentity = Depends(requires_permission(Permission.ANALYZE)),
 ):
     """
-    Perform comprehensive contract intelligence analysis using multi-agent system
-    - Extracts and classifies key clauses
-    - Checks policy compliance
-    - Assesses risks and calculates scores
-    - Generates redline recommendations
+    Enqueue contract intelligence analysis as a real Celery task - the
+    multi-clause extraction + policy evaluation + risk assessment +
+    redline generation pipeline is the one genuinely long-running,
+    multi-LLM-call operation in this system (backend/tasks.py has the full
+    scoping rationale). Returns immediately with a task_id; poll
+    GET .../tasks/{task_id}/status for real Celery state (PENDING/STARTED/
+    SUCCESS/FAILURE) rather than blocking the request for the full
+    duration or getting a fire-and-forget black box.
+
+    tenant_id now comes from the validated token (governance/auth.py), not
+    a client-supplied query parameter - a caller can no longer request
+    analysis "as" a tenant it doesn't hold a token for.
     """
-    
-    try:
-        logger.info(f"Starting intelligence analysis for contract: {contract_id}")
-        
-        # Create service with injected agent manager
-        intelligence_service = ContractIntelligenceServiceFactory.create_service(llm_mgr)
-        
-        # Perform multi-agent analysis with optional planning
-        intelligence = await intelligence_service.analyze_contract_by_id(contract_id, tenant_id, model, use_planning)
-        
-        if not intelligence:
-            raise HTTPException(status_code=404, detail=f"Contract {contract_id} not found or has no content")
-        
-        # Convert to response format with performance info
-        response = {
-            "contract_id": contract_id,
-            "analysis_complete": intelligence.processing_complete,
-            "node_status": intelligence.node_status,
-            "processing_time": intelligence.processing_time,
-            "model_used": model,
-            "phase_used": "phase3_optimized",
-            "results": {
-                "clauses": [
-                    {
-                        "clause_id": clause.clause_id,
-                        "clause_type": clause.clause_type,
-                        "content": clause.content,
-                        "risk_level": clause.risk_level,
-                        "confidence_score": clause.confidence_score,
-                        "location": clause.location,
-                        "grounded": clause.grounded,
-                        "original_risk_level": clause.original_risk_level,
-                        "learned_risk_adjustment": clause.learned_risk_adjustment,
-                        "pattern_confidence": clause.pattern_confidence,
-                        "risk_adjustment_pattern_id": clause.risk_adjustment_pattern_id,
-                    }
-                    for clause in intelligence.clauses
-                ],
-                "violations": [
-                    {
-                        "clause_id": violation.clause_id,
-                        "clause_type": violation.clause_type,
-                        "issue": violation.issue,
-                        "severity": violation.severity,
-                        "suggested_fix": violation.suggested_fix,
-                        "clause_content": violation.clause_content,
-                        "clause_grounded": violation.clause_grounded
-                    }
-                    for violation in intelligence.violations
-                ],
-                "risk_assessment": {
-                    "overall_risk_score": intelligence.risk_assessment.overall_risk_score,
-                    "risk_level": intelligence.risk_assessment.risk_level,
-                    "critical_issues": intelligence.risk_assessment.critical_issues,
-                    "critical_issue_details": intelligence.risk_assessment.critical_issue_details,
-                    "recommendations": intelligence.risk_assessment.recommendations
-                },
-                "redlines": [
-                    {
-                        "original_text": redline.original_text,
-                        "suggested_text": redline.suggested_text,
-                        "justification": redline.justification,
-                        "priority": redline.priority
-                    }
-                    for redline in intelligence.redlines
-                ],
-                "cuad_analysis": {
-                    "deviations": getattr(intelligence, 'cuad_deviations', []),
-                    "jurisdiction": getattr(intelligence, 'jurisdiction_info', {}),
-                    "precedent_matches": getattr(intelligence, 'precedent_matches', []),
-                    "performance_optimized": True,
-                    "cache_enabled": True
-                }
-            }
-        }
-        
-        logger.info(f"Intelligence analysis completed for contract: {contract_id}")
-        return response
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Intelligence analysis failed for contract {contract_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+    from backend.tasks import analyze_contract_task
+
+    task = analyze_contract_task.delay(contract_id, identity.tenant_id, model, use_planning)
+    logger.info(f"Enqueued analysis task {task.id} for contract {contract_id} (tenant {identity.tenant_id})")
+
+    return {
+        "task_id": task.id,
+        "status": "PENDING",
+        "contract_id": contract_id,
+        "status_url": f"/api/intelligence/tasks/{task.id}/status",
+    }
+
+@router.get("/tasks/{task_id}/status")
+async def get_analysis_task_status(
+    task_id: str,
+    identity: TokenIdentity = Depends(requires_permission(Permission.ANALYZE)),
+):
+    """
+    Poll real Celery task state - not a synthetic/simulated status. A
+    Celery SUCCESS only means the task ran to completion without raising;
+    the analysis result inside it still carries its own honest
+    analysis_complete/node_status (P1) - a "successful" task can still
+    report a partial analysis, and that distinction is preserved here, not
+    collapsed into one flat status.
+    """
+    from celery.result import AsyncResult
+    from backend.celery_app import celery_app
+
+    result = AsyncResult(task_id, app=celery_app)
+
+    if result.state == "PENDING":
+        return {"task_id": task_id, "status": "PENDING"}
+    elif result.state == "STARTED":
+        return {"task_id": task_id, "status": "STARTED"}
+    elif result.state == "SUCCESS":
+        return {"task_id": task_id, "status": "SUCCESS", "result": result.result}
+    elif result.state == "FAILURE":
+        return {"task_id": task_id, "status": "FAILURE", "error": str(result.info)}
+    else:
+        return {"task_id": task_id, "status": result.state}
 
 @router.get("/contracts/{contract_id}/status")
 async def get_intelligence_status(
     contract_id: str,
-    tenant_id: str = Query(..., description="Tenant ID for data isolation (required)"),
+    # No specific Permission gate here (there wasn't one before either) -
+    # just real authentication, which is now required regardless since
+    # tenant_id comes from the token rather than a client-supplied query
+    # param.
+    identity: TokenIdentity = Depends(get_current_identity),
 ):
     """Get the current intelligence analysis status for a contract"""
 
@@ -143,7 +110,7 @@ async def get_intelligence_status(
                c.intelligence_updated as updated
         """
 
-        result = repository.graph.query(query, {"contract_id": contract_id, "tenant_id": tenant_id})
+        result = repository.graph.query(query, {"contract_id": contract_id, "tenant_id": identity.tenant_id})
         
         if not result:
             raise HTTPException(status_code=404, detail=f"Contract {contract_id} not found")
@@ -172,54 +139,57 @@ async def get_intelligence_status(
         logger.error(f"Failed to get intelligence status for {contract_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Status check failed: {str(e)}")
 
-@router.post("/contracts/batch-analyze", dependencies=[Depends(requires_permission(Permission.ANALYZE))])
+@router.post("/contracts/batch-analyze")
 async def batch_analyze_contracts(
     background_tasks: BackgroundTasks,
     contract_ids: list[str],
-    tenant_id: str = Query(..., description="Tenant ID for data isolation (required)"),
     model: str = Query(default="gemini-2.5-flash", description="LLM model to use for analysis"),
-    llm_mgr: LLMManager = Depends(get_llm_manager)
+    llm_mgr: LLMManager = Depends(get_llm_manager),
+    identity: TokenIdentity = Depends(requires_permission(Permission.ANALYZE)),
 ):
     """
-    Batch analyze multiple contracts for intelligence
-    Runs in background for large batches
+    Batch analyze multiple contracts for intelligence. Deliberately left
+    on FastAPI's own BackgroundTasks rather than moved to Celery along
+    with the single-contract /analyze route - out of scope for this pass
+    (see backend/tasks.py's docstring); a natural future extension would
+    have this enqueue N of the same Celery task instead.
     """
-    
+
     try:
         logger.info(f"Starting batch analysis for {len(contract_ids)} contracts")
-        
+
         # For prototype, limit batch size
         if len(contract_ids) > 10:
             raise HTTPException(status_code=400, detail="Batch size limited to 10 contracts for prototype")
-        
+
         # Create service
         intelligence_service = ContractIntelligenceServiceFactory.create_service(llm_mgr)
-        
+
         # Add background task for each contract
         for contract_id in contract_ids:
             background_tasks.add_task(
                 intelligence_service.analyze_contract_by_id,
                 contract_id,
-                tenant_id,
+                identity.tenant_id,
                 model
             )
-        
+
         return {
             "message": f"Batch analysis started for {len(contract_ids)} contracts",
             "contract_ids": contract_ids,
             "model": model,
             "status": "processing"
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Batch analysis failed: {e}")
         raise HTTPException(status_code=500, detail=f"Batch analysis failed: {str(e)}")
 
-@router.get("/dashboard/summary", dependencies=[Depends(requires_permission(Permission.VIEW_REPORTS))])
+@router.get("/dashboard/summary")
 async def get_intelligence_dashboard(
-    tenant_id: str = Query(..., description="Tenant ID for data isolation (required)"),
+    identity: TokenIdentity = Depends(requires_permission(Permission.VIEW_REPORTS)),
 ):
     """Get summary statistics for intelligence dashboard"""
 
@@ -237,7 +207,7 @@ async def get_intelligence_dashboard(
             sum(c.redlines_count) as total_redlines
         """
 
-        result = repository.graph.query(query, {"tenant_id": tenant_id})
+        result = repository.graph.query(query, {"tenant_id": identity.tenant_id})
         
         if result:
             stats = result[0]

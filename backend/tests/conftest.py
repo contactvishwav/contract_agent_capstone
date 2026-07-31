@@ -21,12 +21,44 @@ onto the InMemoryCache fallback path deterministically, regardless of
 what's actually reachable on whatever machine runs the suite.
 """
 
+import os
+
+# Celery: tasks run synchronously in-process (Celery's own "eager" test
+# mode) - no broker/worker needed for the suite. Must be set before
+# anything imports backend.celery_app, since its conf.update(...) reads
+# this env var at module-import time.
+os.environ.setdefault("CELERY_TASK_ALWAYS_EAGER", "true")
+
 from unittest.mock import patch
 
+import pytest
 import redis
+
+from backend.governance.auth import create_access_token
 
 _redis_from_url_patcher = patch.object(
     redis, "from_url",
     side_effect=ConnectionError("Redis disabled for tests - see backend/tests/conftest.py"),
 )
 _redis_from_url_patcher.start()
+
+
+def auth_headers(tenant_id: str = "test_tenant_1", role: str = "ADMIN") -> dict:
+    """
+    Shared helper (also exposed as the `auth_headers` fixture below) so
+    tests don't each hand-build a JWT or the old X-User-Role header - one
+    place issues a real, validly-signed token via the same
+    create_access_token every route now actually validates against.
+
+        def test_foo(self):
+            response = client.get("/api/...", headers=auth_headers(tenant_id="tenant_a", role="ADMIN"))
+    """
+    token = create_access_token(tenant_id=tenant_id, role=role)
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def make_auth_headers():
+    """Fixture form of auth_headers, for tests that prefer fixture
+    injection over a direct import: `def test_foo(self, make_auth_headers): ...`"""
+    return auth_headers

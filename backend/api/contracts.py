@@ -1,5 +1,6 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Query, Depends, Request
 from backend.governance.rbac import Permission, requires_permission
+from backend.governance.auth import TokenIdentity
 from fastapi.responses import StreamingResponse
 from backend.application.services.document_processing_service import DocumentServiceFactory
 from backend.domain.entities import DocumentProcessingRequest
@@ -20,16 +21,17 @@ router = APIRouter(prefix="/contracts", tags=["contracts"])
 def get_llm_manager(request: Request):
     return request.app.state.llm_manager
 
-@router.post("/upload", dependencies=[Depends(requires_permission(Permission.UPLOAD))])
+@router.post("/upload")
 async def upload_contract(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    tenant_id: str = Query(..., description="Tenant ID for data isolation (required)"),
     model: str = Query(default="gemini-2.5-flash", description="LLM model to use for processing"),
-    llm_mgr: LLMManager = Depends(get_llm_manager)
+    llm_mgr: LLMManager = Depends(get_llm_manager),
+    identity: TokenIdentity = Depends(requires_permission(Permission.UPLOAD)),
 ):
     """Upload and process PDF contract - PRODUCTION ENDPOINT"""
-    
+    tenant_id = identity.tenant_id
+
     logger.info(f"=== CONTRACT UPLOAD START: {file.filename if file else 'NO FILE'} ===")
     
     try:
