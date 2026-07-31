@@ -1,9 +1,7 @@
 """Policy workflow supervisor using existing infrastructure."""
 
 from typing import Dict, Any, List
-from backend.agents.supervisor.supervisor_agent import SupervisorAgent
 from backend.agents.supervisor.agent_registry import AgentRegistry
-from backend.agents.supervisor.quality_manager import QualityManager
 from backend.agents.supervisor.interfaces import AgentContext, AgentResult
 from backend.agents.policy_agents import PolicyChunkingAgent, PolicyExtractionAgent, PolicyComplianceAgent
 from backend.infrastructure.audit_logger import AuditLogger, AuditEventType
@@ -14,11 +12,16 @@ from backend.shared.cache.redis_cache import cache_result
 
 
 class PolicyWorkflowSupervisor:
-    """Orchestrates policy processing using existing supervisor infrastructure."""
+    """Orchestrates policy processing by executing registered policy agents
+    in sequence via the shared IAgent/AgentRegistry protocol.
+
+    Previously also constructed a SupervisorAgent for circuit-breaker/
+    retry/quality-gate coordination, but orchestrate_policy_processing
+    below never called it - removed as dead weight, matching the same
+    removal in policy_workflow_orchestrator.py."""
 
     def __init__(self):
         self.registry = AgentRegistry()
-        self.supervisor = SupervisorAgent(self.registry, QualityManager())
         self.audit_logger = AuditLogger()
         self.error_tracker = ErrorTracker()
         self.content_validator = ContentValidationService()

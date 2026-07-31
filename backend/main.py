@@ -74,10 +74,6 @@ app.include_router(intelligence_router)
 app.include_router(enhanced_search_router, prefix="/api")
 app.include_router(enhanced_upload_router)
 
-# Supervisor API
-from backend.api.supervisor_api import router as supervisor_router
-app.include_router(supervisor_router)
-
 # Feedback API (Phase 2)
 from backend.api.feedback_api import router as feedback_router
 app.include_router(feedback_router)

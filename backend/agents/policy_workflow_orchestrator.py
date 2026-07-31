@@ -1,19 +1,24 @@
-"""Policy workflow orchestrator using existing supervisor patterns."""
+"""Policy workflow orchestrator - executes policy agents via the shared
+IAgent/AgentRegistry protocol (agents/supervisor/interfaces.py).
+
+Previously also constructed a SupervisorAgent for circuit-breaker/retry/
+quality-gate coordination, but process_policy_document below never called
+it - it always ran its own manual step loop instead. Removed as dead
+weight (see docs/CAPSTONE_SUMMARY.md's orchestration-consolidation
+decision); the registry/agent protocol below is the part that was
+actually load-bearing."""
 
 from typing import Dict, Any, List
-from backend.agents.supervisor.supervisor_agent import SupervisorAgent
 from backend.agents.supervisor.agent_registry import AgentRegistry
-from backend.agents.supervisor.quality_manager import QualityManager
 from backend.agents.supervisor.interfaces import AgentContext, WorkflowContext
 from backend.agents.policy_agents import PolicyChunkingAgent, PolicyExtractionAgent, PolicyComplianceAgent
 
 
 class PolicyWorkflowOrchestrator:
-    """Orchestrates policy workflows using existing supervisor infrastructure."""
+    """Orchestrates policy workflows by executing registered policy agents in sequence."""
 
     def __init__(self):
         self.registry = AgentRegistry()
-        self.supervisor = SupervisorAgent(self.registry, QualityManager())
 
         # Register policy agents with existing registry
         self.registry.register_agent('policy_chunking', PolicyChunkingAgent())

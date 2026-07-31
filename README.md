@@ -24,8 +24,8 @@ See blog for more: [Agentic GraphRAG for Commercial Contracts](https://towardsda
 
 ## 🚀 Enterprise Features
 
-- **Multi-Agent System Design**: Orchestrates 11+ specialized agents including PDF Processing, Supervisor, Planning, Clause Extraction, and Risk Assessment.
-- **Supervisor Pattern**: Enterprise-grade coordination with quality gates, error recovery, and A-F grading system.
+- **Multi-Agent System Design**: Orchestrates specialized agents including PDF Processing, Planning, Clause Extraction, Policy Checking, and Risk Assessment.
+- **Autonomous Execution Engine**: `PlanExecutionEngine` runs the real default analysis pipeline with honest, per-step `node_status` reporting - a failed step surfaces as `processing_complete: false` with the specific failing stage identified, not a fabricated clean result. (A separate Supervisor-pattern prototype with circuit-breaker/retry/quality-grading machinery existed earlier but was never actually wired into any live path - removed rather than left as disconnected dead code; see `docs/CAPSTONE_SUMMARY.md`.)
 - **Autonomous Planning**: Dynamically generates and adopts execution strategies based on query complexity.
 - **Multi-Level Semantic Search**: Contextual retrieval at document, section, clause, and relationship levels.
 - **Policy Compliance Engine**: Automated violation detection against custom policy playbooks.
