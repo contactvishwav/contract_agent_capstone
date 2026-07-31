@@ -245,25 +245,30 @@ class StepExecutor:
             from backend.agents.optimized_cuad_tools import (
                 OptimizedDeviationDetectorTool, OptimizedJurisdictionAdapterTool, OptimizedPrecedentMatcherTool
             )
-            from backend.agents.feedback_learning_system import AdaptiveAnalyzer
-            
+            from backend.agents.feedback_learning_system import AdaptiveAnalyzer, compute_baseline_risk_level
+
             clauses = context.get("extracted_clauses", [])
             contract_text = context.get("contract_text", "")
-            
+            violations = context.get("policy_violations", [])
+
             # Run optimized CUAD tools
             deviation_tool = OptimizedDeviationDetectorTool()
             jurisdiction_tool = OptimizedJurisdictionAdapterTool()
             precedent_tool = OptimizedPrecedentMatcherTool()
-            
+
             deviations = json.loads(deviation_tool._run(json.dumps(clauses)))
             jurisdiction_info = json.loads(jurisdiction_tool._run(contract_text))
             precedent_matches = json.loads(precedent_tool._run(json.dumps(clauses)))
-            
-            # Apply adaptive learning
+
+            # Apply adaptive learning on top of a real, computed baseline
+            # risk_level - CHECK_POLICIES already ran (it's a dependency of
+            # this step in both plan templates), so per-clause violation
+            # severity is real data here, not a guess.
             adaptive_analyzer = AdaptiveAnalyzer()
             enhanced_clauses = []
             for clause in clauses:
-                enhanced_analysis = adaptive_analyzer.enhance_analysis(clause, clause)
+                baseline_clause = {**clause, "risk_level": compute_baseline_risk_level(clause, violations)}
+                enhanced_analysis = adaptive_analyzer.enhance_analysis(baseline_clause, baseline_clause)
                 enhanced_clauses.append(enhanced_analysis)
             
             return {
@@ -477,6 +482,16 @@ class PlanExecutionEngine:
             self.execution_context["cuad_deviations"] = cuad_data.get("cuad_deviations", [])
             self.execution_context["jurisdiction_info"] = cuad_data.get("jurisdiction_info", {})
             self.execution_context["precedent_matches"] = cuad_data.get("precedent_matches", [])
+            # Previously discarded entirely - AdaptiveAnalyzer's output
+            # (baseline + any learned-pattern risk adjustment per clause)
+            # never reached execution_context or the response. Falls back
+            # to the pre-CUAD_MITIGATION clauses if absent (e.g. a fallback/
+            # error path in _execute_cuad_mitigation that doesn't produce
+            # enhanced_clauses at all), matching the other three keys'
+            # `.get(..., <fallback>)` pattern above.
+            enhanced_clauses = cuad_data.get("enhanced_clauses")
+            if enhanced_clauses is not None:
+                self.execution_context["extracted_clauses"] = enhanced_clauses
     
     def _format_final_results(self, step_status: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """Format results in the expected contract intelligence format"""

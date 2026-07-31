@@ -131,7 +131,11 @@ class ContractIntelligenceService:
                 confidence_score=clause_data.get("confidence_score", 0.0),
                 location=clause_data.get("location", ""),
                 clause_id=clause_data.get("clause_id", ""),
-                grounded=clause_data.get("grounded", True)
+                grounded=clause_data.get("grounded", True),
+                original_risk_level=clause_data.get("original_risk_level"),
+                learned_risk_adjustment=clause_data.get("learned_risk_adjustment"),
+                pattern_confidence=clause_data.get("pattern_confidence"),
+                risk_adjustment_pattern_id=clause_data.get("risk_adjustment_pattern_id"),
             ))
 
         # Convert violations

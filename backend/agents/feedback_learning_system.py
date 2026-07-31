@@ -8,6 +8,63 @@ from backend.infrastructure.contract_repository import Neo4jContractRepository
 from backend.shared.utils.logger import get_logger
 logger = get_logger(__name__)
 
+# Clause types with structurally significant legal/financial exposure
+# regardless of whether a specific policy rule flags them - e.g. an
+# Uncapped Liability clause is inherently notable even if no configured
+# policy rule technically "violates" on it. Everything not listed here or
+# in _INHERENT_LOW_RISK_CLAUSE_TYPES defaults to MEDIUM.
+_INHERENT_HIGH_RISK_CLAUSE_TYPES = {
+    "Uncapped Liability", "Non-Compete", "Exclusivity", "Ip Ownership Assignment",
+    "Termination For Convenience", "Change Of Control", "Minimum Commitment",
+    "Unlimited/All-You-Can-Eat-License", "Source Code Escrow",
+    "Post-Termination Services", "Covenant Not To Sue",
+}
+# Metadata/administrative clause types with no substantive legal exposure
+# of their own.
+_INHERENT_LOW_RISK_CLAUSE_TYPES = {
+    "Document Name", "Parties", "Agreement Date", "Effective Date",
+    "Expiration Date", "Governing Law", "Renewal Term",
+    "Notice Period To Terminate Renewal",
+}
+
+_SEVERITY_TO_RISK_LEVEL = {"CRITICAL": "CRITICAL", "HIGH": "HIGH", "MEDIUM": "MEDIUM", "LOW": "LOW"}
+
+
+def compute_baseline_risk_level(clause: Dict[str, Any], violations: List[Dict[str, Any]]) -> str:
+    """
+    A real, non-constant risk_level per clause, computed before any learned-
+    pattern adjustment is applied on top of it (AdaptiveAnalyzer._apply_risk_
+    pattern needs a genuine baseline to override, not the previous silent
+    "LOW" default that nothing ever actually computed -
+    ClauseDetectorTool._run never set risk_level at all).
+
+    Primary signal: the max severity among any policy violations already
+    found for this exact clause (matched by clause_id) - CHECK_POLICIES
+    always runs before CUAD_MITIGATION in both plan templates (planning_
+    agent.py), so this is real, contract-specific, already-computed data,
+    not a guess. Falls back to a clause-type inherent-risk category only
+    when no violation exists for this clause - some clause types carry
+    real risk just by being present (e.g. Uncapped Liability), even in a
+    contract where nothing about them technically violates a configured
+    policy rule.
+    """
+    clause_id = clause.get("clause_id")
+    matching_severities = [
+        v.get("severity", "LOW") for v in violations if clause_id and v.get("clause_id") == clause_id
+    ]
+    if matching_severities:
+        for level in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+            if level in matching_severities:
+                return _SEVERITY_TO_RISK_LEVEL[level]
+
+    clause_type = clause.get("clause_type", "")
+    if clause_type in _INHERENT_HIGH_RISK_CLAUSE_TYPES:
+        return "HIGH"
+    if clause_type in _INHERENT_LOW_RISK_CLAUSE_TYPES:
+        return "LOW"
+    return "MEDIUM"
+
+
 @dataclass
 class LegalDecision:
     """Legal team decision on contract analysis"""
@@ -370,17 +427,29 @@ class AdaptiveAnalyzer:
         return None
     
     def _apply_risk_pattern(self, clause: Dict[str, Any], analysis: Dict[str, Any], pattern: FeedbackPattern) -> Optional[Dict[str, Any]]:
-        """Apply risk override pattern"""
+        """
+        Apply a risk override pattern - actually changes the risk_level a
+        client sees (not just a sibling field nothing reads), while keeping
+        it traceable: original_risk_level preserves what the computed
+        baseline was before this pattern applied (see
+        compute_baseline_risk_level), and learned_risk_adjustment/
+        pattern_confidence/risk_adjustment_pattern_id let a reviewer see
+        that - and why - this specific clause's risk was adjusted, matching
+        the clause_id/rule_id traceability already established for
+        violations (P1).
+        """
         conditions = pattern.conditions
         current_risk = analysis.get("risk_level", "UNKNOWN")
-        
+
         override_pattern = conditions.get("override_pattern", "")
         if override_pattern.startswith(f"{current_risk}_to_"):
             suggested_risk = override_pattern.split("_to_")[1]
             return {
+                "risk_level": suggested_risk,
+                "original_risk_level": current_risk,
                 "learned_risk_adjustment": suggested_risk,
-                "original_risk": current_risk,
-                "pattern_confidence": pattern.confidence
+                "pattern_confidence": pattern.confidence,
+                "risk_adjustment_pattern_id": pattern.pattern_id,
             }
-        
+
         return None

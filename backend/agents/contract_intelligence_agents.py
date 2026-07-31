@@ -266,8 +266,8 @@ class IntelligenceOrchestrator:
             from backend.agents.optimized_cuad_tools import (
                 OptimizedDeviationDetectorTool, OptimizedJurisdictionAdapterTool, OptimizedPrecedentMatcherTool
             )
-            from backend.agents.feedback_learning_system import AdaptiveAnalyzer
-            
+            from backend.agents.feedback_learning_system import AdaptiveAnalyzer, compute_baseline_risk_level
+
             clauses_json = json.dumps(state["extracted_clauses"])
             
             # 1. Optimized deviation detection with caching and monitoring
@@ -285,11 +285,15 @@ class IntelligenceOrchestrator:
             precedents_json = precedent_tool._run(clauses_json)
             precedent_matches = json.loads(precedents_json)
             
-            # 4. Apply learned patterns from legal team feedback
+            # 4. Apply learned patterns from legal team feedback, on top of
+            # a real, computed baseline risk_level (policy_violations is
+            # already populated - _check_policies always runs before this
+            # node).
             adaptive_analyzer = AdaptiveAnalyzer()
             enhanced_clauses = []
             for clause in state["extracted_clauses"]:
-                enhanced_analysis = adaptive_analyzer.enhance_analysis(clause, clause)
+                baseline_clause = {**clause, "risk_level": compute_baseline_risk_level(clause, state["policy_violations"])}
+                enhanced_analysis = adaptive_analyzer.enhance_analysis(baseline_clause, baseline_clause)
                 enhanced_clauses.append(enhanced_analysis)
             
             # Merge deviations with existing violations

@@ -50,11 +50,20 @@ class IDocumentProcessor(ABC):
 class ContractClause:
     clause_type: str  # Payment, Liability, IP, Confidentiality, Termination
     content: str
-    risk_level: str  # LOW, MEDIUM, HIGH
+    risk_level: str  # LOW, MEDIUM, HIGH, CRITICAL - real baseline computed
+    # per-clause (see feedback_learning_system.compute_baseline_risk_level),
+    # possibly overridden below by a learned pattern
     confidence_score: float
     location: str = ""
     clause_id: str = ""
     grounded: bool = True  # False if the clause text couldn't be located in the source contract
+    # Adaptive-learning fields (AdaptiveAnalyzer._apply_risk_pattern): all
+    # None unless a learned pattern from historical LegalDecisions actually
+    # matched and adjusted this clause's risk_level above.
+    original_risk_level: Optional[str] = None  # risk_level before the adjustment, preserved for traceability
+    learned_risk_adjustment: Optional[str] = None  # explicit marker that risk_level came from a learned pattern (duplicates risk_level's new value)
+    pattern_confidence: Optional[float] = None
+    risk_adjustment_pattern_id: Optional[str] = None  # which historical pattern drove the adjustment
 
 @dataclass
 class PolicyViolation:

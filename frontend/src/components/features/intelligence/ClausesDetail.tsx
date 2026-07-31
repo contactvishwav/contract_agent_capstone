@@ -1,7 +1,7 @@
 import React from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '../../shared/ui/card';
 import { Badge } from '../../shared/ui/badge';
-import { Shield, AlertTriangle, TrendingDown, CheckCircle, Clock, Target } from 'lucide-react';
+import { Shield, AlertTriangle, TrendingDown, CheckCircle, Clock, Target, FileCheck, HelpCircle, History } from 'lucide-react';
 
 interface ContractClause {
   clause_type: string;
@@ -9,6 +9,12 @@ interface ContractClause {
   risk_level: string;
   confidence_score: number;
   location: string;
+  clause_id?: string;
+  grounded?: boolean;
+  original_risk_level?: string | null;
+  learned_risk_adjustment?: string | null;
+  pattern_confidence?: number | null;
+  risk_adjustment_pattern_id?: string | null;
 }
 
 interface ClausesDetailProps {
@@ -161,11 +167,12 @@ export const ClausesDetail: React.FC<ClausesDetailProps> = ({ clauses }) => {
       <div className="text-sm text-slate-600 mb-4">
         Found {clauses.length} key clauses in the contract document
       </div>
-      
+
       {clauses.map((clause, index) => {
         const policyAlignment = getPolicyAlignment(clause.clause_type, clause.risk_level);
         const riskImpact = getRiskImpact(clause.risk_level, clause.clause_type);
         const recommendedActions = getRecommendedActions(clause.risk_level, clause.clause_type);
+        const hasLearnedAdjustment = Boolean(clause.learned_risk_adjustment);
 
         return (
           <Card key={index} className="border-slate-200">
@@ -179,6 +186,17 @@ export const ClausesDetail: React.FC<ClausesDetailProps> = ({ clauses }) => {
                   <Badge className={getRiskColor(clause.risk_level)}>
                     {clause.risk_level}
                   </Badge>
+                  {clause.grounded === false ? (
+                    <Badge variant="outline" className="border-amber-300 text-amber-700 bg-amber-50">
+                      <HelpCircle className="h-3 w-3 mr-1 inline align-text-bottom" />
+                      Unverified
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline" className="border-slate-300 text-slate-600">
+                      <FileCheck className="h-3 w-3 mr-1 inline align-text-bottom" />
+                      Verified
+                    </Badge>
+                  )}
                   <span className="text-xs text-slate-500">
                     {(clause.confidence_score * 100).toFixed(1)}% confidence
                   </span>
@@ -186,6 +204,22 @@ export const ClausesDetail: React.FC<ClausesDetailProps> = ({ clauses }) => {
               </div>
               {clause.location && (
                 <p className="text-sm text-slate-500">{clause.location}</p>
+              )}
+              {clause.clause_id && (
+                <p className="text-xs text-slate-400 font-mono mt-1">ID: {clause.clause_id}</p>
+              )}
+              {hasLearnedAdjustment && (
+                <div className="mt-3 flex items-start gap-2 text-xs text-indigo-800 bg-indigo-50 border border-indigo-200 rounded px-3 py-2">
+                  <History className="h-3.5 w-3.5 mt-0.5 flex-shrink-0 text-indigo-500" />
+                  <span>
+                    Risk adjusted from <strong>{clause.original_risk_level}</strong> to{' '}
+                    <strong>{clause.learned_risk_adjustment}</strong> based on historical review patterns
+                    {typeof clause.pattern_confidence === 'number' && (
+                      <> ({(clause.pattern_confidence * 100).toFixed(0)}% confidence)</>
+                    )}
+                    .
+                  </span>
+                </div>
               )}
             </CardHeader>
             <CardContent className="space-y-6">

@@ -67,7 +67,11 @@ async def analyze_contract_intelligence(
                         "risk_level": clause.risk_level,
                         "confidence_score": clause.confidence_score,
                         "location": clause.location,
-                        "grounded": clause.grounded
+                        "grounded": clause.grounded,
+                        "original_risk_level": clause.original_risk_level,
+                        "learned_risk_adjustment": clause.learned_risk_adjustment,
+                        "pattern_confidence": clause.pattern_confidence,
+                        "risk_adjustment_pattern_id": clause.risk_adjustment_pattern_id,
                     }
                     for clause in intelligence.clauses
                 ],
