@@ -21,17 +21,37 @@ with patch("langchain_neo4j.Neo4jGraph"), \
      patch("backend.shared.utils.gemini_embedding_service.embedding"):
     from backend.main import app
     from backend.api import contract_intelligence
+    from backend.api import auth_api
     from backend.governance.auth import create_access_token, get_current_identity
 
 from backend.tests.conftest import auth_headers
+from backend.tests.test_user_repository import FakeUserGraph
 
 
 class TokenIssuanceTests(unittest.TestCase):
+    """POST /api/auth/token now verifies real credentials against a
+    bcrypt-hashed account (infrastructure/user_repository.py) instead of
+    signing whatever tenant_id/role it was handed - these tests exercise
+    the real HTTP route, registration included, not just the repository
+    in isolation (test_user_repository.py already covers that)."""
+
     def setUp(self):
         self.client = TestClient(app)
+        self._patcher = patch.object(auth_api._user_repository, "graph", FakeUserGraph())
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
 
-    def test_issue_token_returns_a_real_usable_bearer_token(self):
-        response = self.client.post("/api/auth/token", json={"tenant_id": "tenant_a", "role": "ADMIN"})
+    def _register(self, username="alice", password="s3cret-password!", tenant_id="tenant_a", role="ADMIN"):
+        return self.client.post(
+            "/api/auth/register",
+            json={"username": username, "password": password, "tenant_id": tenant_id, "role": role},
+        )
+
+    def test_register_then_login_issues_a_real_usable_bearer_token(self):
+        register_response = self._register()
+        self.assertEqual(register_response.status_code, 201)
+
+        response = self.client.post("/api/auth/token", json={"username": "alice", "password": "s3cret-password!"})
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertIn("access_token", body)
@@ -40,19 +60,30 @@ class TokenIssuanceTests(unittest.TestCase):
 
         # The issued token must actually validate - not just look like a
         # token - by round-tripping it through the real validation
-        # dependency.
+        # dependency, and it must carry the account's real tenant_id/role,
+        # not whatever a caller might have wished for.
         import asyncio
         identity = asyncio.run(get_current_identity(authorization=f"Bearer {body['access_token']}"))
         self.assertEqual(identity.tenant_id, "tenant_a")
         self.assertEqual(identity.role, "ADMIN")
 
-    def test_issue_token_rejects_invalid_role(self):
-        response = self.client.post("/api/auth/token", json={"tenant_id": "tenant_a", "role": "NOT_A_REAL_ROLE"})
+    def test_login_rejects_wrong_password(self):
+        self._register()
+        response = self.client.post("/api/auth/token", json={"username": "alice", "password": "wrong-password"})
+        self.assertEqual(response.status_code, 401)
+
+    def test_login_rejects_unknown_username(self):
+        response = self.client.post("/api/auth/token", json={"username": "nobody-registered", "password": "whatever"})
+        self.assertEqual(response.status_code, 401)
+
+    def test_register_rejects_invalid_role(self):
+        response = self._register(role="NOT_A_REAL_ROLE")
         self.assertEqual(response.status_code, 400)
 
-    def test_issue_token_rejects_empty_tenant_id(self):
-        response = self.client.post("/api/auth/token", json={"tenant_id": "   ", "role": "ADMIN"})
-        self.assertEqual(response.status_code, 400)
+    def test_register_rejects_duplicate_username(self):
+        self._register()
+        response = self._register()
+        self.assertEqual(response.status_code, 409)
 
     def test_two_tokens_for_different_tenants_are_different_and_both_valid(self):
         token_a = create_access_token(tenant_id="tenant_a", role="ADMIN")

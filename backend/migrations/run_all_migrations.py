@@ -75,6 +75,11 @@ def _run_vector_indexes():
     VectorIndexMigration().migrate()
 
 
+def _run_user_schema():
+    from backend.migrations.user_schema_migration import UserSchemaMigration
+    UserSchemaMigration().migrate()
+
+
 # Ordered: the new Contract constraint first (safe to run anytime, no
 # dependencies), then the base schema pieces, then fix_enterprise_
 # relationships (depends on enterprise_schema's sample data existing
@@ -94,6 +99,7 @@ MIGRATIONS = [
     ("multi_level_embeddings", _run_multi_level_embeddings),
     ("phase2_phase3_schema", _run_phase2_phase3_schema),
     ("vector_indexes", _run_vector_indexes),
+    ("user_schema", _run_user_schema),
 ]
 
 

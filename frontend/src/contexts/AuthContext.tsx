@@ -1,12 +1,22 @@
 import React, { createContext, useContext, useSyncExternalStore, useCallback, useState } from 'react';
 import { getSession, subscribe, setSessionFromToken, clearSession, AuthSession } from '../lib/authStore';
 
+interface RegisterFields {
+  username: string;
+  password: string;
+  tenantId: string;
+  role: string;
+}
+
 interface AuthContextType {
   session: AuthSession | null;
   isAuthenticated: boolean;
   loginError: string | null;
   isLoggingIn: boolean;
-  login: (tenantId: string, role: string) => Promise<void>;
+  registerError: string | null;
+  isRegistering: boolean;
+  login: (username: string, password: string) => Promise<void>;
+  register: (fields: RegisterFields) => Promise<void>;
   logout: () => void;
 }
 
@@ -16,8 +26,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const session = useSyncExternalStore(subscribe, getSession, getSession);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [registerError, setRegisterError] = useState<string | null>(null);
+  const [isRegistering, setIsRegistering] = useState(false);
 
-  const login = useCallback(async (tenantId: string, role: string) => {
+  const login = useCallback(async (username: string, password: string) => {
     setIsLoggingIn(true);
     setLoginError(null);
     try {
@@ -27,7 +39,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const response = await fetch('/api/auth/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tenant_id: tenantId, role }),
+        body: JSON.stringify({ username, password }),
       });
 
       if (!response.ok) {
@@ -45,6 +57,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, []);
 
+  const register = useCallback(async ({ username, password, tenantId, role }: RegisterFields) => {
+    setIsRegistering(true);
+    setRegisterError(null);
+    try {
+      const response = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password, tenant_id: tenantId, role }),
+      });
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.detail || `Registration failed (${response.status})`);
+      }
+    } catch (err) {
+      setRegisterError(err instanceof Error ? err.message : 'Registration failed');
+      throw err;
+    } finally {
+      setIsRegistering(false);
+    }
+  }, []);
+
   const logout = useCallback(() => {
     clearSession();
   }, []);
@@ -56,7 +90,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isAuthenticated: session !== null,
         loginError,
         isLoggingIn,
+        registerError,
+        isRegistering,
         login,
+        register,
         logout,
       }}
     >

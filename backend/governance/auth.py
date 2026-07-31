@@ -20,23 +20,23 @@ Key management: mirrors infrastructure/encryption.py's ENCRYPTION_KEY
 convention exactly (env var, loudly-logged insecure dev fallback, no
 secrets-manager integration yet since no deployment target is defined).
 
-Honest limitation, stated explicitly rather than glossed over: POST
-/api/auth/token currently accepts a bare tenant_id + role in the request
-body and issues a token for it - there is no real user/organization
-provisioning system to check credentials against yet, so this is signed
-tenant/role *claims*, not verified *identity* in the full sense (no
-username/password, no per-user accounts, no org-membership check). What
-this DOES achieve for real: once issued, a token's claims can't be forged
-or altered by the caller in transit (unlike the old header/query-param
-mechanisms - tampering with a signed token invalidates its signature), and
-every downstream route can trust that tenant_id/role came from a token
-this service itself signed, not from whatever a client typed into a query
-string. A real identity provider (Auth0/Okta/Cognito) can replace just the
-issuance step (this module's create_access_token / the /api/auth/token
-route) later without touching get_current_identity or anything that
-depends on it, as long as the replacement issues a JWT this service can
-verify (or verification itself moves to JWKS-based validation against the
-IdP's public keys - a larger, separate follow-up).
+Updated: POST /api/auth/token now verifies real credentials (username +
+password, checked against a bcrypt-hashed account in
+infrastructure/user_repository.py) before issuing a token - it no longer
+signs a bare, caller-supplied tenant_id + role. This module
+(create_access_token / get_current_identity) was deliberately left
+untouched by that change: it was already just "sign these claims" /
+"verify this signature," with no opinion on how the claims were decided,
+which is exactly what let the credential-verification step slot in one
+layer up (api/auth_api.py) without touching validation at all. The
+remaining honest limitation is narrower now: there is still no full
+IdP integration (org invites, SSO, password reset, MFA) - registration is
+minimal, self-service, and username+password only. A real identity
+provider (Auth0/Okta/Cognito) can still replace just the issuance step
+(auth_api.py's routes) later without touching get_current_identity or
+anything that depends on it, as long as the replacement issues a JWT this
+service can verify (or verification itself moves to JWKS-based validation
+against the IdP's public keys - a larger, separate follow-up).
 """
 
 import os

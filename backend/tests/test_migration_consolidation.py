@@ -130,7 +130,7 @@ class MigrationRunnerVersioningTests(unittest.TestCase):
         self.assertEqual(result["applied"], ["second"])
         self.assertEqual(result["skipped_already_applied"], ["first"])
 
-    def test_all_9_real_migrations_registered_in_correct_order(self):
+    def test_all_10_real_migrations_registered_in_correct_order(self):
         from backend.migrations.run_all_migrations import MIGRATIONS
         names = [name for name, _ in MIGRATIONS]
 
@@ -141,8 +141,9 @@ class MigrationRunnerVersioningTests(unittest.TestCase):
             "fix_enterprise_relationships depends on enterprise_schema's sample data existing first",
         )
         self.assertIn("vector_indexes", names)
-        self.assertEqual(len(names), 9)
-        self.assertEqual(len(set(names)), 9, "No duplicate migration names")
+        self.assertIn("user_schema", names)
+        self.assertEqual(len(names), 10)
+        self.assertEqual(len(set(names)), 10, "No duplicate migration names")
 
 
 if __name__ == "__main__":
