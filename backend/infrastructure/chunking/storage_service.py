@@ -172,20 +172,24 @@ class ChunkingStorageService:
             logger.error(f"Failed to retrieve chunks for document {document_id}: {e}")
             return []
     
-    async def search_chunks(self, query: str, document_id: Optional[str] = None, 
+    async def search_chunks(self, query: str, tenant_id: str, document_id: Optional[str] = None,
                           limit: int = 10, use_embeddings: bool = True) -> List[Dict[str, Any]]:
         """Enhanced search chunks with semantic capabilities by default."""
         try:
             # Always try semantic search first for better results
             if use_embeddings:
                 semantic_results = await self.chunk_embedding_service.search_similar_chunks(
-                    query, document_id, limit, similarity_threshold=0.7
+                    query, tenant_id, document_id, limit, similarity_threshold=0.7
                 )
-                
+
                 if semantic_results:
                     return semantic_results
-            
-            # Fallback to enhanced text search
+
+            # Fallback to enhanced text search. NOTE: _text_search_chunks/
+            # _basic_text_search below do not take tenant_id and are not
+            # tenant-scoped - a separate, pre-existing gap out of scope for
+            # this fix (only search_similar_chunks was in scope), flagged
+            # here rather than silently left inconsistent.
             return await self._text_search_chunks(query, document_id, limit)
                 
         except Exception as e:

@@ -20,6 +20,13 @@ class Phase3Config:
         # capturing the common "re-analyze the same contract" case.
         "clause_extraction": int(os.getenv("CACHE_TTL_CLAUSE_EXTRACTION", "86400")),  # 24 hours
         "policy_evaluation": int(os.getenv("CACHE_TTL_POLICY_EVALUATION", "86400")),  # 24 hours
+        # Deliberately much shorter than the extraction/policy TTLs above:
+        # those are keyed on immutable content (a specific contract's text
+        # never changes), but a vector search result set can be invalidated
+        # by ANY new contract uploaded for the same tenant afterward - a
+        # long TTL here risks hiding a just-uploaded contract from search
+        # for the TTL's duration.
+        "vector_search": int(os.getenv("CACHE_TTL_VECTOR_SEARCH", "600")),  # 10 minutes
     }
     
     # Performance Monitoring

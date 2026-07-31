@@ -5,11 +5,16 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 
+import hashlib
+import json
+
 from backend.governance.pii_engine import PIIEngine
 from backend.infrastructure.encryption import field_encryptor
 from backend.shared.utils.gemini_embedding_service import GeminiEmbeddingService
 from backend.shared.utils.contract_search_tool import graph
 from backend.shared.utils.vector_index_config import CHUNK_EMBEDDING_INDEX, VECTOR_SEARCH_OVERFETCH
+from backend.shared.cache.redis_cache import cache
+from backend.shared.config.phase3_config import Phase3Config
 
 
 @dataclass
@@ -191,20 +196,51 @@ class ChunkEmbeddingService:
             print(f"Failed to store chunk embeddings: {e}")
             return False
     
-    async def search_similar_chunks(self, query_text: str, document_id: Optional[str] = None,
+    async def search_similar_chunks(self, query_text: str, tenant_id: str, document_id: Optional[str] = None,
                                   limit: int = 10, similarity_threshold: float = 0.7) -> List[Dict[str, Any]]:
-        """Search for similar chunks using vector similarity."""
+        """Search for similar chunks using vector similarity, scoped to tenant_id.
+
+        Chunk nodes carry no tenant_id property of their own - tenant
+        scoping goes through the Document they're attached to (same
+        d.tenant_id join pattern already used for the Chunk-level search in
+        enhanced_contract_search_tool.py). Found and fixed as a real gap:
+        this method previously took no tenant_id at all, so an omitted
+        document_id searched every tenant's chunks in the database.
+        tenant_id is required (no default), matching this codebase's
+        established "reject rather than silently default" convention (P1)
+        for anything tenant-scoped.
+
+        Caches the real vector-index (db.index.vector.queryNodes) retrieval
+        via Redis - same infra/TTL bucket ("vector_search") as
+        enhanced_contract_search_tool.py's get_contracts_multi_level. Keyed
+        on the query text itself rather than its embedding, since embedding
+        identical text is deterministic - a cache hit skips both the
+        embedding-generation call and the graph query. tenant_id is part of
+        the key - without it, one tenant's cached results could be served
+        back for another tenant's identical-looking query, a confidentiality
+        bug in the cache layer even with the query itself now tenant-scoped.
+        """
+        cache_key_raw = f"vector_search:chunk:{json.dumps({'tenant_id': tenant_id, 'query_text': query_text, 'document_id': document_id, 'limit': limit, 'similarity_threshold': similarity_threshold}, sort_keys=True)}"
+        cache_key = hashlib.sha256(cache_key_raw.encode()).hexdigest()
+        if Phase3Config.CACHE_ENABLED:
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return cached
         try:
             # Generate embedding for query
             query_embedding = await self.embedding_service.generate_embedding(query_text)
-            
-            # Build Neo4j query - queries the vector index for candidates
-            # instead of scoring every Chunk node.
+
+            # Build Neo4j query - queries the vector index for overfetched
+            # candidates (instead of scoring every Chunk node), then filters
+            # to this tenant's own Document(s) afterward - a vector index
+            # query has no way to pre-filter by tenant before ranking
+            # globally (same overfetch-then-filter tradeoff already
+            # documented for VECTOR_SEARCH_OVERFETCH elsewhere).
             if document_id:
                 cypher_query = f"""
                 CALL db.index.vector.queryNodes('{CHUNK_EMBEDDING_INDEX}', $k, $query_embedding)
                 YIELD node AS c, score AS similarity
-                MATCH (d:Document {{id: $document_id}})-[:HAS_CHUNK]->(c)
+                MATCH (d:Document {{id: $document_id, tenant_id: $tenant_id}})-[:HAS_CHUNK]->(c)
                 WHERE similarity >= $threshold
                 RETURN c.id as chunk_id, c.content as content, c.chunk_type as chunk_type,
                        c.start_position as start_position, c.end_position as end_position,
@@ -214,6 +250,7 @@ class ChunkEmbeddingService:
                 """
                 params = {
                     'document_id': document_id,
+                    'tenant_id': tenant_id,
                     'query_embedding': query_embedding,
                     'threshold': similarity_threshold,
                     'limit': limit,
@@ -221,8 +258,9 @@ class ChunkEmbeddingService:
                 }
             else:
                 cypher_query = f"""
-                CALL db.index.vector.queryNodes('{CHUNK_EMBEDDING_INDEX}', $limit, $query_embedding)
+                CALL db.index.vector.queryNodes('{CHUNK_EMBEDDING_INDEX}', $k, $query_embedding)
                 YIELD node AS c, score AS similarity
+                MATCH (d:Document {{tenant_id: $tenant_id}})-[:HAS_CHUNK]->(c)
                 WHERE similarity >= $threshold
                 RETURN c.id as chunk_id, c.content as content, c.chunk_type as chunk_type,
                        c.start_position as start_position, c.end_position as end_position,
@@ -231,11 +269,13 @@ class ChunkEmbeddingService:
                 LIMIT $limit
                 """
                 params = {
+                    'tenant_id': tenant_id,
                     'query_embedding': query_embedding,
                     'threshold': similarity_threshold,
-                    'limit': limit
+                    'limit': limit,
+                    'k': VECTOR_SEARCH_OVERFETCH,
                 }
-            
+
             result = self.graph.query(cypher_query, params)
             
             similar_chunks = []
@@ -248,9 +288,12 @@ class ChunkEmbeddingService:
                     'end_position': record['end_position'],
                     'similarity_score': record['similarity']
                 })
-            
+
+            if Phase3Config.CACHE_ENABLED:
+                cache.set(cache_key, similar_chunks, ttl=Phase3Config.get_cache_ttl("vector_search"))
+
             return similar_chunks
-                
+
         except Exception as e:
             print(f"Failed to search similar chunks: {e}")
             return []

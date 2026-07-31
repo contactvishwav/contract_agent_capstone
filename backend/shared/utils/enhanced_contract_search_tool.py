@@ -1,3 +1,5 @@
+import hashlib
+import json
 from typing import Any, List, Optional, Type
 from enum import Enum
 from dotenv import load_dotenv
@@ -6,6 +8,8 @@ from backend.shared.utils.gemini_embedding_service import embedding
 from langchain_neo4j import Neo4jGraph
 from pydantic import BaseModel, Field
 from backend.infrastructure.encryption import field_encryptor
+from backend.shared.cache.redis_cache import cache
+from backend.shared.config.phase3_config import Phase3Config
 from backend.shared.utils.vector_index_config import (
     CONTRACT_EMBEDDING_INDEX, SECTION_EMBEDDING_INDEX, CLAUSE_EMBEDDING_INDEX,
     CHUNK_EMBEDDING_INDEX, VECTOR_SEARCH_OVERFETCH, CHUNK_TEXT_SEARCH_CANDIDATE_LIMIT,
@@ -44,6 +48,40 @@ graph: Neo4jGraph = Neo4jGraph(
 )
 # embedding imported from gemini_embedding_service (1536 dimensions)
 
+def _multi_level_search_cache_key(
+    tenant_id: str, search_level: SearchLevel, clause_types, section_types,
+    min_effective_date, max_effective_date, min_end_date, max_end_date,
+    contract_type, parties, summary_search, active, cypher_aggregation,
+    monetary_value, governing_law,
+) -> str:
+    """
+    Deterministic key over every argument that affects the result *except*
+    `embeddings` (always the same singleton service object - not itself
+    meaningful, and not JSON-serializable) - re-embedding identical query
+    text deterministically produces the same vector anyway, so keying on
+    the raw text is equivalent and avoids embedding on a cache hit at all.
+    Same explicit-hash approach as LLMExtractionService._cache_key /
+    PolicyEvaluationService._cache_key, rather than the generic
+    @cache_result decorator (which would hash the `embeddings` object's
+    repr directly if applied to this function).
+    """
+    key_data = {
+        "tenant_id": tenant_id, "search_level": search_level.value,
+        "clause_types": sorted(clause_types) if clause_types else None,
+        "section_types": sorted(section_types) if section_types else None,
+        "min_effective_date": min_effective_date, "max_effective_date": max_effective_date,
+        "min_end_date": min_end_date, "max_end_date": max_end_date,
+        "contract_type": contract_type,
+        "parties": sorted(parties) if parties else None,
+        "summary_search": summary_search, "active": active,
+        "cypher_aggregation": cypher_aggregation,
+        "monetary_value": monetary_value.model_dump() if monetary_value else None,
+        "governing_law": governing_law.model_dump() if governing_law else None,
+    }
+    raw = f"vector_search:{json.dumps(key_data, sort_keys=True, default=str)}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
 def get_contracts_multi_level(
     embeddings: Any,
     tenant_id: str,
@@ -62,31 +100,54 @@ def get_contracts_multi_level(
     monetary_value: Optional[MonetaryValue] = None,
     governing_law: Optional[Location] = None
 ):
-    """Enhanced contract search with multi-level embedding support and tenant isolation"""
-    
+    """Enhanced contract search with multi-level embedding support and tenant isolation.
+
+    Caches the real vector-index (db.index.vector.queryNodes) retrieval
+    path via Redis - the same infra already used for precedent_clause/
+    deviation_analysis/jurisdiction_analysis (shared/cache/redis_cache.py),
+    keyed on every filter that affects the result, not just the query text.
+    """
+    cache_key = _multi_level_search_cache_key(
+        tenant_id, search_level, clause_types, section_types,
+        min_effective_date, max_effective_date, min_end_date, max_end_date,
+        contract_type, parties, summary_search, active, cypher_aggregation,
+        monetary_value, governing_law,
+    )
+    if Phase3Config.CACHE_ENABLED:
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
     params: dict[str, Any] = {"tenant_id": tenant_id}
     filters: list[str] = ["c.tenant_id = $tenant_id"]
-    
+
     if search_level == SearchLevel.DOCUMENT:
-        return _search_documents(embeddings, tenant_id, summary_search, filters, params, 
+        result = _search_documents(embeddings, tenant_id, summary_search, filters, params,
                                min_effective_date, max_effective_date, min_end_date, max_end_date,
                                contract_type, parties, active, cypher_aggregation, monetary_value, governing_law)
-    
+
     elif search_level == SearchLevel.SECTION:
-        return _search_sections(embeddings, tenant_id, summary_search, section_types, filters, params)
-    
+        result = _search_sections(embeddings, tenant_id, summary_search, section_types, filters, params)
+
     elif search_level == SearchLevel.CLAUSE:
-        return _search_clauses(embeddings, tenant_id, summary_search, clause_types, filters, params)
-    
+        result = _search_clauses(embeddings, tenant_id, summary_search, clause_types, filters, params)
+
     elif search_level == SearchLevel.RELATIONSHIP:
-        return _search_relationships(embeddings, tenant_id, summary_search, parties, filters, params)
-    
+        result = _search_relationships(embeddings, tenant_id, summary_search, parties, filters, params)
+
     elif search_level == SearchLevel.CHUNK:
-        return _search_chunks(embeddings, tenant_id, summary_search, filters, params)
-    
+        result = _search_chunks(embeddings, tenant_id, summary_search, filters, params)
+
     elif search_level == SearchLevel.ALL:
-        return _search_all_levels(embeddings, tenant_id, summary_search, clause_types, section_types, 
+        result = _search_all_levels(embeddings, tenant_id, summary_search, clause_types, section_types,
                                  filters, params)
+    else:
+        result = None
+
+    if Phase3Config.CACHE_ENABLED and result is not None:
+        cache.set(cache_key, result, ttl=Phase3Config.get_cache_ttl("vector_search"))
+
+    return result
 
 def _search_documents(embeddings, tenant_id, summary_search, filters, params, 
                      min_effective_date, max_effective_date, min_end_date, max_end_date,

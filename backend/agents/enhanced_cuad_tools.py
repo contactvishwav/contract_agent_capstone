@@ -4,6 +4,7 @@ import json
 import logging
 from backend.infrastructure.contract_repository import Neo4jContractRepository
 from backend.agents.cuad_mitigation_tools import DeviationDetectorTool, JurisdictionAdapterTool, PrecedentMatcherTool
+from backend.infrastructure.encryption import field_encryptor
 
 from backend.shared.utils.logger import get_logger
 logger = get_logger(__name__)
@@ -367,15 +368,23 @@ class EnhancedPrecedentMatcherTool(PrecedentMatcherTool):
                 "clause_type": clause_type,
                 "tenant_id": tenant_id
             })
-            
+
             precedents = []
             for result in results:
+                # cl.content is stored redacted+encrypted (P3 item 21) -
+                # decrypt before use, same as every other Clause.content
+                # read site (e.g. ClauseRepository.get_clauses_ordered).
+                # Left unconverted, this fed ciphertext into both the
+                # similarity check below (near-guaranteed to score under
+                # the 0.3 threshold against real clause text) and the
+                # "content" returned to callers.
+                content = field_encryptor.decrypt(result.get("content") or "")
                 # Simple similarity check (in production, use vector embeddings)
-                similarity = self._calculate_text_similarity(clause_content, result.get("content", ""))
+                similarity = self._calculate_text_similarity(clause_content, content)
                 if similarity > 0.3:  # Threshold for relevance
                     precedents.append({
                         "clause_type": result.get("type"),
-                        "content": result.get("content"),
+                        "content": content,
                         "risk_level": result.get("risk_level", "UNKNOWN"),
                         "contract_risk": result.get("contract_risk", 0),
                         "contract_id": result.get("contract_id"),

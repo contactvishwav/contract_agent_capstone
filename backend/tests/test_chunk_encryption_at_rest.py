@@ -215,7 +215,7 @@ class ChunkEmbeddingServiceEncryptionTests(unittest.IsolatedAsyncioTestCase):
                 return super().query(cypher, params)
 
         service.graph = ReadGraph()
-        results = await service.search_similar_chunks("some query")
+        results = await service.search_similar_chunks("some query", "tenant_1")
 
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["content"], SSN_CHUNK_TEXT)
