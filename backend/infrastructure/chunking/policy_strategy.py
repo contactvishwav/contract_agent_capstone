@@ -7,7 +7,20 @@ from backend.infrastructure.chunking.base_strategy import IChunkingStrategy
 
 class PolicyChunkingStrategy(IChunkingStrategy):
     """Legal-aware chunking for policy documents using existing infrastructure."""
-    
+
+    def __init__(self, min_chunk_size: int = 20, max_chunk_size: int = 1000):
+        # Chunking here is rule/sentence-boundary driven, not size-bounded
+        # (unlike sentence/paragraph/section/clause strategies) - these
+        # exist for IChunkingStrategy/ChunkingFactory(**kwargs) interface
+        # compatibility. min_chunk_size matches the existing 20-char
+        # skip-short-sentence threshold in _extract_rules_from_section.
+        self.min_chunk_size = min_chunk_size
+        self.max_chunk_size = max_chunk_size
+
+    def get_chunk_size(self) -> int:
+        """Return the target chunk size."""
+        return self.max_chunk_size
+
     def chunk_document(self, text: str, metadata: Dict[str, Any] = None) -> List[Dict[str, Any]]:
         """Chunk policy document by legal sections and rules."""
         chunks = []

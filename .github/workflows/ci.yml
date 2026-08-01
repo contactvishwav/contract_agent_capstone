@@ -56,22 +56,18 @@ jobs:
         run: uv sync --frozen
 
       - name: Run test suite
-        # test_ai_patterns.py and test_policy_system.py are pre-existing
-        # smoke scripts, not real tests - every function in both is `async
-        # def` with zero assert statements, and neither has ever had a
-        # working async-test setup (no @pytest.mark.asyncio, no
-        # asyncio_mode config), so pytest has always rejected them at
-        # collection with "async def functions are not natively
-        # supported". Enabling asyncio_mode=auto to make them collectible
-        # would trade that deterministic failure for a live-API-dependent
-        # one, since both call real Agent classes with no LLM mocking
-        # against CI's fake GOOGLE_API_KEY - excluded here rather than
-        # "fixed", matching how test_mcp_capabilities.py was excluded
-        # earlier in this engagement before it was actually fixed.
-        # Tracked as punch-list item 22 in docs/ENTERPRISE_READINESS.md -
-        # a deliberate, tracked exclusion, not a silent gap.
+        # Punch-list item 22 closed: test_ai_patterns.py and
+        # test_policy_system.py were zero-assert async smoke scripts,
+        # excluded here because neither had a working async-test setup and
+        # both made live, unmocked LLM/Neo4j calls if ever made
+        # collectible. Both converted to real, asserting, mocked tests
+        # (test_ai_patterns.py's coverage absorbed into
+        # test_pattern_integration.py; test_policy_system.py replaced by
+        # test_policy_chunking.py) or dropped where coverage already
+        # existed elsewhere (see each new file's docstring for the
+        # duplication check) - no more --ignore entries needed.
         working-directory: backend
-        run: uv run pytest tests/ -q --ignore=tests/test_ai_patterns.py --ignore=tests/test_policy_system.py
+        run: uv run pytest tests/ -q
 
   lint:
     runs-on: ubuntu-latest

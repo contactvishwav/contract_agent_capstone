@@ -1,6 +1,14 @@
 """
-Test Pattern Integration - ReACT and Chain-of-Thought
-Tests pattern agents, selector, and orchestrator integration.
+Test Pattern Integration - ReACT, Chain-of-Thought, Advanced RAG, and the
+Pattern Orchestrator combining all three.
+
+Absorbs test_ai_patterns.py (punch-list item 22): that file was a zero-
+assert, unmocked async smoke script (would make real, live LLM/Neo4j
+calls if ever made collectible) exercising the same four things this file
+covers. Its ReACT/Chain-of-Thought coverage was already fully duplicated
+below - TestAdvancedRAGAgent and TestPatternOrchestrator are the two
+genuinely new additions, covering what test_ai_patterns.py exercised but
+nothing else did.
 
 Regression fix (live-infrastructure audit): this file previously did none
 of the Neo4jGraph patching every other file in this suite does, and
@@ -30,7 +38,7 @@ get_default_llm().
 import pytest
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 
 with patch("langchain_neo4j.Neo4jGraph") as _MockNeo4jGraph, \
      patch("backend.shared.utils.gemini_embedding_service.embedding"):
@@ -38,6 +46,10 @@ with patch("langchain_neo4j.Neo4jGraph") as _MockNeo4jGraph, \
     from backend.agents.patterns.react_agent import ReACTAgent
     from backend.agents.patterns.chain_of_thought_agent import ChainOfThoughtAgent
     from backend.agents.patterns.pattern_selector import PatternSelector, AnalysisComplexity
+    from backend.agents.patterns.advanced_rag_agent import AdvancedRAGAgent
+    from backend.agents.patterns import advanced_rag_agent
+    from backend.agents.patterns.pattern_orchestrator import PatternOrchestratorFactory
+    from backend.agents.supervisor.interfaces import AgentContext, AgentResult
     from backend.agents.intelligence_state import IntelligenceState
     from backend.agents.contract_intelligence_agents import IntelligenceOrchestrator
     from backend.agents.intelligence_tools import ClauseDetectorTool
@@ -264,6 +276,169 @@ class TestLoggingIntegration:
         
         # Execution should be tracked
         assert agent.execution is not None
+
+
+class _FakeAdvancedRAGGraph:
+    """Minimal in-memory stand-in for the three real Cypher shapes
+    AdvancedRAGAgent._build_rag_context issues - dispatches on a distinctive
+    substring per query rather than modeling real Neo4j matching, matching
+    the FakeGraph convention used across this suite."""
+
+    def __init__(self, similar=None, precedents=None, history=None):
+        self._similar = similar if similar is not None else []
+        self._precedents = precedents if precedents is not None else []
+        self._history = history if history is not None else []
+
+    def query(self, cypher, params=None):
+        if "queryNodes" in cypher:
+            return self._similar
+        if "'precedent' as type" in cypher:
+            return self._precedents
+        if "c.total_amount as amount" in cypher:
+            return self._history
+        return []
+
+
+class TestAdvancedRAGAgent:
+    """Test Advanced RAG pattern agent. Unlike ReACT/CoT, this pattern
+    makes no LLM calls at all - it's pure Neo4j retrieval plus
+    deterministic Python analysis, so a fake graph is the only mocking
+    needed."""
+
+    @pytest.mark.asyncio
+    async def test_process_requires_a_query(self):
+        agent = AdvancedRAGAgent()
+
+        result = await agent.process({'contract_id': 'c1'})
+
+        assert 'error' in result
+        assert 'success' not in result
+
+    @pytest.mark.asyncio
+    async def test_process_returns_success_with_populated_context(self):
+        agent = AdvancedRAGAgent()
+        fake_graph = _FakeAdvancedRAGGraph(
+            similar=[{'contract_id': 'c2', 'summary': 'A liability agreement',
+                      'contract_type': 'MSA', 'effective_date': '2024-01-01', 'similarity': 0.9}],
+            precedents=[{'contract_id': 'c3', 'summary': 'precedent summary',
+                         'contract_type': 'MSA', 'date': '2023-01-01', 'type': 'precedent'}],
+            history=[{'contract_id': 'c4', 'summary': 'liability terms history',
+                      'contract_type': 'MSA', 'date': '2022-01-01', 'amount': 5000}],
+        )
+
+        with patch.object(advanced_rag_agent, 'graph', fake_graph):
+            result = await agent.process({'query': 'liability terms', 'contract_id': 'c1'})
+
+        assert result['success'] is True
+        assert result['rag_context']['similar_contracts_count'] == 1
+        assert result['rag_context']['precedents_count'] == 1
+        assert result['rag_context']['company_history_count'] == 1
+        assert result['rag_context']['context_score'] > 0.0
+        assert len(result['analysis']['insights']) > 0
+
+    @pytest.mark.asyncio
+    async def test_context_score_is_zero_with_no_data_available(self):
+        agent = AdvancedRAGAgent()
+
+        with patch.object(advanced_rag_agent, 'graph', _FakeAdvancedRAGGraph()):
+            result = await agent.process({'query': 'anything', 'contract_id': 'c1'})
+
+        assert result['success'] is True
+        assert result['rag_context']['context_score'] == 0.0
+        assert result['analysis']['insights'] == []
+
+    @pytest.mark.asyncio
+    async def test_precedents_found_generate_a_precedent_review_recommendation(self):
+        agent = AdvancedRAGAgent()
+        fake_graph = _FakeAdvancedRAGGraph(
+            similar=[{'contract_id': 'c2', 'summary': 's', 'contract_type': 'MSA', 'similarity': 0.5}],
+            precedents=[{'contract_id': 'c3', 'summary': 's', 'contract_type': 'MSA', 'type': 'precedent'}],
+        )
+
+        with patch.object(advanced_rag_agent, 'graph', fake_graph):
+            result = await agent.process({'query': 'liability', 'contract_id': 'c1'})
+
+        recommendation_types = {r['type'] for r in result['analysis']['recommendations']}
+        assert 'precedent_based' in recommendation_types
+
+
+class TestPatternOrchestrator:
+    """Test Pattern Orchestrator's synthesis logic, with its three sub-
+    agents replaced by fakes - each pattern's own real behavior is already
+    covered individually above (TestReACTAgent, TestChainOfThoughtAgent,
+    TestAdvancedRAGAgent), so this isolates the orchestrator's own
+    pattern-selection and results-synthesis logic."""
+
+    def _orchestrator_with_fake_agents(self, react_result=None, cot_result=None, rag_result=None):
+        orchestrator = PatternOrchestratorFactory.create_orchestrator()
+        orchestrator.react_agent = SimpleNamespace(
+            process=AsyncMock(return_value=react_result or {'success': False}))
+        orchestrator.cot_agent = SimpleNamespace(
+            process=AsyncMock(return_value=cot_result or {'success': False}))
+        orchestrator.rag_agent = SimpleNamespace(
+            process=AsyncMock(return_value=rag_result or {'success': False}))
+        return orchestrator
+
+    @pytest.mark.asyncio
+    async def test_process_only_executes_requested_patterns(self):
+        orchestrator = self._orchestrator_with_fake_agents(
+            react_result={'success': True, 'final_confidence': 0.6},
+            cot_result={'success': True, 'thought_chain': [],
+                        'final_result': {'confidence': 0.8, 'violations': [], 'recommendations': []}},
+        )
+
+        result = await orchestrator.process({'patterns': ['react', 'cot'], 'query': 'q'})
+
+        assert result['success'] is True
+        assert set(result['individual_results'].keys()) == {'react', 'cot'}
+        orchestrator.rag_agent.process.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_synthesize_results_averages_confidence_across_patterns(self):
+        orchestrator = self._orchestrator_with_fake_agents(
+            react_result={'success': True, 'final_confidence': 0.6},
+            cot_result={'success': True, 'thought_chain': [],
+                        'final_result': {'confidence': 0.8, 'violations': [], 'recommendations': []}},
+        )
+
+        result = await orchestrator.process({'patterns': ['react', 'cot'], 'query': 'q'})
+
+        assert result['synthesized_result']['overall_confidence'] == pytest.approx(0.7)
+
+    @pytest.mark.asyncio
+    async def test_key_findings_aggregate_from_react_and_cot(self):
+        orchestrator = self._orchestrator_with_fake_agents(
+            react_result={'success': True, 'final_confidence': 0.5,
+                          'findings': [{'type': 'clause', 'content': 'termination clause', 'relevance': 0.9}]},
+            cot_result={'success': True, 'thought_chain': [],
+                        'final_result': {'confidence': 0.7, 'recommendations': [],
+                                         'violations': [{'violation': 'unlimited liability',
+                                                          'severity': 'HIGH', 'clause_type': 'liability'}]}},
+        )
+
+        result = await orchestrator.process({'patterns': ['react', 'cot'], 'query': 'q'})
+
+        sources = {f['source'] for f in result['synthesized_result']['key_findings']}
+        assert sources == {'react', 'cot'}
+
+    def test_execute_implements_iagent_protocol(self):
+        # execute() drives its own asyncio.run(...) internally, so this
+        # must be a plain (non-async-def) test - calling it from inside an
+        # already-running pytest-asyncio event loop would raise.
+        orchestrator = self._orchestrator_with_fake_agents(
+            react_result={'success': True, 'final_confidence': 0.9},
+        )
+        context = AgentContext(input_data={'patterns': ['react'], 'query': 'q'}, workflow_context=None)
+
+        result = orchestrator.execute(context)
+
+        assert isinstance(result, AgentResult)
+        assert result.status == 'success'
+
+    def test_create_for_task_clause_extraction_increases_react_iterations(self):
+        orchestrator = PatternOrchestratorFactory.create_for_task('clause_extraction')
+
+        assert orchestrator.react_agent.max_iterations == 5
 
 
 if __name__ == '__main__':

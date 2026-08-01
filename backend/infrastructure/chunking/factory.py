@@ -110,5 +110,6 @@ class ChunkingFactory:
             "paragraph": "Paragraph-boundary aware chunking",
             "section": "Legal section-aware chunking with header detection",
             "clause": "Legal clause-boundary detection chunking",
-            "hybrid": "Combines multiple strategies for optimal results"
+            "hybrid": "Combines multiple strategies for optimal results",
+            "policy": "Legal-aware chunking for policy documents by rule and section",
         }
