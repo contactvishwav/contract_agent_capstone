@@ -66,6 +66,8 @@ This repository includes a standalone **MCP Server** that exposes our contract i
 
 The [Contract Understanding Atticus Dataset (CUAD)](https://www.atticusprojectai.org/cuad) consists of 500 contracts with annotations for 41 legal clauses. This project extends CUAD analysis to handle custom provisions and complex legal patterns.
 
+**Extraction accuracy** is benchmarked against real CUAD ground truth across all 41 clause categories (497-contract scale) - full per-category precision/recall/F1 tables, methodology, the quota-forced Flash/Flash-Lite model-substitution story, and root-cause analysis on the weaker categories are in [`docs/EVALUATION.md`](docs/EVALUATION.md).
+
 ## ⚙️ Setup and Installation
 
 1. **Clone the repository**:
@@ -136,7 +138,7 @@ Real, honestly-scoped remaining work - see `docs/CAPSTONE_SUMMARY.md` §9 for th
 
 - Real credential provisioning (org invites, SSO, MFA) replacing today's self-service registration.
 - TLS/HTTPS termination, a Neo4j backup/DR story, and a real secrets manager - all blocked on a chosen deployment target, not a code gap.
-- Push the risk-category extraction benchmark further (20 of 36 categories still score below 0.30 F1 - see `docs/CAPSTONE_SUMMARY.md` §4 item 12).
+- Push the risk-category extraction benchmark further (20 of 36 categories still score below 0.30 F1 - full tables and root-cause analysis in [`docs/EVALUATION.md`](docs/EVALUATION.md), engagement history in `docs/CAPSTONE_SUMMARY.md` §4 item 12).
 
 ---
 *Created as part of a Legal AI Capstone Project.*

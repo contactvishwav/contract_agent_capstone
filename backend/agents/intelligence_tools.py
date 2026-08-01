@@ -7,6 +7,7 @@ from backend.agents.policy_evaluation_service import PolicyEvaluationService
 from backend.agents.policy_rule_resolver import get_applicable_rules
 from backend.agents.deterministic_policy_rules import evaluate_deterministic
 from backend.infrastructure.audit_logger import AuditLogger, AuditEventType
+from backend.shared.monitoring import hallucination_tracker
 import json
 import logging
 
@@ -83,6 +84,7 @@ class ClauseDetectorTool(BaseTool):
 
             ungrounded_count = sum(1 for c in clauses if not c["grounded"])
             logger.info(f"Extracted {len(clauses)} clauses ({ungrounded_count} ungrounded)")
+            hallucination_tracker.record("clause_extraction", len(clauses), ungrounded_count)
             AuditLogger().log_event(
                 event_type=AuditEventType.AGENT_TOOL_CALL,
                 resource_id=contract_id or "unknown",

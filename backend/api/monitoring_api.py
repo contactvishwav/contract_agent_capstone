@@ -5,6 +5,7 @@ from typing import Dict, List, Any, Optional
 import logging
 from backend.shared.monitoring.performance_monitor import monitor
 from backend.shared.monitoring.llm_usage_tracker import llm_usage_tracker
+from backend.shared.monitoring import hallucination_tracker
 from backend.shared.cache.redis_cache import cache
 from backend.shared.utils.contract_search_tool import graph as neo4j_graph
 from backend.agents.optimized_cuad_tools import BatchProcessor
@@ -60,9 +61,15 @@ async def get_operation_performance(operation: str, hours: int = 1):
 
 @router.get("/llm-usage", dependencies=[Depends(requires_permission(Permission.VIEW_REPORTS))])
 async def get_llm_usage():
-    """Get running LLM token usage, estimated cost, and cache-hit totals (P3 item 20)"""
+    """Get running LLM token usage, estimated cost, and cache-hit totals
+    (P3 item 20), plus grounding/hallucination rates (audit finding #12) -
+    ungrounded extractions and discarded policy citations, both previously
+    log-only with no persisted rate."""
     try:
-        return llm_usage_tracker.get_summary()
+        return {
+            **llm_usage_tracker.get_summary(),
+            "hallucination_tracking": hallucination_tracker.get_summary(),
+        }
     except Exception as e:
         logger.error(f"Failed to get LLM usage summary: {e}")
         raise HTTPException(status_code=500, detail=f"LLM usage retrieval failed: {str(e)}")

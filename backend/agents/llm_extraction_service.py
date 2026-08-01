@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from backend.shared.cache.redis_cache import cache
 from backend.shared.config.phase3_config import Phase3Config
 from backend.shared.monitoring.llm_usage_tracker import llm_usage_tracker
+from backend.shared.monitoring.performance_monitor import track_performance
 from backend.shared.utils.llm_concurrency import llm_call_semaphore
 from backend.shared.utils.logger import get_logger
 
@@ -29,7 +30,16 @@ logger = get_logger(__name__)
 # Bumped whenever _build_prompt's wording changes, so a cached result from
 # an old prompt version is never silently reused under a new one - the
 # cache key is content + prompt version, not content alone.
-PROMPT_VERSION = "v1"
+#
+# v2 (production-readiness audit finding #11): this had stayed "v1" since
+# introduction despite _build_prompt's wording changing across several
+# commits since then - decorative versioning that never actually busted
+# the cache on those changes. Bumped now to reflect the prompt actually in
+# use, and test_prompt_versioning.py enforces going forward: it hashes
+# _build_prompt's real source against a table keyed by PROMPT_VERSION, so
+# editing the prompt without bumping this constant (or bumping it without
+# updating that table) fails CI.
+PROMPT_VERSION = "v2"
 
 
 class CUADClauseType(str, Enum):
@@ -169,6 +179,20 @@ class LLMExtractionService:
             llm.with_structured_output(_LLMExtractionResponse, include_raw=True) if llm else None
         )
 
+    # Audit finding #13: this call (with evaluate_clause in
+    # policy_evaluation_service.py) dominates real per-contract cost/
+    # latency - previously only the secondary CUAD-mitigation tools
+    # (optimized_cuad_tools.py) had @track_performance coverage, so
+    # p50/p95 for the actual primary path was unanswerable. Same caveat
+    # as llm_usage_tracker.py had before finding #1's fix applies here
+    # too: this decorator's PerformanceMonitor is in-process, so
+    # GET /api/monitoring/performance only sees calls made in whichever
+    # container served that request - real p50/p95 for this call in
+    # production means querying it on the `worker` container, not
+    # `backend`. Left as the existing decorator/pattern per scope; a
+    # Redis-backed rewrite (mirroring llm_usage_tracker.py) is the natural
+    # next step if/when this needs to be cross-process too.
+    @track_performance("clause_extraction")
     def extract_clauses(
         self,
         text: str,

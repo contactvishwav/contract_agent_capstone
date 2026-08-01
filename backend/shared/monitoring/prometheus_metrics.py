@@ -22,6 +22,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, Counter, Gauge, His
 
 from backend.shared.monitoring.celery_task_metrics import get_task_state_counts
 from backend.shared.monitoring.llm_usage_tracker import llm_usage_tracker
+from backend.shared.monitoring import hallucination_tracker
 
 HTTP_REQUESTS_TOTAL = Counter(
     "http_requests_total",
@@ -67,6 +68,22 @@ CELERY_TASK_STATE_COUNT = Gauge(
     ["task_name", "state"],
 )
 
+HALLUCINATION_RATE = Gauge(
+    "hallucination_rate",
+    "Fraction of checked items flagged as ungrounded/hallucinated, by category",
+    ["category"],
+)
+HALLUCINATION_TOTAL = Gauge(
+    "hallucination_checked_total",
+    "Total items checked for grounding, by category",
+    ["category"],
+)
+HALLUCINATION_FLAGGED = Gauge(
+    "hallucination_flagged_total",
+    "Total items flagged as ungrounded/hallucinated, by category",
+    ["category"],
+)
+
 
 def _refresh_llm_usage_gauges() -> None:
     summary = llm_usage_tracker.get_summary()
@@ -84,10 +101,18 @@ def _refresh_celery_task_gauges() -> None:
             CELERY_TASK_STATE_COUNT.labels(task_name=task_name, state=state).set(count)
 
 
+def _refresh_hallucination_gauges() -> None:
+    for category, stats in hallucination_tracker.get_summary().get("by_category", {}).items():
+        HALLUCINATION_RATE.labels(category=category).set(stats["rate"])
+        HALLUCINATION_TOTAL.labels(category=category).set(stats["total"])
+        HALLUCINATION_FLAGGED.labels(category=category).set(stats["flagged"])
+
+
 def render_metrics() -> bytes:
     """Refresh the read-at-scrape-time gauges, then render every
     registered collector in the default registry as Prometheus text
     exposition format."""
     _refresh_llm_usage_gauges()
     _refresh_celery_task_gauges()
+    _refresh_hallucination_gauges()
     return generate_latest(REGISTRY)

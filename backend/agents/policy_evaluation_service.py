@@ -19,7 +19,9 @@ from pydantic import BaseModel, Field
 from backend.domain.policies.entities import PolicyRule
 from backend.shared.cache.redis_cache import cache
 from backend.shared.config.phase3_config import Phase3Config
+from backend.shared.monitoring import hallucination_tracker
 from backend.shared.monitoring.llm_usage_tracker import llm_usage_tracker
+from backend.shared.monitoring.performance_monitor import track_performance
 from backend.shared.utils.llm_concurrency import llm_call_semaphore
 from backend.shared.utils.logger import get_logger
 
@@ -27,7 +29,11 @@ logger = get_logger(__name__)
 
 # Bumped whenever _build_prompt's wording changes - see llm_extraction_
 # service.py's identical convention.
-PROMPT_VERSION = "v1"
+#
+# v2 (production-readiness audit finding #11): same "never actually
+# bumped despite the prompt changing" gap as that file, same fix. See its
+# comment for the enforcement mechanism (test_prompt_versioning.py).
+PROMPT_VERSION = "v2"
 
 
 class _LLMPolicyViolation(BaseModel):
@@ -60,6 +66,9 @@ class PolicyEvaluationService:
             llm.with_structured_output(_LLMPolicyEvaluationResponse, include_raw=True) if llm else None
         )
 
+    # Audit finding #13: same rationale/caveat as LLMExtractionService.
+    # extract_clauses's identical decorator - see that method's comment.
+    @track_performance("policy_evaluation")
     def evaluate_clause(
         self, clause_type: str, clause_text: str, rules: List[PolicyRule]
     ) -> List[Dict[str, Any]]:
@@ -110,6 +119,7 @@ class PolicyEvaluationService:
         )
 
         violations = []
+        discarded_count = 0
         for v in response.violations:
             if v.rule_id not in valid_rule_ids:
                 # Grounding check, mirroring LLMExtractionService's offset
@@ -117,6 +127,7 @@ class PolicyEvaluationService:
                 # value. A rule_id that wasn't actually offered means the
                 # model hallucinated a policy that doesn't exist - discard.
                 logger.warning(f"Discarding policy violation citing unknown rule_id: {v.rule_id}")
+                discarded_count += 1
                 continue
             violations.append({
                 "rule_id": v.rule_id,
@@ -125,6 +136,8 @@ class PolicyEvaluationService:
                 "suggested_fix": v.suggested_fix,
                 "confidence": v.confidence,
             })
+
+        hallucination_tracker.record("policy_citation", len(response.violations), discarded_count)
 
         if Phase3Config.CACHE_ENABLED:
             cache.set(cache_key, violations, ttl=Phase3Config.get_cache_ttl("policy_evaluation"))
