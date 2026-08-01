@@ -15,7 +15,7 @@ Enterprise contract review is traditionally a slow, manual, and error-prone proc
 This platform solves these challenges by combining **Graph Databases** with **Agentic AI** to create a system that thinks and reasons like a legal expert:
 - **Autonomous Review**: 11+ specialized agents work together to extract, validate, and risk-rate clauses automatically.
 - **Graph-Based Intelligence**: Neo4j stores multi-level relationships (Document → Section → Clause), enabling the system to understand context, not just keywords.
-- **Explainable AI**: Every decision includes a "Chain-of-Thought" reasoning trace and a quality grade (A-F), giving legal teams confidence in the output.
+- **Explainable AI**: Every clause carries a grounding badge (verified against the source text, not hallucinated), a stable `clause_id` for traceability, and - when a learned pattern applies - a plain-language explanation of how historical review outcomes adjusted its risk level and by how much confidence.
 - **Advanced RAG**: Beyond simple search, the system performs precedent lookup and historical analysis to ensure consistency across the entire contract repository.
 
 See blog for more: [Agentic GraphRAG for Commercial Contracts](https://towardsdatascience.com/agentic-graphrag-for-commercial-contracts/)
@@ -48,10 +48,10 @@ This repository includes a standalone **MCP Server** that exposes our contract i
 
 ## 🧠 Advanced AI Patterns
 
-- **ReACT Pattern**: Reasoning-Action-Observation cycles for iterative problem-solving in contract analysis.
-- **Chain-of-Thought (CoT)**: Explicit step-by-step reasoning documentation for transparent AI decision-making.
 - **Advanced RAG**: Sophisticated retrieval with precedent lookup and multi-level embedding matching.
 - **Self-Reflection**: Inter-agent validation and recursive plan refinement.
+
+(A ReACT/Chain-of-Thought pattern-analysis step existed earlier but was removed - confirmed unreachable in real usage, deterministic f-string templating rather than real reasoning, and its output never influenced any downstream field even when manually triggered. See `docs/CAPSTONE_SUMMARY.md`.)
 
 ## 🛠️ Technical Stack
 

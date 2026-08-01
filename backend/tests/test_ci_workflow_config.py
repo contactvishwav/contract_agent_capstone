@@ -146,8 +146,8 @@ class DevToolsAreLockedNotAdHocTests(unittest.TestCase):
     into the local dev venv over the course of this engagement, but were
     never added to pyproject.toml/uv.lock. `uv sync --frozen` (exactly what
     CI runs) would produce a venv missing all four - `uv run pytest`/
-    `uv run ruff` would fail outright, and 8 tests in
-    test_pattern_integration.py that correctly use @pytest.mark.asyncio
+    `uv run ruff` would fail outright, and every test across this suite
+    that correctly uses @pytest.mark.asyncio (e.g. test_pattern_integration.py)
     would fail without the plugin installed. Confirmed via a clean-room
     `rm -rf .venv && uv sync --frozen` rebuild before this test was added.
     """

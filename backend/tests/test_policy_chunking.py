@@ -14,12 +14,12 @@ Scope check before writing these (don't duplicate, don't assume): of the
      Cypher-shape/tenant-scoping assertions). Not duplicated here.
   4. ChunkingFactory.create_strategy('policy') - NOT covered elsewhere.
      Real test below.
-  5. ChainOfThoughtAgent dynamic policy loading - _risk_assessment_chain
-     unconditionally calls PolicyRepository.get_applicable_policies on
-     every risk_assessment call (not gated behind an explicit tenant_id),
-     so this is already exercised by
-     test_pattern_integration.py::TestChainOfThoughtAgent::
-     test_cot_agent_risk_assessment. Not duplicated here.
+  5. ChainOfThoughtAgent dynamic policy loading - moot: ChainOfThoughtAgent
+     itself was removed shortly after this file was written (confirmed
+     unreachable in real usage, output a dead side-channel, and its policy
+     check had drifted into a third hardcoded keyword matcher duplicating
+     PolicyEvaluationService - see docs/CAPSTONE_SUMMARY.md). Nothing to
+     duplicate or cover here anymore.
 
 Writing real assertions for PolicyChunkingStrategy surfaced a genuine,
 previously-undiscovered bug: the class never implemented

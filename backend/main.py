@@ -90,10 +90,6 @@ app.include_router(audit_router)
 from backend.api.auth_api import router as auth_router
 app.include_router(auth_router)
 
-# AI Patterns API
-from backend.api.patterns_api import router as patterns_router
-app.include_router(patterns_router)
-
 # Policy Management API
 from backend.api.policy_api import router as policy_router
 app.include_router(policy_router)

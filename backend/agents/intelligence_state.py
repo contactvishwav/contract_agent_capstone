@@ -21,10 +21,6 @@ class IntelligenceState(TypedDict):
     jurisdiction_info: dict
     precedent_matches: List[dict]
     
-    # Pattern analysis results (NEW)
-    pattern_used: str
-    pattern_analysis: dict
-    
     # Workflow metadata
     messages: List[Any]
     current_step: str
