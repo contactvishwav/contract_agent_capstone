@@ -1,6 +1,7 @@
 import json
 import hashlib
 import logging
+import threading
 from typing import Any, Optional, Dict
 from functools import wraps
 import os
@@ -51,20 +52,60 @@ class RedisCache:
         return hashlib.md5(key_data.encode()).hexdigest()
 
 class InMemoryCache:
-    """Fallback in-memory cache"""
-    
+    """
+    Fallback in-memory cache. Also backs LLMUsageTracker's counters
+    (shared/monitoring/llm_usage_tracker.py) when no real Redis is
+    reachable - incr/incrby/incrbyfloat/sadd/smembers mirror redis-py's
+    actual return types (int/int/float/int/set) closely enough that
+    tracker code doesn't need to know which backend it's talking to.
+
+    Everything lives in one dict so a blanket `._cache.clear()` (the
+    reset already used throughout this test suite) really does clear
+    all state, counters included - not just the string-keyed cache
+    entries.
+    """
+
     def __init__(self):
         self._cache: Dict[str, Any] = {}
-    
+        self._lock = threading.Lock()
+
     def get(self, key: str) -> Optional[str]:
         return self._cache.get(key)
-    
+
     def setex(self, key: str, ttl: int, value: str) -> bool:
         self._cache[key] = value
         return True
-    
+
     def ping(self):
         return True
+
+    def incr(self, key: str, amount: int = 1) -> int:
+        with self._lock:
+            value = int(self._cache.get(key, 0) or 0) + amount
+            self._cache[key] = value
+            return value
+
+    def incrby(self, key: str, amount: int) -> int:
+        return self.incr(key, amount)
+
+    def incrbyfloat(self, key: str, amount: float) -> float:
+        with self._lock:
+            value = float(self._cache.get(key, 0.0) or 0.0) + amount
+            self._cache[key] = value
+            return value
+
+    def sadd(self, key: str, *values) -> int:
+        with self._lock:
+            existing = self._cache.get(key)
+            current = existing if isinstance(existing, set) else set()
+            before = len(current)
+            current.update(values)
+            self._cache[key] = current
+            return len(current) - before
+
+    def smembers(self, key: str) -> set:
+        value = self._cache.get(key)
+        return set(value) if isinstance(value, set) else set()
 
 # Global cache instance
 cache = RedisCache()

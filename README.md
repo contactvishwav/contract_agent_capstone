@@ -97,7 +97,7 @@ The [Contract Understanding Atticus Dataset (CUAD)](https://www.atticusprojectai
    | `MONITORING_ENABLED`| Enable/Disable performance monitoring | `true` |
 
 > [!NOTE]
-> **Redis Usage**: Redis is currently disabled as it is considered overkill for the capstone/development phase. However, it can be easily enabled by setting `CACHE_ENABLED=true` to implement caching features before moving to production.
+> **Redis Usage**: Redis is deployed and enabled by default (`docker-compose.yml`'s `CACHE_ENABLED` defaults to `true`) - it backs LLM-response/GraphRAG-result caching, the Celery task broker, and shared usage/cost counters across the backend and worker containers. Not optional infrastructure for this platform's real feature set.
 
    For a complete list of configuration options, including timeouts and parallel processing settings, refer to the [.env.example](file:///.env.example) file.
 
@@ -111,18 +111,6 @@ The [Contract Understanding Atticus Dataset (CUAD)](https://www.atticusprojectai
    python scripts/update_contract_types.py
    ```
 
-## 📈 Future Enhancements
-
-While the current platform is a complete capstone implementation, several features are designed for future production scaling:
-
-- **Distributed Caching**: Enable Redis to cache LLM responses and GraphRAG results, significantly reducing latency and API costs.
-- **Async Batch Workflows**: Further decouple long-running extraction tasks using Celery or similar workers.
-- **Multi-Tenant Isolation**: Implement logical isolation for multiple legal teams or organizations.
-- **Enhanced Adaptive Learning**: Use historical feedback to fine-tune the risk assessment scoring system.
-
----
-*Created as part of a Legal AI Capstone Project.*
-
 5. **Run the MCP Server**:
    ```bash
    PYTHONPATH=. python3 backend/mcp_server.py
@@ -132,3 +120,23 @@ While the current platform is a complete capstone implementation, several featur
    ```bash
    PYTHONPATH=. python3 backend/tests/test_mcp_capabilities.py
    ```
+
+## ✅ Implemented Since the Original Capstone Scope
+
+These four items were originally listed here as future work. All four are real, shipped, and tested - not prototypes. Full before/after evidence (file:line, commit hashes, test counts) is in [`docs/CAPSTONE_SUMMARY.md`](docs/CAPSTONE_SUMMARY.md) §6.
+
+- **Distributed Caching**: Redis-backed caching for both LLM responses (extraction/policy-evaluation) and the real GraphRAG vector-search path, keyed on query + tenant_id + filters.
+- **Async Batch Workflows**: Contract analysis runs as a real Celery task (`POST /analyze` enqueues and returns immediately; `GET /tasks/{task_id}/status` polls real task state) - not a synchronous request blocking for 20s+.
+- **Multi-Tenant Isolation**: Real JWT-based authentication (`POST /api/auth/token`, bcrypt-hashed accounts via `POST /api/auth/register`) - `tenant_id`/role come exclusively from a validated, signed token, not a caller-supplied parameter. Proven with a genuine cross-tenant test: a valid token for one tenant cannot read another tenant's data no matter what it claims elsewhere in the request.
+- **Enhanced Adaptive Learning**: Historical review decisions genuinely adjust a clause's risk level on later analyses - a real end-to-end feedback loop (`FeedbackCollector` → `PatternLearner` → `AdaptiveAnalyzer`), not a feedback button that goes nowhere. Surfaced in the UI with a plain-language explanation and confidence score whenever a learned pattern applies.
+
+## 📈 Future Enhancements
+
+Real, honestly-scoped remaining work - see `docs/CAPSTONE_SUMMARY.md` §9 for the full prioritized list:
+
+- Real credential provisioning (org invites, SSO, MFA) replacing today's self-service registration.
+- TLS/HTTPS termination, a Neo4j backup/DR story, and a real secrets manager - all blocked on a chosen deployment target, not a code gap.
+- Push the risk-category extraction benchmark further (20 of 36 categories still score below 0.30 F1 - see `docs/CAPSTONE_SUMMARY.md` §4 item 12).
+
+---
+*Created as part of a Legal AI Capstone Project.*

@@ -65,6 +65,31 @@ class EnvKeyProvider(IKeyProvider):
         return hashlib.sha256(key_source.encode("utf-8")).digest()
 
 
+def validate_production_key() -> None:
+    """
+    Production-readiness audit finding #4 (see governance/auth.py's
+    validate_production_secret for the matching JWT-side fix - same
+    issue, same fix shape): the fallback above is loudly logged, but only
+    logged. Call once at application startup (backend/main.py's
+    lifespan), not lazily on first encrypt/decrypt - a misconfigured
+    production deployment should never start accepting traffic, let alone
+    silently encrypt real contract data with a key published in this
+    repo's own source. No-ops entirely outside production.
+    """
+    from backend.shared.utils.route_utils import is_production
+
+    if not is_production():
+        return
+
+    key_source = os.getenv("ENCRYPTION_KEY")
+    if not key_source or key_source == _DEV_DEFAULT_KEY:
+        raise RuntimeError(
+            "ENCRYPTION_KEY is not set (or is set to the insecure dev-only "
+            "default) while ENVIRONMENT=production. Refusing to start - set "
+            "a real ENCRYPTION_KEY before deploying to production."
+        )
+
+
 class DecryptionError(Exception):
     """Raised when a stored field can't be decrypted - wrong/rotated key,
     corrupted data, or a tampered ciphertext. Deliberately distinct from a

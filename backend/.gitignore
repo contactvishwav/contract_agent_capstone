@@ -2,6 +2,10 @@
 .env
 __pycache__/
 
+# Generated locally by the same `uv export` command CI's security job runs
+# for pip-audit scanning - not source, regeneratable.
+requirements-scan.txt
+
 # Benchmark run artifacts — regeneratable, not source
 research/benchmark/cuad_contract_texts.json
 research/benchmark/*checkpoint*.jsonl

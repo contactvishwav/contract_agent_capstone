@@ -13,7 +13,7 @@ from backend.api.document_upload import router as document_router
 from backend.api.contract_intelligence import router as intelligence_router
 from backend.api.routes.debug import create_debug_router
 from backend.api.routes.production import create_production_router
-from backend.shared.utils.route_utils import is_development, conditionally_include_router
+from backend.shared.utils.route_utils import is_development, is_production, conditionally_include_router
 from backend.api.enhanced_contract_search import router as enhanced_search_router
 from backend.api.enhanced_document_upload import router as enhanced_upload_router
 from backend.agents.agent_workflow_tracker import get_current_workflow_status
@@ -46,7 +46,16 @@ except Exception as e:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup - Initialize once
+    # Startup - Initialize once.
+    #
+    # Hard-fail before accepting any traffic if running in production
+    # without real secrets (audit finding #4) - both no-op outside
+    # production, so this has no effect in dev/tests.
+    from backend.governance.auth import validate_production_secret
+    from backend.infrastructure.encryption import validate_production_key
+    validate_production_secret()
+    validate_production_key()
+
     app.state.llm_manager = LLMManager()
     yield
     # Shutdown - cleanup if needed
@@ -60,12 +69,40 @@ def get_llm_manager(request: Request):
 
 app.add_middleware(TracingMiddleware)
 
+
+def _get_cors_origins() -> list:
+    """
+    Production-readiness audit finding #2 (was: allow_origins=["*"] with
+    allow_credentials=True - Starlette's CORSMiddleware reflects the
+    actual request Origin back in that combination, since it can't
+    literally emit "*" alongside credentials per spec - meaning any
+    origin, not just the real frontend, could make credentialed calls).
+
+    Dev stays permissive (matches local-dev convenience: docker-compose's
+    `ui` service, arbitrary local ports, etc.). Production requires an
+    explicit, comma-separated allow-list via CORS_ALLOWED_ORIGINS - fails
+    closed (empty list, nothing allowed) rather than open if unset, same
+    "fail closed, not fail open" principle as the debug-route fix.
+    """
+    if not is_production():
+        return ["*"]
+
+    origins = [o.strip() for o in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()]
+    if not origins:
+        logger.warning(
+            "CORS_ALLOWED_ORIGINS is not set in production - no cross-origin "
+            "requests will be allowed until it is. Set a comma-separated list "
+            "of real frontend origins, e.g. https://app.example.com"
+        )
+    return origins
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=["*"],  # Allow all origins
-    allow_methods=["*"],  # Allow all methods
-    allow_headers=["*"],  # Allow all headers
+    allow_origins=_get_cors_origins(),
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Include routers based on environment

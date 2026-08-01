@@ -103,3 +103,69 @@ jobs:
         # for visibility, not yet enforced.
         working-directory: backend
         run: uv run ruff check . --exit-zero
+
+  security:
+    runs-on: ubuntu-latest
+    # Production-readiness audit finding #6: no automated dependency
+    # vulnerability scanning existed anywhere in this pipeline. Both
+    # steps below are report-only (continue-on-error), not blocking -
+    # deliberately, matching this file's own established precedent: the
+    # `lint` job's E9/F821 check is blocking specifically because the
+    # codebase was audited clean of it *first* ("safe to block on them" -
+    # see that job's comment); the full ruff report stays non-blocking
+    # because that backlog was never triaged. The dependency scan is in
+    # the same pre-triage state today - confirmed evidence, not
+    # hypothetical: `npm audit` currently reports 3 real high-severity
+    # findings in Vite's dev-server chain (see the frontend step below
+    # for why they don't block a real deployment). Flipping either step
+    # to blocking is the natural next move once its current baseline is
+    # triaged and either fixed or explicitly accepted - not before, or
+    # this job would go red on its first run for reasons unrelated to
+    # whatever change actually triggered it.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Export locked backend dependencies for scanning
+        working-directory: backend
+        run: uv export --frozen --no-dev --no-hashes -o requirements-scan.txt
+
+      - name: Backend dependency vulnerability scan (pip-audit, report-only)
+        working-directory: backend
+        continue-on-error: true
+        run: uvx pip-audit -r requirements-scan.txt
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "23"
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Frontend dependency vulnerability scan (npm audit, report-only)
+        # Scans devDependencies too (no --omit=dev) so known findings stay
+        # visible here rather than hidden by the flag that would otherwise
+        # make this job "pass" quietly (--omit=dev's package-level grouping
+        # under-reports this same chain as "3 high"; the full scan below is
+        # the honest number). Current confirmed baseline: 12 findings (3
+        # low, 1 moderate, 8 high), all in the Vite dev-server/build-
+        # toolchain chain (vite, rollup, postcss, launch-editor) - real,
+        # but scoped to `vite dev`/`vite build`'s own tooling, which never
+        # runs in the production image (frontend/Dockerfile's `production`
+        # stage is nginx serving a static `vite build` output; no Node,
+        # no Vite, no dev server at all - see that Dockerfile). Non-issue
+        # for what's actually deployed; tracked here so it isn't invisible.
+        working-directory: frontend
+        continue-on-error: true
+        run: npm audit

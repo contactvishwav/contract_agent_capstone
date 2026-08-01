@@ -73,6 +73,34 @@ def _get_secret_key() -> str:
     return secret
 
 
+def validate_production_secret() -> None:
+    """
+    Production-readiness audit finding #4: the fallback above is loudly
+    logged, but only logged - a real deployment that forgot to set
+    JWT_SECRET_KEY would run indefinitely on a secret published in this
+    repo's own source, with nothing louder than a log line anyone could
+    miss.
+
+    Call once at application startup (backend/main.py's lifespan), not
+    lazily on first token operation - a misconfigured production
+    deployment should never start accepting traffic at all, not fail on
+    its first real request. No-ops entirely outside production
+    (route_utils.is_production()) so local dev/tests are unaffected.
+    """
+    from backend.shared.utils.route_utils import is_production
+
+    if not is_production():
+        return
+
+    secret = os.getenv("JWT_SECRET_KEY")
+    if not secret or secret == _DEV_DEFAULT_SECRET:
+        raise RuntimeError(
+            "JWT_SECRET_KEY is not set (or is set to the insecure dev-only "
+            "default) while ENVIRONMENT=production. Refusing to start - set "
+            "a real JWT_SECRET_KEY before deploying to production."
+        )
+
+
 @dataclass
 class TokenIdentity:
     """The resolved, verified identity from a validated JWT - tenant_id and

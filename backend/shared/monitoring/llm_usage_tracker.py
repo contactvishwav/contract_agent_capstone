@@ -1,21 +1,35 @@
 """
-Basic LLM cost/usage monitoring (P3 item 20). Tracks running totals of
-token usage and estimated cost per operation, in-memory only - matches
-performance_monitor.py's scope (not persisted, lost on restart; a
-lightweight running counter, not a billing-grade observability platform).
+LLM cost/usage monitoring (P3 item 20), backed by Redis-shared counters.
+
+Was in-process only (a plain dict) - fine when everything ran inside one
+FastAPI process, but the Celery migration (backend/tasks.py) moved the
+real analysis pipeline - and with it, every LLMExtractionService/
+PolicyEvaluationService call this tracker records - into the separate
+`worker` container. GET /api/monitoring/llm-usage is served by the
+`backend` container. Two separate OS processes, two separate copies of
+Python's memory: an in-process tracker in `backend` was blind to almost
+all real spend, since the calls that actually cost money now happen in
+`worker`.
+
+Counters now live in the same Redis instance already deployed for caching
+(shared/cache/redis_cache.py's `cache` singleton, `REDIS_URL`) - both
+processes read/write the same keys, so the dashboard reflects real spend
+regardless of which container made the call. Falls back to the same
+process-local InMemoryCache every other cache in this codebase falls back
+to when no real Redis is reachable (e.g. local dev without Redis, or
+tests) - correctness holds either way; only cross-process visibility is
+lost in that fallback case, same tradeoff already accepted everywhere
+else caching is used here.
 
 Pricing is an approximate, override-able estimate (list price per million
-tokens), not wired to real billing - enough to compare relative cost across
-operations and catch an obviously expensive regression, which is what
-"basic monitoring" needs here.
+tokens), not wired to real billing - enough to compare relative cost
+across operations and catch an obviously expensive regression.
 """
 
 import os
-import threading
-from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any, Dict, Optional
 
+from backend.shared.cache.redis_cache import cache
 from backend.shared.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -26,32 +40,31 @@ logger = get_logger(__name__)
 INPUT_PRICE_PER_1M = float(os.getenv("LLM_INPUT_PRICE_PER_1M_TOKENS", "0.30"))
 OUTPUT_PRICE_PER_1M = float(os.getenv("LLM_OUTPUT_PRICE_PER_1M_TOKENS", "2.50"))
 
-# Bounded per-operation history, matching performance_monitor.py's
-# last-N-per-operation convention.
-MAX_EVENTS_PER_OPERATION = 500
+_KEY_PREFIX = "llm_usage"
+_OPERATIONS_KEY = f"{_KEY_PREFIX}:operations"
 
 
 def estimate_cost_usd(input_tokens: int, output_tokens: int) -> float:
     return (input_tokens / 1_000_000) * INPUT_PRICE_PER_1M + (output_tokens / 1_000_000) * OUTPUT_PRICE_PER_1M
 
 
-@dataclass
-class LLMUsageEvent:
-    operation: str
-    model: str
-    cache_hit: bool
-    input_tokens: int = 0
-    output_tokens: int = 0
-    estimated_cost_usd: float = 0.0
-    timestamp: datetime = field(default_factory=datetime.now)
-
-
 class LLMUsageTracker:
-    """Running totals of LLM token usage/cost/cache-hit rate, per operation."""
+    """Running totals of LLM token usage/cost/cache-hit rate, per
+    operation - stored as Redis counters shared across every process
+    that imports this module, not a single process's memory."""
 
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._events: Dict[str, list] = {}
+    def __init__(self, redis_client=None):
+        # Stored, not resolved once: `cache.redis_client` can be
+        # reassigned after this module is imported (RedisCache._connect
+        # itself falls back at runtime; tests patch `cache.redis_client`
+        # directly), so look it up fresh on every call unless a specific
+        # client was injected (tests that want real isolation from the
+        # global singleton).
+        self._explicit_client = redis_client
+
+    @property
+    def _client(self):
+        return self._explicit_client if self._explicit_client is not None else cache.redis_client
 
     def record_call(
         self,
@@ -59,7 +72,7 @@ class LLMUsageTracker:
         model: str,
         cache_hit: bool,
         usage_metadata: Optional[Dict[str, Any]] = None,
-    ) -> LLMUsageEvent:
+    ) -> None:
         usage_metadata = usage_metadata or {}
         input_tokens = int(usage_metadata.get("input_tokens", 0) or 0)
         output_tokens = int(usage_metadata.get("output_tokens", 0) or 0)
@@ -67,52 +80,84 @@ class LLMUsageTracker:
         # what the original (now-reused) call's token counts were.
         cost = 0.0 if cache_hit else estimate_cost_usd(input_tokens, output_tokens)
 
-        event = LLMUsageEvent(
-            operation=operation,
-            model=model,
-            cache_hit=cache_hit,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            estimated_cost_usd=cost,
-        )
-
-        with self._lock:
-            events = self._events.setdefault(operation, [])
-            events.append(event)
-            if len(events) > MAX_EVENTS_PER_OPERATION:
-                del events[:-MAX_EVENTS_PER_OPERATION]
+        try:
+            client = self._client
+            client.sadd(_OPERATIONS_KEY, operation)
+            client.incr(f"{_KEY_PREFIX}:{operation}:total_calls")
+            if cache_hit:
+                client.incr(f"{_KEY_PREFIX}:{operation}:cache_hits")
+            if input_tokens:
+                client.incrby(f"{_KEY_PREFIX}:{operation}:total_input_tokens", input_tokens)
+            if output_tokens:
+                client.incrby(f"{_KEY_PREFIX}:{operation}:total_output_tokens", output_tokens)
+            if cost:
+                client.incrbyfloat(f"{_KEY_PREFIX}:{operation}:total_estimated_cost_usd", cost)
+        except Exception as e:
+            # Usage tracking must never break the actual LLM call it's
+            # observing - log and move on, matching RedisCache.get/set's
+            # own failure-handling convention.
+            logger.error(f"Failed to record LLM usage for operation={operation}: {e}")
+            return
 
         logger.info(
             f"LLM call: operation={operation} model={model} cache_hit={cache_hit} "
             f"input_tokens={input_tokens} output_tokens={output_tokens} "
             f"estimated_cost_usd={cost:.6f}"
         )
-        return event
 
     def get_summary(self) -> Dict[str, Any]:
-        with self._lock:
-            snapshot = {op: list(events) for op, events in self._events.items()}
+        client = self._client
+        try:
+            operations = client.smembers(_OPERATIONS_KEY) or set()
+        except Exception as e:
+            logger.error(f"Failed to read LLM usage operations: {e}")
+            operations = set()
 
-        all_events = [e for events in snapshot.values() for e in events]
-        return {
-            "overall": self._summarize(all_events),
-            "by_operation": {op: self._summarize(events) for op, events in snapshot.items()},
-        }
+        by_operation = {op: self._read_operation(client, op) for op in sorted(operations)}
+        return {"overall": self._sum_all(by_operation.values()), "by_operation": by_operation}
 
-    @staticmethod
-    def _summarize(events: list) -> Dict[str, Any]:
-        total_calls = len(events)
-        cache_hits = sum(1 for e in events if e.cache_hit)
+    def _read_operation(self, client, operation: str) -> Dict[str, Any]:
+        def _int(field: str) -> int:
+            try:
+                value = client.get(f"{_KEY_PREFIX}:{operation}:{field}")
+                return int(float(value)) if value is not None else 0
+            except Exception:
+                return 0
+
+        def _float(field: str) -> float:
+            try:
+                value = client.get(f"{_KEY_PREFIX}:{operation}:{field}")
+                return float(value) if value is not None else 0.0
+            except Exception:
+                return 0.0
+
+        total_calls = _int("total_calls")
+        cache_hits = _int("cache_hits")
         return {
             "total_calls": total_calls,
             "cache_hits": cache_hits,
             "cache_hit_rate": (cache_hits / total_calls) if total_calls else 0.0,
-            "total_input_tokens": sum(e.input_tokens for e in events),
-            "total_output_tokens": sum(e.output_tokens for e in events),
-            "total_estimated_cost_usd": round(sum(e.estimated_cost_usd for e in events), 6),
+            "total_input_tokens": _int("total_input_tokens"),
+            "total_output_tokens": _int("total_output_tokens"),
+            "total_estimated_cost_usd": round(_float("total_estimated_cost_usd"), 6),
+        }
+
+    @staticmethod
+    def _sum_all(op_summaries) -> Dict[str, Any]:
+        op_summaries = list(op_summaries)
+        total_calls = sum(s["total_calls"] for s in op_summaries)
+        cache_hits = sum(s["cache_hits"] for s in op_summaries)
+        return {
+            "total_calls": total_calls,
+            "cache_hits": cache_hits,
+            "cache_hit_rate": (cache_hits / total_calls) if total_calls else 0.0,
+            "total_input_tokens": sum(s["total_input_tokens"] for s in op_summaries),
+            "total_output_tokens": sum(s["total_output_tokens"] for s in op_summaries),
+            "total_estimated_cost_usd": round(sum(s["total_estimated_cost_usd"] for s in op_summaries), 6),
         }
 
 
 # Global tracker instance, matching performance_monitor.py's module-level
-# singleton convention.
+# singleton convention. Safe to share across processes now - state lives
+# in Redis, not on this object.
 llm_usage_tracker = LLMUsageTracker()
