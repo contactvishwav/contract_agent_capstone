@@ -42,6 +42,27 @@ _redis_from_url_patcher = patch.object(
 )
 _redis_from_url_patcher.start()
 
+# Import *after* the patch above, not before: shared/middleware/
+# rate_limit.py's module-level `limiter` singleton probes redis.from_url
+# at import time to decide its storage backend (same "construct once,
+# fall back to in-memory on failure" shape as RedisCache._connect() above)
+# - importing it any earlier would let that probe run unpatched, the
+# exact environmental-luck problem this file's docstring describes.
+from backend.shared.middleware.rate_limit import reset_rate_limit_storage
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limit_storage():
+    """The rate limiter's in-memory storage (audit finding #16) persists
+    for the entire pytest process otherwise - without this, a test file
+    that legitimately calls POST /api/auth/register or /token more than a
+    handful of times could get spuriously 429'd by quota consumed by a
+    completely unrelated earlier test file, purely depending on
+    collection order. Same deterministic-isolation rationale as this
+    file's Redis patching above."""
+    reset_rate_limit_storage()
+    yield
+
 
 def auth_headers(tenant_id: str = "test_tenant_1", role: str = "ADMIN") -> dict:
     """

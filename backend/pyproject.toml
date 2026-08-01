@@ -33,6 +33,7 @@ dependencies = [
     "celery[redis]>=5.4.0",
     "bcrypt>=4.2.0",
     "prometheus-client>=0.21.0",
+    "slowapi>=0.1.10",
 ]
 
 [tool.ruff]

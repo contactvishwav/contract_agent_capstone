@@ -1,3 +1,19 @@
+# Security headers (production-readiness audit finding #15). HSTS only
+# makes sense - and is only sent - when the original client request
+# actually arrived over HTTPS. This container always terminates plain
+# HTTP internally (`listen 80` below; TLS termination is a real upstream
+# load balancer's job, not built here - see README's "Future
+# Enhancements"), so $scheme is always "http" from nginx's own point of
+# view; the only real signal is whatever X-Forwarded-Proto an upstream
+# TLS-terminating proxy set, same check backend/shared/middleware/
+# security_headers.py makes for API responses. An empty add_header value
+# is not sent at all (documented ngx_http_headers_module behavior), so
+# this map naturally omits HSTS whenever the header isn't "https".
+map $http_x_forwarded_proto $hsts_header {
+    https "max-age=31536000; includeSubDomains";
+    default "";
+}
+
 server {
     listen 80;
     server_name _;
@@ -14,10 +30,19 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        # No add_header block here deliberately - proxied backend
+        # responses already carry these same security headers from
+        # SecurityHeadersMiddleware; duplicating them here would just
+        # repeat the same values, not add real coverage.
     }
 
     # SPA client-side routing fallback.
     location / {
         try_files $uri /index.html;
+
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'" always;
+        add_header Strict-Transport-Security $hsts_header always;
     }
 }

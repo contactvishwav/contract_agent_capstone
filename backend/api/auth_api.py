@@ -11,12 +11,13 @@ place - self-service registration, not an admin-only endpoint, because
 there is currently no other way for anyone to create one.
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from backend.governance.auth import create_access_token, DEFAULT_TOKEN_EXPIRY
 from backend.governance.rbac import UserRole
 from backend.infrastructure.user_repository import UserRepository, UsernameAlreadyExistsError
+from backend.shared.middleware.rate_limit import limiter, AUTH_REGISTER_RATE_LIMIT, AUTH_TOKEN_RATE_LIMIT
 from backend.shared.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -50,7 +51,8 @@ class TokenResponse(BaseModel):
 
 
 @router.post("/register", response_model=RegisterResponse, status_code=201)
-async def register(request: RegisterRequest):
+@limiter.limit(AUTH_REGISTER_RATE_LIMIT)
+async def register(request: Request, payload: RegisterRequest):
     """
     Create a real account. Minimal and self-service on purpose: no
     admin-provisioning UI exists in this system yet, so this is currently
@@ -58,17 +60,23 @@ async def register(request: RegisterRequest):
     step behind the scenes. A real deployment would gate this behind
     org-admin invites or an IdP's own signup flow; noted as a follow-up,
     not pretended away.
+
+    Rate-limited (audit finding #16, AUTH_REGISTER_RATE_LIMIT) - the
+    obvious registration-spam target given this is unauthenticated by
+    necessity. The `request: Request` parameter (unused directly here) is
+    required by @limiter.limit to identify the calling client; the
+    request body is `payload`, not `request`, to avoid colliding with it.
     """
     try:
-        role = UserRole(request.role.upper())
+        role = UserRole(payload.role.upper())
     except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid role: {request.role}. Must be one of {[r.value for r in UserRole]}")
+        raise HTTPException(status_code=400, detail=f"Invalid role: {payload.role}. Must be one of {[r.value for r in UserRole]}")
 
     try:
         account = _user_repository.create_user(
-            username=request.username,
-            password=request.password,
-            tenant_id=request.tenant_id,
+            username=payload.username,
+            password=payload.password,
+            tenant_id=payload.tenant_id,
             role=role.value,
         )
     except UsernameAlreadyExistsError as e:
@@ -81,7 +89,8 @@ async def register(request: RegisterRequest):
 
 
 @router.post("/token", response_model=TokenResponse)
-async def issue_token(request: TokenRequest):
+@limiter.limit(AUTH_TOKEN_RATE_LIMIT)
+async def issue_token(request: Request, payload: TokenRequest):
     """
     Verify real credentials against a stored, bcrypt-hashed account and,
     only on a match, issue a signed JWT carrying that account's tenant_id
@@ -92,8 +101,13 @@ async def issue_token(request: TokenRequest):
 
     Deliberately the same generic error for "no such username" and "wrong
     password" - a login failure must not reveal which username exists.
+
+    Rate-limited (audit finding #16, AUTH_TOKEN_RATE_LIMIT) - the obvious
+    brute-force target given this is unauthenticated by necessity. See
+    register()'s docstring for why the body param is `payload`, not
+    `request`.
     """
-    account = _user_repository.verify_credentials(request.username, request.password)
+    account = _user_repository.verify_credentials(payload.username, payload.password)
     if account is None:
         raise HTTPException(status_code=401, detail="Incorrect username or password")
 

@@ -20,7 +20,12 @@ from backend.api.enhanced_document_upload import router as enhanced_upload_route
 from backend.agents.agent_workflow_tracker import get_current_workflow_status
 from backend.shared.middleware.tracing import TracingMiddleware
 from backend.shared.middleware.metrics import PrometheusMiddleware
+from backend.shared.middleware.security_headers import SecurityHeadersMiddleware
+from backend.shared.middleware.rate_limit import limiter
 from backend.shared.monitoring.prometheus_metrics import render_metrics
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from backend.shared.utils.logger import get_logger, correlation_id_var
 from backend.governance.prompt_guard import PromptGuard
 from backend.governance.output_guard import OutputGuard
@@ -70,8 +75,17 @@ def get_llm_manager(request: Request):
     return request.app.state.llm_manager
 
 
+# API-level rate limiting (audit finding #16), scoped via @limiter.limit(...)
+# to the two unauthenticated auth routes specifically (backend/api/auth_api.py) -
+# this wiring (state/exception handler/middleware) is the standard slowapi
+# setup, required regardless of which routes actually carry a @limiter.limit.
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+
 app.add_middleware(TracingMiddleware)
 app.add_middleware(PrometheusMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 def _get_cors_origins() -> list:
