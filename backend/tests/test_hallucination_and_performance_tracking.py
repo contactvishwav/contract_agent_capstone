@@ -11,10 +11,16 @@ GET /api/monitoring/llm-usage and GET /metrics are served by `backend`).
 
 #13 - LLMExtractionService.extract_clauses and PolicyEvaluationService.
 evaluate_clause - the two calls that dominate real per-contract cost/
-latency - had no @track_performance coverage, unlike the secondary
-CUAD-mitigation tools in optimized_cuad_tools.py. Both now carry the same
-decorator, so p50/p95 latency becomes answerable for the primary path via
-GET /api/monitoring/performance/clause_extraction and .../policy_evaluation.
+latency - had no latency tracking at all, unlike the secondary
+CUAD-mitigation tools in optimized_cuad_tools.py (which use the
+in-process @track_performance). Both now carry @track_latency
+(shared/monitoring/latency_tracker.py) - the Redis-backed, cross-process-
+visible counterpart, matching findings #1/#12's pattern rather than the
+in-process one, since these calls run in the `worker` container while
+GET /metrics is served by `backend`. Deep correctness/cross-process
+coverage for the tracker itself lives in
+test_latency_tracker_redis_backed.py; this file just proves the two real
+calls are actually wired to it.
 """
 
 import unittest
@@ -36,7 +42,7 @@ with patch("langchain_neo4j.Neo4jGraph"), \
     from backend.domain.policies.entities import PolicyRule
     from backend.shared.cache.redis_cache import cache, InMemoryCache
     from backend.shared.monitoring import hallucination_tracker
-    from backend.shared.monitoring.performance_monitor import monitor
+    from backend.shared.monitoring import latency_tracker
 
 
 def _wrap(parsed, input_tokens=100, output_tokens=20):
@@ -250,15 +256,16 @@ class PolicyEvaluationServiceRecordsCitationDiscardRateTests(unittest.TestCase):
 
 
 class PrimaryPathPerformanceTrackingTests(unittest.TestCase):
-    """Finding #13: extract_clauses/evaluate_clause now carry the same
-    @track_performance coverage the secondary CUAD-mitigation tools
-    already had, so PerformanceMonitor.get_stats reports real p95 for
-    the primary path."""
+    """Finding #13: extract_clauses/evaluate_clause now carry
+    @track_latency (Redis-backed - see test_latency_tracker_redis_backed.py
+    for the tracker's own correctness/cross-process coverage), so real
+    p50/p95 is reported for the primary path regardless of which
+    container ran the call."""
 
     def setUp(self):
-        monitor.metrics.clear()
+        cache.redis_client = InMemoryCache()
 
-    def test_extract_clauses_records_a_performance_metric(self):
+    def test_extract_clauses_records_a_latency_sample(self):
         from backend.agents.llm_extraction_service import LLMExtractionService
 
         response = _LLMExtractionResponse(clauses=[])
@@ -267,12 +274,12 @@ class PrimaryPathPerformanceTrackingTests(unittest.TestCase):
 
         service.extract_clauses("Some contract text with no matching clauses.")
 
-        stats = monitor.get_stats("clause_extraction")
-        self.assertNotIn("error", stats)
-        self.assertEqual(stats["total_calls"], 1)
+        stats = latency_tracker.get_summary()["clause_extraction"]
+        self.assertEqual(stats["sample_count"], 1)
+        self.assertIn("p50_duration_ms", stats)
         self.assertIn("p95_duration_ms", stats)
 
-    def test_evaluate_clause_records_a_performance_metric(self):
+    def test_evaluate_clause_records_a_latency_sample(self):
         rule = PolicyRule(
             id="rule_1", rule_text="No unlimited liability.", rule_type="mandatory",
             applies_to=["general"], severity="HIGH", section_reference="s1",
@@ -283,9 +290,9 @@ class PrimaryPathPerformanceTrackingTests(unittest.TestCase):
 
         service.evaluate_clause("Cap On Liability", "Liability is unlimited.", [rule])
 
-        stats = monitor.get_stats("policy_evaluation")
-        self.assertNotIn("error", stats)
-        self.assertEqual(stats["total_calls"], 1)
+        stats = latency_tracker.get_summary()["policy_evaluation"]
+        self.assertEqual(stats["sample_count"], 1)
+        self.assertIn("p50_duration_ms", stats)
         self.assertIn("p95_duration_ms", stats)
 
 

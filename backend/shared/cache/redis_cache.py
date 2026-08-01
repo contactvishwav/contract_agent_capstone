@@ -54,10 +54,12 @@ class RedisCache:
 class InMemoryCache:
     """
     Fallback in-memory cache. Also backs LLMUsageTracker's counters
-    (shared/monitoring/llm_usage_tracker.py) when no real Redis is
-    reachable - incr/incrby/incrbyfloat/sadd/smembers mirror redis-py's
-    actual return types (int/int/float/int/set) closely enough that
-    tracker code doesn't need to know which backend it's talking to.
+    (shared/monitoring/llm_usage_tracker.py), hallucination_tracker.py's
+    counters, and latency_tracker.py's duration samples when no real
+    Redis is reachable - incr/incrby/incrbyfloat/sadd/smembers/rpush/
+    ltrim/lrange mirror redis-py's actual return types (int/int/float/
+    int/set/int/bool/list of str) closely enough that tracker code
+    doesn't need to know which backend it's talking to.
 
     Everything lives in one dict so a blanket `._cache.clear()` (the
     reset already used throughout this test suite) really does clear
@@ -106,6 +108,30 @@ class InMemoryCache:
     def smembers(self, key: str) -> set:
         value = self._cache.get(key)
         return set(value) if isinstance(value, set) else set()
+
+    def rpush(self, key: str, *values) -> int:
+        with self._lock:
+            existing = self._cache.get(key)
+            current = existing if isinstance(existing, list) else []
+            current.extend(str(v) for v in values)
+            self._cache[key] = current
+            return len(current)
+
+    def ltrim(self, key: str, start: int, end: int) -> bool:
+        with self._lock:
+            existing = self._cache.get(key)
+            if isinstance(existing, list):
+                # Redis LTRIM's `end` is inclusive; Python slicing's isn't -
+                # +1 it, except -1 ("to the end") which has no direct +1
+                # equivalent and must stay a bare slice.
+                self._cache[key] = existing[start:] if end == -1 else existing[start:end + 1]
+            return True
+
+    def lrange(self, key: str, start: int, end: int) -> list:
+        existing = self._cache.get(key)
+        if not isinstance(existing, list):
+            return []
+        return existing[start:] if end == -1 else existing[start:end + 1]
 
 # Global cache instance
 cache = RedisCache()

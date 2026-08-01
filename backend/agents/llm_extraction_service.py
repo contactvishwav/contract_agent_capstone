@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from backend.shared.cache.redis_cache import cache
 from backend.shared.config.phase3_config import Phase3Config
 from backend.shared.monitoring.llm_usage_tracker import llm_usage_tracker
-from backend.shared.monitoring.performance_monitor import track_performance
+from backend.shared.monitoring.latency_tracker import track_latency
 from backend.shared.utils.llm_concurrency import llm_call_semaphore
 from backend.shared.utils.logger import get_logger
 
@@ -183,16 +183,15 @@ class LLMExtractionService:
     # policy_evaluation_service.py) dominates real per-contract cost/
     # latency - previously only the secondary CUAD-mitigation tools
     # (optimized_cuad_tools.py) had @track_performance coverage, so
-    # p50/p95 for the actual primary path was unanswerable. Same caveat
-    # as llm_usage_tracker.py had before finding #1's fix applies here
-    # too: this decorator's PerformanceMonitor is in-process, so
-    # GET /api/monitoring/performance only sees calls made in whichever
-    # container served that request - real p50/p95 for this call in
-    # production means querying it on the `worker` container, not
-    # `backend`. Left as the existing decorator/pattern per scope; a
-    # Redis-backed rewrite (mirroring llm_usage_tracker.py) is the natural
-    # next step if/when this needs to be cross-process too.
-    @track_performance("clause_extraction")
+    # p50/p95 for the actual primary path was unanswerable. Uses
+    # @track_latency (Redis-backed, shared/monitoring/latency_tracker.py)
+    # rather than the in-process @track_performance those tools use: this
+    # call runs in the Celery `worker` container while GET /metrics is
+    # served by `backend`, the same cross-process gap findings #1/#12
+    # already closed for cost/token and hallucination-rate tracking - so
+    # latency gets the identical treatment here rather than being left
+    # queryable from only one of the two processes that can run it.
+    @track_latency("clause_extraction")
     def extract_clauses(
         self,
         text: str,

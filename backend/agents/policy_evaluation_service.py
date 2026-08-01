@@ -21,7 +21,7 @@ from backend.shared.cache.redis_cache import cache
 from backend.shared.config.phase3_config import Phase3Config
 from backend.shared.monitoring import hallucination_tracker
 from backend.shared.monitoring.llm_usage_tracker import llm_usage_tracker
-from backend.shared.monitoring.performance_monitor import track_performance
+from backend.shared.monitoring.latency_tracker import track_latency
 from backend.shared.utils.llm_concurrency import llm_call_semaphore
 from backend.shared.utils.logger import get_logger
 
@@ -66,9 +66,9 @@ class PolicyEvaluationService:
             llm.with_structured_output(_LLMPolicyEvaluationResponse, include_raw=True) if llm else None
         )
 
-    # Audit finding #13: same rationale/caveat as LLMExtractionService.
+    # Audit finding #13: same rationale as LLMExtractionService.
     # extract_clauses's identical decorator - see that method's comment.
-    @track_performance("policy_evaluation")
+    @track_latency("policy_evaluation")
     def evaluate_clause(
         self, clause_type: str, clause_text: str, rules: List[PolicyRule]
     ) -> List[Dict[str, Any]]:

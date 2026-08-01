@@ -18,7 +18,7 @@ with patch("langchain_neo4j.Neo4jGraph"), \
      patch("backend.shared.utils.gemini_embedding_service.embedding"):
     from backend.main import app
     from backend.shared.utils import contract_search_tool
-    from backend.shared.cache.redis_cache import cache
+    from backend.shared.cache.redis_cache import cache, InMemoryCache
     import backend.api.monitoring_api as monitoring_api
 
 from fastapi.testclient import TestClient
@@ -86,6 +86,11 @@ class HealthCheckReturnsRealStatusCodeTests(unittest.TestCase):
 class MetricsEndpointTests(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
+        # Isolation for the Redis-backed gauges scraped below - a fresh
+        # backing store per test, same convention used throughout this
+        # suite wherever a test touches Redis-backed tracker state
+        # (e.g. test_hallucination_and_performance_tracking.py).
+        cache.redis_client = InMemoryCache()
 
     def test_metrics_endpoint_is_reachable_without_auth(self):
         response = self.client.get("/metrics")
@@ -120,6 +125,19 @@ class MetricsEndpointTests(unittest.TestCase):
             "celery_task_state_count",
         ):
             self.assertIn(family, response.text)
+
+    def test_metrics_expose_operation_latency_gauge_family_alongside_http_histogram(self):
+        """Finding #13 follow-up: the Redis-backed cross-process p50/p95
+        for clause_extraction/policy_evaluation sits in /metrics alongside
+        the existing (in-process, per-request) HTTP latency histogram."""
+        from backend.shared.monitoring import latency_tracker
+
+        latency_tracker.record_duration("clause_extraction", 250.0)
+
+        response = self.client.get("/metrics")
+        self.assertIn("http_request_duration_seconds", response.text)  # the existing histogram
+        self.assertIn('operation_latency_p50_ms{operation="clause_extraction"} 250.0', response.text)
+        self.assertIn('operation_latency_p95_ms{operation="clause_extraction"} 250.0', response.text)
 
 
 if __name__ == "__main__":
