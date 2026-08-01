@@ -10,7 +10,7 @@ def convert_neo4j_date(value):
     elif isinstance(value, (list, tuple)):
         return [convert_neo4j_date(item) for item in value]
     elif isinstance(value, (Date, DateTime)):
-        return f"{value.year}-{value.month}-{value.day}"
+        return f"{value.year:04d}-{value.month:02d}-{value.day:02d}"
     return value
 
 
@@ -24,11 +24,11 @@ def serialize_neo4j_datetime(value):
     fields like "_Date__day": -2) instead of a readable value or a clean
     error.
 
-    Unlike convert_neo4j_date (date-only, YYYY-M-D, no zero-padding -
-    unsuitable for full datetimes, which need the time-of-day preserved),
-    this always uses .iso_format() and is safe to call unconditionally on
-    any query-result field: values that aren't a Neo4j temporal type
-    (already a plain string, None, etc.) are returned unchanged.
+    Unlike convert_neo4j_date (date-only, YYYY-MM-DD - unsuitable for full
+    datetimes, which need the time-of-day preserved), this always uses
+    .iso_format() and is safe to call unconditionally on any query-result
+    field: values that aren't a Neo4j temporal type (already a plain
+    string, None, etc.) are returned unchanged.
     """
     if hasattr(value, "iso_format"):
         return value.iso_format()
