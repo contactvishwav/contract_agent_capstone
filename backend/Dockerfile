@@ -24,6 +24,17 @@ ENV PYTHONPATH=/app
 
 EXPOSE 8000
 
+# Reliability/observability audit finding #9: points at the real health
+# endpoint (backend/api/monitoring_api.py's /api/monitoring/health), which
+# now actually checks Neo4j/Redis and returns a genuine non-2xx status on
+# failure - so this check reflects real dependency health, not just "the
+# process is still running". `python` (already in this image, stdlib
+# urllib only) avoids adding curl/wget as an extra dependency just for
+# this. start-period covers app startup (Neo4j connectivity check,
+# LLMManager construction) before failures start counting.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/monitoring/health', timeout=5)"
+
 CMD ["uv", "run", "fastapi", "dev", "backend/main.py", "--host", "0.0.0.0", "--port", "8000"]
 
 # ---------------------------------------------------------------------------
@@ -61,5 +72,8 @@ COPY --from=production-build --chown=appuser:appuser /app/backend ./backend
 USER appuser
 
 EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/monitoring/health', timeout=5)"
 
 CMD ["fastapi", "run", "backend/main.py", "--host", "0.0.0.0", "--port", "8000"]

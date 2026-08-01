@@ -1,10 +1,12 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
+from fastapi.responses import JSONResponse
 from backend.governance.rbac import Permission, requires_permission
 from typing import Dict, List, Any, Optional
 import logging
 from backend.shared.monitoring.performance_monitor import monitor
 from backend.shared.monitoring.llm_usage_tracker import llm_usage_tracker
 from backend.shared.cache.redis_cache import cache
+from backend.shared.utils.contract_search_tool import graph as neo4j_graph
 from backend.agents.optimized_cuad_tools import BatchProcessor
 import asyncio
 
@@ -67,48 +69,69 @@ async def get_llm_usage():
 
 @router.get("/health")
 async def health_check():
-    """System health check"""
+    """System health check.
+
+    Production-readiness audit finding #9: this previously never checked
+    Neo4j at all (the platform's single most critical dependency could be
+    completely unreachable while this still reported "healthy"), and
+    always returned HTTP 200 regardless of the "status" field's value - a
+    load balancer, Docker HEALTHCHECK, or orchestrator readiness probe
+    polling this route needs the HTTP status itself to reflect health, not
+    a body field it would have to parse and interpret. Any non-"healthy"
+    status now returns 503 alongside the same body shape as before.
+    """
+    # Check cache (Redis) connectivity
+    cache_healthy = True
     try:
-        # Check cache connectivity
-        cache_healthy = True
-        try:
-            cache.redis_client.ping()
-        except:
-            cache_healthy = False
-        
-        # Check recent performance
+        cache.redis_client.ping()
+    except Exception as e:
+        logger.error(f"Cache health check failed: {e}")
+        cache_healthy = False
+
+    # Check Neo4j connectivity - a cheap, real query, not just "did the
+    # driver construct" (construction never touches the network).
+    neo4j_healthy = True
+    try:
+        neo4j_graph.query("RETURN 1")
+    except Exception as e:
+        logger.error(f"Neo4j health check failed: {e}")
+        neo4j_healthy = False
+
+    # Check recent performance
+    try:
         recent_stats = monitor.get_all_stats()
         performance_healthy = True
-        
+
         for operation, stats in recent_stats.items():
             if isinstance(stats, dict) and "success_rate" in stats:
                 if stats["success_rate"] < 0.9:  # Less than 90% success rate
                     performance_healthy = False
                     break
-        
-        overall_health = cache_healthy and performance_healthy
-        
-        return {
-            "status": "healthy" if overall_health else "degraded",
-            "components": {
-                "cache": "healthy" if cache_healthy else "unhealthy",
-                "performance": "healthy" if performance_healthy else "degraded"
-            },
-            "metrics_summary": {
-                "total_operations": len(recent_stats),
-                "avg_success_rate": sum(
-                    s.get("success_rate", 0) for s in recent_stats.values() 
-                    if isinstance(s, dict)
-                ) / max(len(recent_stats), 1)
-            }
+
+        metrics_summary = {
+            "total_operations": len(recent_stats),
+            "avg_success_rate": sum(
+                s.get("success_rate", 0) for s in recent_stats.values()
+                if isinstance(s, dict)
+            ) / max(len(recent_stats), 1)
         }
-        
     except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        return {
-            "status": "unhealthy",
-            "error": str(e)
-        }
+        logger.error(f"Performance check failed within health check: {e}")
+        performance_healthy = False
+        metrics_summary = {}
+
+    overall_health = cache_healthy and neo4j_healthy and performance_healthy
+
+    body = {
+        "status": "healthy" if overall_health else "degraded",
+        "components": {
+            "cache": "healthy" if cache_healthy else "unhealthy",
+            "neo4j": "healthy" if neo4j_healthy else "unhealthy",
+            "performance": "healthy" if performance_healthy else "degraded"
+        },
+        "metrics_summary": metrics_summary
+    }
+    return JSONResponse(content=body, status_code=200 if overall_health else 503)
 
 @router.post("/batch-process", dependencies=[Depends(requires_permission(Permission.ANALYZE))])
 async def batch_process_contracts(

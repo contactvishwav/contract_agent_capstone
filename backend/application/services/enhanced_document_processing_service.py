@@ -4,7 +4,7 @@ from backend.domain.value_objects import ProcessingResult, ProcessingStatus
 from backend.agents.agent_workflow_tracker import workflow_tracker
 from backend.embeddings.orchestrator import EmbeddingOrchestrator
 from backend.embeddings.validator import EmbeddingValidator
-from langchain_neo4j import Neo4jGraph
+from backend.shared.utils.contract_search_tool import graph
 import os
 import logging
 
@@ -15,16 +15,13 @@ class EnhancedDocumentProcessingService:
     """
     Enhanced document processing service with multi-level embeddings
     """
-    
+
     def __init__(self, agent_manager):
         self.agent_manager = agent_manager
         self.pdf_agent_factory = PDFAgentFactory()
         self.embedding_orchestrator = EmbeddingOrchestrator()
         self.embedding_validator = EmbeddingValidator()
-        self.graph = Neo4jGraph(
-            refresh_schema=False, 
-            driver_config={"notifications_min_severity": "OFF"}
-        )
+        self.graph = graph
     
     def process_pdf_with_embeddings(self, request: DocumentProcessingRequest) -> dict:
         """

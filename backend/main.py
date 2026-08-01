@@ -2,10 +2,11 @@ import json
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Depends, Request
+from fastapi import FastAPI, Depends, Request, Response
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from prometheus_client import CONTENT_TYPE_LATEST
 
 from langchain_core.messages import HumanMessage, ToolMessage, AIMessage, AIMessageChunk
 from backend.llm_manager import LLMManager
@@ -18,6 +19,8 @@ from backend.api.enhanced_contract_search import router as enhanced_search_route
 from backend.api.enhanced_document_upload import router as enhanced_upload_router
 from backend.agents.agent_workflow_tracker import get_current_workflow_status
 from backend.shared.middleware.tracing import TracingMiddleware
+from backend.shared.middleware.metrics import PrometheusMiddleware
+from backend.shared.monitoring.prometheus_metrics import render_metrics
 from backend.shared.utils.logger import get_logger, correlation_id_var
 from backend.governance.prompt_guard import PromptGuard
 from backend.governance.output_guard import OutputGuard
@@ -68,6 +71,7 @@ def get_llm_manager(request: Request):
 
 
 app.add_middleware(TracingMiddleware)
+app.add_middleware(PrometheusMiddleware)
 
 
 def _get_cors_origins() -> list:
@@ -163,6 +167,21 @@ async def get_planning_status():
 @app.get("/")
 async def root():
     return {"status": "OK"}
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus-compatible scrape endpoint (audit finding #10) - request
+    counts/latency by route, LLM cost/token counters (finding #1, Redis-
+    backed so this reflects real spend from both the backend and worker
+    containers), and Celery task-state counts. Deliberately unauthenticated,
+    matching /api/monitoring/health and standard Prometheus/Kubernetes
+    convention - scrapers generally don't carry this app's JWT bearer
+    tokens, and this endpoint is expected to sit behind network-level
+    restriction (not publicly exposed) rather than app-level auth, same as
+    /api/monitoring/health.
+    """
+    return Response(content=render_metrics(), media_type=CONTENT_TYPE_LATEST)
 
 
 class RunPayload(BaseModel):

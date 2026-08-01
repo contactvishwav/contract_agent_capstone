@@ -55,6 +55,22 @@ celery_app.conf.update(
     # exception into a FAILURE-state result), which is exactly backwards
     # for a test suite that exists to catch behavior differences like this.
     task_eager_propagates=False,
+    # Reliability/observability audit finding #8: without this, Celery's
+    # default is to ack a task the moment the worker *receives* it, before
+    # it runs - if the worker process is killed mid-analysis (deploy,
+    # OOM, crash), the task is just gone: no retry, no FAILURE state,
+    # nothing in the result backend. task_acks_late=True moves the ack to
+    # after the task finishes (success or failure), so a killed task goes
+    # back on the queue for another worker to pick up instead of vanishing
+    # silently - the same "don't mask failure" discipline as this task's
+    # own body (see tasks.py's docstring) extended to the process-kill
+    # case that discipline can't catch on its own.
+    task_acks_late=True,
+    # Companion setting: without this, a task whose worker process is
+    # killed mid-run (not a task-code exception, an actual SIGKILL/OOM) is
+    # requeued forever by default even if it's the *task* crashing the
+    # worker every time - reject instead of endless requeue-and-recrash.
+    task_reject_on_worker_lost=True,
     # Eager tasks don't persist results to the backend by default (Celery
     # assumes eager execution means the caller already has the return
     # value directly) - without this, a *separate* AsyncResult(task_id)
@@ -67,3 +83,35 @@ celery_app.conf.update(
 # after `celery_app` exists, since tasks.py imports it back
 # (backend.celery_app.celery_app) - the standard Celery app/tasks split.
 from backend import tasks  # noqa: E402,F401
+
+# Prometheus-visible task-state counts (audit finding #10). Signal
+# handlers run inside whichever process actually executes the task (the
+# `worker` container in real deployments, this same process in eager/test
+# mode) - each just records into Redis via celery_task_metrics, which is
+# what /api/monitoring/metrics reads back on the `backend` container.
+from celery.signals import task_failure, task_prerun, task_retry, task_success  # noqa: E402
+from backend.shared.monitoring.celery_task_metrics import record_task_state  # noqa: E402
+
+
+@task_prerun.connect
+def _record_task_prerun(sender=None, **kwargs):
+    if sender is not None:
+        record_task_state(sender.name, "started")
+
+
+@task_success.connect
+def _record_task_success(sender=None, **kwargs):
+    if sender is not None:
+        record_task_state(sender.name, "success")
+
+
+@task_failure.connect
+def _record_task_failure(sender=None, **kwargs):
+    if sender is not None:
+        record_task_state(sender.name, "failure")
+
+
+@task_retry.connect
+def _record_task_retry(sender=None, **kwargs):
+    if sender is not None:
+        record_task_state(sender.name, "retry")

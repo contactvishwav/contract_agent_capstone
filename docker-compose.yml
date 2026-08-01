@@ -42,6 +42,21 @@ services:
       context: ./backend
       target: dev
     command: ["uv", "run", "celery", "-A", "backend.celery_app", "worker", "--loglevel=info"]
+    # Reliability/observability audit finding #8: Docker's default
+    # stop_grace_period is 10s - `docker stop`/a `docker-compose down`/an
+    # orchestrator rollout sends SIGTERM, then SIGKILL after the grace
+    # period regardless of whether a task is still running. Celery's
+    # worker treats SIGTERM as a warm shutdown (stop accepting new tasks,
+    # let in-flight ones finish), but 10s isn't enough time for this
+    # system's one Celery task (backend/tasks.py's analyze_contract_task,
+    # empirically 20-25s+, longer under partial-failure retry - see that
+    # file's own docstring) to finish within it, so a routine deploy would
+    # SIGKILL an in-flight analysis on every rollout. Combined with
+    # task_acks_late=True (backend/celery_app.py) a SIGKILLed task is at
+    # least safely requeued rather than lost - this setting is about
+    # avoiding that requeue-and-retry cost on every routine restart, not
+    # correctness by itself.
+    stop_grace_period: 45s
     environment:
       - NEO4J_URI=${NEO4J_URI-bolt://neo4j:7687}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD-legalcontracts_local_dev}
