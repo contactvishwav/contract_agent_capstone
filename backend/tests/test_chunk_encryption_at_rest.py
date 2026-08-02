@@ -295,7 +295,7 @@ class SearchChunksEncryptionTests(unittest.TestCase):
         self.assertEqual(len(chunks), 1)
         self.assertEqual(chunks[0]["search_type"], "semantic")
         self.assertEqual(chunks[0]["content"], SSN_CHUNK_TEXT[:200] + "...")
-        self.assertNotIn("123-45-6789"[:2], encrypted)  # sanity: ciphertext really doesn't contain plaintext
+        self.assertNotIn("123-45-6789", encrypted)  # sanity: ciphertext really doesn't contain plaintext
 
     def test_fallback_text_search_finds_match_against_encrypted_content(self):
         """The key regression: when semantic search returns nothing, the

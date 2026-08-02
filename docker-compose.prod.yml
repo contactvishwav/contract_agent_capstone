@@ -1,0 +1,167 @@
+# Production compose file for the GCP e2-micro deployment
+# (docs/DEPLOYMENT.md). Deliberately a SEPARATE file from docker-
+# compose.yml, not a modification of it - that file is explicitly
+# dev-only (every service builds the `dev` image target, no restart
+# policy, no resource limits - see README.md's note on it), and mixing
+# dev/prod concerns in one file invites exactly the kind of drift this
+# split avoids.
+#
+# Differences from docker-compose.yml, all deliberate:
+# - Every service builds the `production` image target (no hot-reload,
+#   no dev dependencies, non-root user - see each Dockerfile).
+# - No local `neo4j` service - NEO4J_URI points at a real Neo4j AuraDB
+#   Free instance instead (neo4j+s://<dbid>.databases.neo4j.io). No code
+#   change needed for this: langchain_neo4j.Neo4jGraph already reads
+#   NEO4J_URI/NEO4J_USERNAME/NEO4J_PASSWORD/NEO4J_DATABASE straight from
+#   the environment and is scheme-agnostic (bolt/neo4j, plain or +s/+ssc
+#   for TLS) - the "connection" is purely an env-var value, not a code
+#   path.
+# - No local `phoenix` service (LLM tracing) - optional infra this
+#   memory-constrained VM doesn't have room for; main.py's own tracing
+#   init already no-ops (logs a warning, doesn't crash) if
+#   PHOENIX_COLLECTOR_ENDPOINT is unreachable, so simply not running it
+#   is safe. Point PHOENIX_COLLECTOR_ENDPOINT at a real external Phoenix
+#   instance later if LLM tracing is ever wanted here.
+# - `restart: unless-stopped` on every service (absent everywhere in the
+#   dev file on purpose - a crash-looping dev container should be loud,
+#   not silently restarted) - here, a crashed container should come back
+#   without an SSH session and a manual `docker compose up`.
+# - `mem_limit` on every service, sized for e2-micro's 1GB total RAM
+#   shared across the whole VM (OS + Docker daemon + every container
+#   here) - see docs/DEPLOYMENT.md's resource-fit section for the
+#   arithmetic behind these specific numbers. Prevents any one runaway
+#   container (a large PDF, a pathological LLM response) from starving
+#   the others or OOMing the host outright.
+# - worker's Celery command pins --concurrency=1 --pool=solo - the
+#   dev/default (unset, so `os.cpu_count()` prefork workers) would try
+#   to fork multiple full copies of this process's memory footprint
+#   (LLMManager + the whole LangChain import surface) on a box that
+#   can't spare it. Solo is single-threaded, appropriate for e2-micro's
+#   burstable/shared vCPUs and this workload's low expected concurrency
+#   (a personal/demo deployment, not a high-traffic service).
+# - redis gets an explicit --maxmemory + eviction policy - the dev
+#   file's redis has no cap at all (fine on a dev machine with plenty of
+#   spare RAM; not fine when it's sharing 1GB with everything else).
+#
+# NOT included yet: TLS termination / reverse proxy in front of `ui`
+# (docs/DEPLOYMENT.md item 3) - `ui` is temporarily bound directly to
+# host port 80 (plain HTTP) so the stack is independently testable
+# (including the real Aura connectivity check) before that piece lands.
+# Once added, this port mapping moves to the reverse-proxy service and
+# `ui` becomes internal-network-only, matching how `location /api/`
+# already only talks to `backend` over the internal `net` network today.
+
+services:
+  backend:
+    build:
+      context: ./backend
+      target: production
+    environment:
+      - ENVIRONMENT=production
+      - NEO4J_URI=${NEO4J_URI:?Set NEO4J_URI to your Aura connection string, e.g. neo4j+s://<dbid>.databases.neo4j.io}
+      - NEO4J_USERNAME=${NEO4J_USERNAME-neo4j}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:?Set NEO4J_PASSWORD to your Aura instance password}
+      - NEO4J_DATABASE=${NEO4J_DATABASE-neo4j}
+      - REDIS_URL=redis://redis:6379
+      - CACHE_ENABLED=true
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:?Set GOOGLE_API_KEY}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:?Set JWT_SECRET_KEY to a real generated secret}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:?Set ENCRYPTION_KEY to a real generated secret (or set KEY_PROVIDER=gcp below and this is ignored)}
+      - KEY_PROVIDER=${KEY_PROVIDER-env}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID-}
+      - GCP_SECRET_ID=${GCP_SECRET_ID-ENCRYPTION_KEY}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:?Set CORS_ALLOWED_ORIGINS to your real frontend origin, e.g. https://your-domain.example}
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - net
+    restart: unless-stopped
+    # Empirically measured (real production image, real Neo4j, idle after
+    # startup): 246 MiB RSS. 300m leaves headroom for a large-contract
+    # request without being generous enough to starve everything else on
+    # e2-micro's 1GB - see docs/DEPLOYMENT.md's resource-fit section.
+    mem_limit: 300m
+    ports:
+      # Not required once the reverse proxy (item 3) lands - kept for now
+      # so /api/monitoring/health is directly reachable during setup/the
+      # Aura connectivity test. Should not be left open in the VM's GCP
+      # firewall long-term; only 80/443 need to be.
+      - "8000:8000"
+
+  worker:
+    build:
+      context: ./backend
+      target: production
+    command: ["celery", "-A", "backend.celery_app", "worker", "--loglevel=info", "--concurrency=1", "--pool=solo"]
+    stop_grace_period: 45s
+    environment:
+      - ENVIRONMENT=production
+      - NEO4J_URI=${NEO4J_URI:?Set NEO4J_URI to your Aura connection string, e.g. neo4j+s://<dbid>.databases.neo4j.io}
+      - NEO4J_USERNAME=${NEO4J_USERNAME-neo4j}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:?Set NEO4J_PASSWORD to your Aura instance password}
+      - NEO4J_DATABASE=${NEO4J_DATABASE-neo4j}
+      - REDIS_URL=redis://redis:6379
+      - CACHE_ENABLED=true
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:?Set GOOGLE_API_KEY}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:?Set ENCRYPTION_KEY to a real generated secret (or set KEY_PROVIDER=gcp below and this is ignored)}
+      - KEY_PROVIDER=${KEY_PROVIDER-env}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID-}
+      - GCP_SECRET_ID=${GCP_SECRET_ID-ENCRYPTION_KEY}
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - net
+    restart: unless-stopped
+    # Empirically measured (--concurrency=1 --pool=solo, real production
+    # image, idle after startup): 236 MiB RSS.
+    mem_limit: 280m
+
+  ui:
+    build:
+      context: ./frontend
+      target: production
+    environment:
+      - BACKEND_HOST=backend
+      - BACKEND_PORT=8000
+    networks:
+      - net
+    restart: unless-stopped
+    # Empirically measured (nginx serving the real built bundle): 7 MiB
+    # RSS. 40m is already generous headroom.
+    mem_limit: 40m
+    ports:
+      # Plain HTTP, temporary - see the file-level note above. Becomes
+      # internal-only once the TLS-terminating reverse proxy (item 3)
+      # is in front of this service instead.
+      - "80:80"
+
+  redis:
+    image: redis:7-alpine
+    # No local dev-style unbounded cache here - capped well within
+    # e2-micro's budget, with the standard eviction policy for a cache
+    # workload (evict the least-recently-used key once full, rather than
+    # refusing writes or crashing).
+    command: ["redis-server", "--maxmemory", "150mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - net
+    restart: unless-stopped
+    # --maxmemory 150mb plus redis's own connection/overhead beyond that
+    # cap (typically 15-25%) - 160m keeps a real OOM from being triggered
+    # by that overhead alone. Empirically measured idle (no cached
+    # entries yet): under 10 MiB.
+    mem_limit: 160m
+
+volumes:
+  redis_data:
+
+networks:
+  net:
