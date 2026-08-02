@@ -107,6 +107,8 @@ The [Contract Understanding Atticus Dataset (CUAD)](https://www.atticusprojectai
    ```bash
    docker-compose up
    ```
+   > [!NOTE]
+   > **This `docker-compose.yml` is dev-only** - every service builds the `dev` image target (hot-reload, dev dependencies), and there are no `restart:` policies or resource limits anywhere in the file. A real deployment needs its own compose file or orchestration manifest (Kubernetes, ECS, Nomad, ...) built against the `production` stage each `Dockerfile` already defines - not this file used as-is.
 
 4. **Initialize Metadata** (Optional):
    ```bash

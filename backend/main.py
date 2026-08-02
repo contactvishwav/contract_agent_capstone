@@ -13,7 +13,6 @@ from backend.llm_manager import LLMManager
 from backend.api.document_upload import router as document_router
 from backend.api.contract_intelligence import router as intelligence_router
 from backend.api.routes.debug import create_debug_router
-from backend.api.routes.production import create_production_router
 from backend.shared.utils.route_utils import is_development, is_production, conditionally_include_router
 from backend.api.enhanced_contract_search import router as enhanced_search_router
 from backend.api.enhanced_document_upload import router as enhanced_upload_router

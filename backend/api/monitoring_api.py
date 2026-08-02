@@ -2,7 +2,6 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 from fastapi.responses import JSONResponse
 from backend.governance.rbac import Permission, requires_permission
 from typing import Dict, List, Any, Optional
-import logging
 from backend.shared.monitoring.performance_monitor import monitor
 from backend.shared.monitoring.llm_usage_tracker import llm_usage_tracker
 from backend.shared.monitoring import hallucination_tracker
@@ -242,40 +241,3 @@ async def clear_cache(pattern: Optional[str] = None):
     except Exception as e:
         logger.error(f"Cache clear failed: {e}")
         raise HTTPException(status_code=500, detail=f"Cache clear failed: {str(e)}")
-
-@router.get("/system-info", dependencies=[Depends(requires_permission(Permission.VIEW_REPORTS))])
-async def get_system_info():
-    """Get system information and configuration"""
-    try:
-        import psutil
-        import os
-        
-        return {
-            "system": {
-                "cpu_percent": psutil.cpu_percent(),
-                "memory_percent": psutil.virtual_memory().percent,
-                "disk_percent": psutil.disk_usage('/').percent
-            },
-            "configuration": {
-                "cache_type": "redis" if hasattr(cache.redis_client, 'ping') else "in_memory",
-                "performance_monitoring": "enabled",
-                "alert_thresholds": monitor.alert_thresholds
-            },
-            "environment": {
-                "redis_url": os.getenv("REDIS_URL", "not_configured"),
-                "log_level": logging.getLogger().level
-            }
-        }
-        
-    except ImportError:
-        return {
-            "system": {"note": "System metrics require psutil package"},
-            "configuration": {
-                "cache_type": "redis" if hasattr(cache.redis_client, 'ping') else "in_memory",
-                "performance_monitoring": "enabled",
-                "alert_thresholds": monitor.alert_thresholds
-            }
-        }
-    except Exception as e:
-        logger.error(f"System info failed: {e}")
-        raise HTTPException(status_code=500, detail=f"System info failed: {str(e)}")
