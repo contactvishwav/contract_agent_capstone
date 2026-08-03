@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from "react"
+import { createContext, useContext, useEffect } from "react"
 
 type Theme = "dark" | "light" | "system"
 
@@ -27,8 +27,6 @@ export function ThemeProvider({
     ...props
 }: ThemeProviderProps) {
     // Force light theme for legal professionals
-    const [theme, setTheme] = useState<Theme>("light")
-
     useEffect(() => {
         const root = window.document.documentElement
 

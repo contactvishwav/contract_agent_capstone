@@ -1,4 +1,3 @@
-import React from 'react';
 import { ThemeProvider } from './components/shared/theme-provider';
 import { Navigation } from './components/layout/Navigation';
 import { ChatPage } from './pages/ChatPage';

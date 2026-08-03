@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/shared/ui/card';
 import { Badge } from '../components/shared/ui/badge';
-import { ArrowRight, Brain, Shield, CheckCircle, AlertTriangle, Zap, Users, FileText, Bot, Target, Star, TrendingUp } from 'lucide-react';
+import { ArrowRight, Brain, Shield, CheckCircle, Zap, Users, FileText, Bot, Target, Star, TrendingUp } from 'lucide-react';
 
 export const USPPage: React.FC = () => {
   const [expandedUSPs, setExpandedUSPs] = useState<Set<string>>(new Set());

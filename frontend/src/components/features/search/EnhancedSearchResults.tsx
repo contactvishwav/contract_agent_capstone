@@ -1,5 +1,5 @@
 import React from 'react';
-import { FileText, Hash, Users, Link } from 'lucide-react';
+import { FileText, Hash, Users } from 'lucide-react';
 
 interface SearchResult {
   documents?: DocumentResult[];

@@ -43,7 +43,7 @@ export const ClausesDetail: React.FC<ClausesDetailProps> = ({ clauses }) => {
   };
 
   const getPolicyAlignment = (clauseType: string, riskLevel: string) => {
-    const alignments = {
+    const alignments: Record<string, { compliant: boolean; policy: string; requirement: string; concern: string | null }> = {
       'Termination': {
         compliant: riskLevel.toUpperCase() === 'LOW',
         policy: 'Contract Termination Policy 2.1',
@@ -96,8 +96,8 @@ export const ClausesDetail: React.FC<ClausesDetailProps> = ({ clauses }) => {
     };
   };
 
-  const getRiskImpact = (riskLevel: string, clauseType: string) => {
-    const impacts = {
+  const getRiskImpact = (riskLevel: string, _clauseType: string) => {
+    const impacts: Record<string, { business: string; legal: string; operational: string; financial: string; timeline: string }> = {
       'CRITICAL': {
         business: 'Severe business disruption and financial loss likely',
         legal: 'High litigation risk and potential regulatory violations',
@@ -131,8 +131,8 @@ export const ClausesDetail: React.FC<ClausesDetailProps> = ({ clauses }) => {
     return impacts[riskLevel.toUpperCase()] || impacts['MEDIUM'];
   };
 
-  const getRecommendedActions = (riskLevel: string, clauseType: string) => {
-    const actions = {
+  const getRecommendedActions = (riskLevel: string, _clauseType: string) => {
+    const actions: Record<string, string[]> = {
       'CRITICAL': [
         'Engage legal counsel immediately for clause revision',
         'Do not execute contract until clause is renegotiated',

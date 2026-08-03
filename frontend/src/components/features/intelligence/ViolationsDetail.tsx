@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '../../shared/ui/card';
 import { Badge } from '../../shared/ui/badge';
 import { Button } from '../../shared/ui/button';
-import { AlertTriangle, CheckCircle, XCircle, Shield, TrendingDown, Clock, Download, Search, Filter, Calendar } from 'lucide-react';
+import { AlertTriangle, CheckCircle, XCircle, Shield, TrendingDown, Clock, Download, Search, Calendar } from 'lucide-react';
 
 interface PolicyViolation {
   clause_type: string;
@@ -53,7 +53,7 @@ export const ViolationsDetail: React.FC<ViolationsDetailProps> = ({ violations, 
   };
 
   const getInternalPolicy = (clauseType: string) => {
-    const policies = {
+    const policies: Record<string, { policy: string; section: string; requirement: string }> = {
       'Termination': {
         policy: 'Contract Termination Policy 2.1',
         section: 'Section 4.2 - Notice Requirements',
@@ -98,8 +98,8 @@ export const ViolationsDetail: React.FC<ViolationsDetailProps> = ({ violations, 
     };
   };
 
-  const getBusinessImpact = (severity: string, clauseType: string) => {
-    const impacts = {
+  const getBusinessImpact = (severity: string, _clauseType: string) => {
+    const impacts: Record<string, { financial: string; legal: string; operational: string; timeline: string }> = {
       'CRITICAL': {
         financial: 'Potential financial loss exceeding $100K',
         legal: 'High litigation risk and regulatory exposure',
@@ -130,7 +130,7 @@ export const ViolationsDetail: React.FC<ViolationsDetailProps> = ({ violations, 
   };
 
   const getComplianceActions = (severity: string) => {
-    const actions = {
+    const actions: Record<string, string[]> = {
       'CRITICAL': [
         'Escalate to Legal Department immediately',
         'Halt contract execution until resolved',

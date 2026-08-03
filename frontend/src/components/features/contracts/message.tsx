@@ -25,15 +25,7 @@ export function ChatMessage({ message }: Props) {
                                 <code className="block p-1 bg-muted rounded-sm overflow-x-auto font-mono text-sm">{content}</code>
                             </details>
                         default:
-                            let displayContent: React.ReactNode = content;
-                            if (typeof content === 'object' && content !== null) {
-                                if (Array.isArray(content)) {
-                                    displayContent = content.map((c: any) => c.text || JSON.stringify(c)).join('');
-                                } else {
-                                    displayContent = (content as any).text || JSON.stringify(content);
-                                }
-                            }
-                            return <Fragment key={index}>{displayContent as string}</Fragment>;
+                            return <Fragment key={index}>{content}</Fragment>;
                     }
                 })}
                 {generating && (

@@ -1,4 +1,4 @@
-import { EnhancedSearchParams } from '../components/search/EnhancedSearchInterface';
+import { EnhancedSearchParams } from '../components/features/search/EnhancedSearchInterface';
 import { apiFetch } from '../lib/apiClient';
 
 const API_BASE_URL = 'http://localhost:8000';

@@ -1,10 +1,14 @@
 import React, { useState, useCallback } from 'react';
 import { EnhancedSearchInterface, EnhancedSearchParams } from '../components/features/search/EnhancedSearchInterface';
 import { EnhancedSearchResults } from '../components/features/search/EnhancedSearchResults';
-import { enhancedSearchApi, EnhancedSearchResponse } from '../services/enhancedSearchApi';
+import { enhancedSearchApi } from '../services/enhancedSearchApi';
 
 interface SearchState {
-  results: EnhancedSearchResponse | null;
+  // EnhancedSearchResults (see below) genuinely accepts either an array
+  // of results or a single result object and normalizes at runtime
+  // (Array.isArray check) - handleSearch always stores an array (see its
+  // own results-shape handling below), so that's what this reflects.
+  results: any[] | null;
   isLoading: boolean;
   error: string | null;
 }

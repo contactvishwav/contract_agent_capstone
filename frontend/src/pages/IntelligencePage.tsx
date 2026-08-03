@@ -18,13 +18,11 @@ export const IntelligencePage: React.FC = () => {
   const [selectedModel, setSelectedModel] = useState('gemini-2.5-flash');
   const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
   const [workflowStatus, setWorkflowStatus] = useState<any>(null);
-  const [showWorkflow, setShowWorkflow] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
-  const { contracts, addContract, updateContract, selectedContractId, setSelectedContract } = useContractHistory();
+  const { contracts, addContract, updateContract, setSelectedContract } = useContractHistory();
 
   const handleUploadComplete = (result: UploadResult) => {
     setUploadResult(result);
-    setShowWorkflow(true);
     setIsUploading(false);
     
     // Add to contract history
@@ -181,12 +179,11 @@ export const IntelligencePage: React.FC = () => {
                 {/* Intelligence Analysis Workflow */}
                 {workflowStatus && workflowStatus.agent_executions?.length > 0 && (
                   <div className="mb-4">
-                    <AgentWorkflowTracker 
+                    <AgentWorkflowTracker
                       workflowStatus={{
                         ...workflowStatus,
                         agent_executions: workflowStatus.agent_executions.filter((e: any) => e.agent_name !== 'PDF Processing Agent')
                       }}
-                      isVisible={true}
                     />
                   </div>
                 )}

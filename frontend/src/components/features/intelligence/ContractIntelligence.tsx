@@ -44,7 +44,7 @@ interface ContractIntelligenceProps {
   contractId: string;
   model?: string;
   onWorkflowUpdate?: (status: any) => void;
-  onAnalysisComplete?: (contractId: string, riskScore?: number, riskLevel?: string) => void;
+  onAnalysisComplete?: (contractId: string, riskScore?: number, riskLevel?: string, results?: IntelligenceResults) => void;
 }
 
 const TASK_POLL_INTERVAL_MS = 1500;
@@ -391,7 +391,7 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
         title={`Contract Clauses Analysis (${results?.clauses?.length || 0} found)`}
       >
         {results?.clauses && results.clauses.length > 0 ? (
-          <ClausesDetail clauses={results.clauses} contractId={contractId} />
+          <ClausesDetail clauses={results.clauses} />
         ) : (
           <div className="text-center py-8">
             <FileText className="h-12 w-12 text-slate-400 mx-auto mb-4" />

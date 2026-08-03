@@ -84,7 +84,7 @@ export function ChatInput() {
             onclose() {
                 setSubmiting(false);
             },
-            onerror(err) {
+            onerror() {
                 setSubmiting(false);
                 // removed console error
                 addMessagePart(aiMessage.id, { type: "ai_message", content: "Error: Failed to generate the response." });
