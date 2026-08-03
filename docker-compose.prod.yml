@@ -43,19 +43,33 @@
 #   file's redis has no cap at all (fine on a dev machine with plenty of
 #   spare RAM; not fine when it's sharing 1GB with everything else).
 #
-# NOT included yet: TLS termination / reverse proxy in front of `ui`
-# (docs/DEPLOYMENT.md item 3) - `ui` is temporarily bound directly to
-# host port 80 (plain HTTP) so the stack is independently testable
-# (including the real Aura connectivity check) before that piece lands.
-# Once added, this port mapping moves to the reverse-proxy service and
-# `ui` becomes internal-network-only, matching how `location /api/`
-# already only talks to `backend` over the internal `net` network today.
+# TLS termination: Caddy (see ../Caddyfile for the recommendation
+# rationale - automatic Let's Encrypt vs. nginx+certbot's extra moving
+# parts) is the only service bound to host ports 80/443. `ui` is
+# internal-network-only - Caddy reverse-proxies everything to it, and
+# nginx.conf.template's own location /api/ still owns proxying to
+# `backend` internally, unchanged.
+#
+# Every buildable service declares BOTH `build:` and `image:` - not
+# redundant, two different workflows read different halves of it:
+#   - `docker compose -f docker-compose.prod.yml build` (anywhere with
+#     the source checked out, e.g. your dev machine) builds via `build:`
+#     and tags the result with `image:`, ready to `docker push`.
+#   - On the e2-micro VM itself: `docker compose -f docker-compose.prod.yml
+#     pull` fetches by `image:` alone - `build:` is simply ignored by
+#     `pull`. Building on the VM (npm/vite/uv/tsc, the whole toolchain)
+#     is not something e2-micro's 1GB/burstable-vCPU budget should be
+#     spent on - see docs/DEPLOYMENT.md's build-elsewhere step.
+# IMAGE_REGISTRY is your pushable registry path, e.g.
+# us-central1-docker.pkg.dev/<project-id>/<repo-name> for GCP Artifact
+# Registry (docs/DEPLOYMENT.md walks through provisioning one).
 
 services:
   backend:
     build:
       context: ./backend
       target: production
+    image: ${IMAGE_REGISTRY:?Set IMAGE_REGISTRY, e.g. us-central1-docker.pkg.dev/your-project/contract-agent}/backend:latest
     environment:
       - ENVIRONMENT=production
       - NEO4J_URI=${NEO4J_URI:?Set NEO4J_URI to your Aura connection string, e.g. neo4j+s://<dbid>.databases.neo4j.io}
@@ -93,6 +107,9 @@ services:
     build:
       context: ./backend
       target: production
+    # Same image as `backend` (not a separate build - just a different
+    # command), same tag as that service's `image:` above.
+    image: ${IMAGE_REGISTRY:?Set IMAGE_REGISTRY, e.g. us-central1-docker.pkg.dev/your-project/contract-agent}/backend:latest
     command: ["celery", "-A", "backend.celery_app", "worker", "--loglevel=info", "--concurrency=1", "--pool=solo"]
     stop_grace_period: 45s
     environment:
@@ -122,6 +139,7 @@ services:
     build:
       context: ./frontend
       target: production
+    image: ${IMAGE_REGISTRY:?Set IMAGE_REGISTRY, e.g. us-central1-docker.pkg.dev/your-project/contract-agent}/ui:latest
     environment:
       - BACKEND_HOST=backend
       - BACKEND_PORT=8000
@@ -131,11 +149,31 @@ services:
     # Empirically measured (nginx serving the real built bundle): 7 MiB
     # RSS. 40m is already generous headroom.
     mem_limit: 40m
+    # No host port mapping - internal-network-only, sits behind Caddy.
+
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      # Gate for automatic Let's Encrypt (docs/DEPLOYMENT.md item 3) -
+      # set DOMAIN to your real domain once DNS is pointed at this VM's
+      # static IP. Unset/default falls back to plain HTTP on :80 (see
+      # ../Caddyfile) so the stack is reachable before that's ready.
+      - DOMAIN=${DOMAIN-:80}
     ports:
-      # Plain HTTP, temporary - see the file-level note above. Becomes
-      # internal-only once the TLS-terminating reverse proxy (item 3)
-      # is in front of this service instead.
       - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - ui
+    networks:
+      - net
+    restart: unless-stopped
+    # Empirically measured (idle, no TLS traffic yet): 13.5 MiB RSS.
+    # 64m leaves headroom for TLS handshake/cert-renewal activity.
+    mem_limit: 64m
 
   redis:
     image: redis:7-alpine
@@ -162,6 +200,11 @@ services:
 
 volumes:
   redis_data:
+  # Caddy's ACME account + issued certificates/keys - persisted so a
+  # container restart doesn't re-issue from Let's Encrypt every time
+  # (their rate limits are generous but there's no reason to burn them).
+  caddy_data:
+  caddy_config:
 
 networks:
   net:

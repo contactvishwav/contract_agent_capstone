@@ -1,0 +1,20 @@
+# TLS-terminating reverse proxy in front of the whole stack (docs/
+# DEPLOYMENT.md item 3, production-readiness-adjacent GCP deployment
+# work). Chosen over nginx+certbot: automatic Let's Encrypt issuance,
+# renewal, and HTTP->HTTPS redirect from this ~10 lines, no separate
+# ACME-webroot volume/renewal cron/reload-hook to get right. Sits in
+# front of the existing `ui` service (nginx, frontend/nginx.conf.template)
+# unchanged - that config still owns serving the built frontend and
+# proxying /api/ to `backend` internally; Caddy's only job is TLS.
+#
+# {$DOMAIN} is gated via docker-compose.prod.yml's own env var default
+# (${DOMAIN-:80}) - a real domain here makes Caddy provision a genuine
+# Let's Encrypt certificate automatically (Caddy's core "automatic
+# HTTPS" behavior needs no extra directives for this); left unset, it
+# falls back to plain ":80" (any host, no TLS attempt) so the stack is
+# still reachable and testable before DNS/a domain is ready - attempting
+# ACME issuance against an IP address or no address at all would just
+# fail loudly for no benefit during that phase.
+{$DOMAIN} {
+	reverse_proxy ui:80
+}

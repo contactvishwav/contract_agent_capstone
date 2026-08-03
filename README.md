@@ -108,7 +108,7 @@ The [Contract Understanding Atticus Dataset (CUAD)](https://www.atticusprojectai
    docker-compose up
    ```
    > [!NOTE]
-   > **This `docker-compose.yml` is dev-only** - every service builds the `dev` image target (hot-reload, dev dependencies), and there are no `restart:` policies or resource limits anywhere in the file. A real deployment needs its own compose file or orchestration manifest (Kubernetes, ECS, Nomad, ...) built against the `production` stage each `Dockerfile` already defines - not this file used as-is.
+   > **This `docker-compose.yml` is dev-only** - every service builds the `dev` image target (hot-reload, dev dependencies), and there are no `restart:` policies or resource limits anywhere in the file. A real deployment needs its own compose file or orchestration manifest, not this file used as-is - `docker-compose.prod.yml` plus [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) is exactly that: a real, verified deployment (GCP e2-micro + Neo4j AuraDB + Caddy/Let's Encrypt), not just a Kubernetes-manifest hand-wave.
 
 4. **Initialize Metadata** (Optional):
    ```bash
@@ -139,8 +139,9 @@ These four items were originally listed here as future work. All four are real, 
 Real, honestly-scoped remaining work - see `docs/CAPSTONE_SUMMARY.md` §9 for the full prioritized list:
 
 - Real credential provisioning (org invites, SSO, MFA) replacing today's self-service registration.
-- TLS/HTTPS termination, a Neo4j backup/DR story, and a real secrets manager - all blocked on a chosen deployment target, not a code gap.
 - Push the risk-category extraction benchmark further (20 of 36 categories still score below 0.30 F1 - full tables and root-cause analysis in [`docs/EVALUATION.md`](docs/EVALUATION.md), engagement history in `docs/CAPSTONE_SUMMARY.md` §4 item 12).
+
+~~TLS/HTTPS termination, a Neo4j backup/DR story, and a real secrets manager - all blocked on a chosen deployment target~~ - a real target now exists: see [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) (GCP e2-micro + Neo4j AuraDB Free, whose managed backups cover DR + Caddy/Let's Encrypt for TLS) and `GCPSecretManagerKeyProvider` (`backend/infrastructure/encryption.py`, `KEY_PROVIDER=gcp`) for GCP Secret Manager-backed encryption keys.
 
 ---
 *Created as part of a Legal AI Capstone Project.*
