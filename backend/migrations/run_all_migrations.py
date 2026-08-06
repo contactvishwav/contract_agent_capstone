@@ -75,6 +75,11 @@ def _run_vector_indexes():
     VectorIndexMigration().migrate()
 
 
+def _run_embedding_range_index_fix():
+    from backend.migrations.embedding_range_index_fix import EmbeddingRangeIndexFixMigration
+    EmbeddingRangeIndexFixMigration().migrate()
+
+
 def _run_user_schema():
     from backend.migrations.user_schema_migration import UserSchemaMigration
     UserSchemaMigration().migrate()
@@ -88,7 +93,12 @@ def _run_user_schema():
 # scripts landed in a single commit, so this ordering reflects logical
 # dependency, not commit history). Vector indexes run last since they only
 # need the node labels (Contract/Section/Clause/Chunk/PolicyDocument) to
-# exist, not any particular data in them.
+# exist, not any particular data in them. embedding_range_index_fix runs
+# right after vector_indexes: it drops the stale RANGE indexes on the same
+# embedding properties (multi_level_embeddings.py) once a real vector index
+# exists to replace them, found live in production (a 1536-dim embedding
+# write threw "Property value is too large to index" against the old RANGE
+# index even though a working vector index already existed alongside it).
 MIGRATIONS = [
     ("contract_constraints", _run_contract_constraints),
     ("section_schema", _run_section_schema),
@@ -99,6 +109,7 @@ MIGRATIONS = [
     ("multi_level_embeddings", _run_multi_level_embeddings),
     ("phase2_phase3_schema", _run_phase2_phase3_schema),
     ("vector_indexes", _run_vector_indexes),
+    ("embedding_range_index_fix", _run_embedding_range_index_fix),
     ("user_schema", _run_user_schema),
 ]
 

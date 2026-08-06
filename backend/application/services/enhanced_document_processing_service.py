@@ -96,6 +96,7 @@ class EnhancedDocumentProcessingService:
         # Create initial state
         initial_state = {
             "file_path": request.file_path,
+            "tenant_id": request.tenant_id or "default-tenant",
             "extracted_text": None,
             "contract_data": None,
             "processing_result": None,

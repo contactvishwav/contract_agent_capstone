@@ -20,6 +20,15 @@ VECTOR_INDEXES = {
     "clause_embedding_vector_index": ("Clause", "embedding"),
     "chunk_embedding_vector_index": ("Chunk", "embedding"),
     "policy_document_embedding_vector_index": ("PolicyDocument", "embedding"),
+    # Added by backend/migrations/embedding_range_index_fix.py: these two
+    # properties (set together, same value, by both upload paths' embedding
+    # writes) previously had only a plain RANGE index each
+    # (multi_level_embeddings.py), which has a small property-size limit
+    # that a 1536-dim float array exceeds - every write threw
+    # "Property value is too large to index". Real vector indexes have no
+    # such limit and are the correct index type for an embedding anyway.
+    "contract_document_embedding_vector_index": ("Contract", "document_embedding"),
+    "contract_summary_embedding_vector_index": ("Contract", "summary_embedding"),
 }
 
 CONTRACT_EMBEDDING_INDEX = "contract_embedding_vector_index"
@@ -27,6 +36,8 @@ SECTION_EMBEDDING_INDEX = "section_embedding_vector_index"
 CLAUSE_EMBEDDING_INDEX = "clause_embedding_vector_index"
 CHUNK_EMBEDDING_INDEX = "chunk_embedding_vector_index"
 POLICY_DOCUMENT_EMBEDDING_INDEX = "policy_document_embedding_vector_index"
+CONTRACT_DOCUMENT_EMBEDDING_INDEX = "contract_document_embedding_vector_index"
+CONTRACT_SUMMARY_EMBEDDING_INDEX = "contract_summary_embedding_vector_index"
 
 # How many nearest-neighbor candidates to request from the vector index
 # before any additional (tenant_id, contract_type, date-range, etc.) filter

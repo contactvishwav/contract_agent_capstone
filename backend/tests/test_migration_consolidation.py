@@ -130,7 +130,7 @@ class MigrationRunnerVersioningTests(unittest.TestCase):
         self.assertEqual(result["applied"], ["second"])
         self.assertEqual(result["skipped_already_applied"], ["first"])
 
-    def test_all_10_real_migrations_registered_in_correct_order(self):
+    def test_all_11_real_migrations_registered_in_correct_order(self):
         from backend.migrations.run_all_migrations import MIGRATIONS
         names = [name for name, _ in MIGRATIONS]
 
@@ -142,8 +142,13 @@ class MigrationRunnerVersioningTests(unittest.TestCase):
         )
         self.assertIn("vector_indexes", names)
         self.assertIn("user_schema", names)
-        self.assertEqual(len(names), 10)
-        self.assertEqual(len(set(names)), 10, "No duplicate migration names")
+        self.assertIn("embedding_range_index_fix", names)
+        self.assertLess(
+            names.index("vector_indexes"), names.index("embedding_range_index_fix"),
+            "embedding_range_index_fix drops stale RANGE indexes only once the replacement vector index exists",
+        )
+        self.assertEqual(len(names), 11)
+        self.assertEqual(len(set(names)), 11, "No duplicate migration names")
 
 
 if __name__ == "__main__":
