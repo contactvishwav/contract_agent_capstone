@@ -138,15 +138,29 @@ services:
     # HEALTHCHECK (backend/Dockerfile) checking :8000/api/monitoring/
     # health - meaningless here, since a Celery worker never runs a web
     # server at all. Found live in the real deployment (docs/DEPLOYMENT.md):
-    # without this override, `docker ps` reports the worker "unhealthy"
-    # forever, even when it's genuinely fine. A real Celery-level check
-    # instead of just disabling health reporting outright.
+    # without an override, `docker ps` reports the worker "unhealthy"
+    # forever, even when it's genuinely fine.
+    #
+    # NOT a `celery inspect ping` check, on purpose - tried that first,
+    # and found live (same deployment) that it actively crash-loops the
+    # worker on e2-micro: `celery inspect` is a *separate* CLI invocation
+    # that imports backend.celery_app fresh - which imports backend.tasks,
+    # which constructs its own full LLMManager() at module level (see
+    # tasks.py's own docstring on why - a second, full copy of the
+    # LangChain/Google-genai import surface). Running that every 30s
+    # alongside the already-running worker process (which has its own
+    # LLMManager already resident) blew well past this service's 280m
+    # limit and crashed it repeatedly (confirmed: RestartCount climbing,
+    # CPU% over 1000 during the healthcheck's own import phase). Disabled
+    # entirely instead. This trades away detecting a wedged-but-still-
+    # running worker (Docker's restart policy only reacts to the process
+    # actually exiting, not to a failing healthcheck, by default) - but a
+    # worker that genuinely crashes still gets restarted via
+    # `restart: unless-stopped`, and finding #8's task_acks_late=True
+    # means whatever task it was mid-processing when it went down is
+    # safely requeued either way, not lost.
     healthcheck:
-      test: ["CMD-SHELL", "celery -A backend.celery_app inspect ping --timeout 5"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
+      disable: true
 
   ui:
     build:
