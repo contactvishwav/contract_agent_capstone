@@ -5,6 +5,7 @@ from typing import Dict, List, Any, Optional
 from backend.shared.monitoring.performance_monitor import monitor
 from backend.shared.monitoring.llm_usage_tracker import llm_usage_tracker
 from backend.shared.monitoring import hallucination_tracker
+from backend.shared.reliability.circuit_breaker import GEMINI_CIRCUIT_BREAKER, NEO4J_CIRCUIT_BREAKER
 from backend.shared.cache.redis_cache import cache
 from backend.shared.utils.contract_search_tool import graph as neo4j_graph
 from backend.agents.optimized_cuad_tools import BatchProcessor
@@ -72,6 +73,22 @@ async def get_llm_usage():
     except Exception as e:
         logger.error(f"Failed to get LLM usage summary: {e}")
         raise HTTPException(status_code=500, detail=f"LLM usage retrieval failed: {str(e)}")
+
+@router.get("/circuit-breakers", dependencies=[Depends(requires_permission(Permission.VIEW_REPORTS))])
+async def get_circuit_breaker_status():
+    """Real-time state of the Gemini and Neo4j circuit breakers
+    (backend/shared/reliability/circuit_breaker.py) - CLOSED/OPEN/HALF_OPEN,
+    the current consecutive-failure count, and the trip threshold. State is
+    read straight from Redis, so this reflects what every backend/worker
+    process is actually enforcing right now, not a per-process snapshot."""
+    try:
+        return {
+            "gemini": GEMINI_CIRCUIT_BREAKER.get_status(),
+            "neo4j": NEO4J_CIRCUIT_BREAKER.get_status(),
+        }
+    except Exception as e:
+        logger.error(f"Failed to get circuit breaker status: {e}")
+        raise HTTPException(status_code=500, detail=f"Circuit breaker status retrieval failed: {str(e)}")
 
 @router.get("/health")
 async def health_check():

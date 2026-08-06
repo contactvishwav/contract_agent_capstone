@@ -1,9 +1,10 @@
 from backend.domain.entities import IContractRepository
 from backend.governance.pii_engine import PIIEngine
 from backend.infrastructure.encryption import field_encryptor
+from backend.shared.reliability.circuit_breaker import NEO4J_CIRCUIT_BREAKER
 from backend.shared.utils.contract_search_tool import graph, embedding
 from backend.shared.utils.utils import parse_date_to_iso
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import uuid
 from datetime import datetime
 import logging
@@ -13,11 +14,20 @@ logger = get_logger(__name__)
 
 class Neo4jContractRepository(IContractRepository):
     """Repository implementation using existing Neo4j infrastructure - DRY principle"""
-    
+
     def __init__(self):
         self.graph = graph  # Reuse existing connection
         self.embedding_service = embedding  # Reuse existing embedding service
-    
+
+    def _query(self, cypher: str, params: Optional[Dict[str, Any]] = None):
+        """Every real Neo4j call this repository makes goes through here -
+        the single choke point NEO4J_CIRCUIT_BREAKER protects. A repeated-
+        failure Aura outage now fails fast (CircuitBreakerOpenError) instead
+        of every caller separately waiting out its own driver-level
+        timeout."""
+        with NEO4J_CIRCUIT_BREAKER.guard():
+            return self.graph.query(cypher, params)
+
     async def get_contract_by_id(self, contract_id: str, tenant_id: str = "default-tenant") -> Dict[str, Any]:
         """Get contract data by ID - Enforces multi-tenant isolation"""
         try:
@@ -36,7 +46,7 @@ class Neo4jContractRepository(IContractRepository):
                    collect({name: p.name, role: r.role}) as parties
             """
 
-            result = self.graph.query(query, {"contract_id": contract_id, "tenant_id": tenant_id})
+            result = self._query(query, {"contract_id": contract_id, "tenant_id": tenant_id})
 
             if result:
                 contract_data = result[0]
@@ -133,7 +143,7 @@ class Neo4jContractRepository(IContractRepository):
             logger.info(f"Executing Neo4j query with params: {list(contract_params.keys())}")
             
             # Execute contract creation
-            result = self.graph.query(contract_query, contract_params)
+            result = self._query(contract_query, contract_params)
             
             if not result:
                 raise Exception("Failed to create contract node")
@@ -181,7 +191,7 @@ class Neo4jContractRepository(IContractRepository):
                 "role": party_data.get("role", "Unknown")
             }
             
-            self.graph.query(party_query, party_params)
+            self._query(party_query, party_params)
             logger.info(f"Created party relationship: {party_data['name']}")
     
     def _create_governing_law_relationship(self, contract_id: str, tenant_id: str, governing_law: str):
@@ -199,4 +209,4 @@ class Neo4jContractRepository(IContractRepository):
             "country_name": governing_law
         }
         
-        self.graph.query(gov_law_query, gov_law_params)
+        self._query(gov_law_query, gov_law_params)

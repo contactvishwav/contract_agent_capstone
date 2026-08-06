@@ -34,17 +34,17 @@ export const USPPage: React.FC = () => {
 
     {
       id: 'autonomous_planning',
-      title: 'Autonomous Planning & Reasoning',
+      title: 'Query-Complexity-Based Execution Planning',
       icon: <Target className="w-6 h-6" />,
       color: 'bg-green-600',
-      description: 'Self-adapting AI that analyzes query complexity and creates optimal execution strategies',
+      description: 'PlanExecutionEngine scores each query for complexity and intent, then picks one of four step sequences and validates the plan before running it',
       differentiators: [
-        { name: 'Query Complexity Analysis', description: 'Automatic strategy selection based on requirements', icon: <Brain className="w-5 h-5" /> },
-        { name: 'Dynamic Workflow Construction', description: 'LangGraph-based adaptive execution paths', icon: <Zap className="w-5 h-5" /> },
-        { name: 'Self-Reflection & Learning', description: 'Feedback adaptation for continuous improvement', icon: <TrendingUp className="w-5 h-5" /> },
-        { name: 'Multi-Strategy Execution', description: 'Simple/Complex/Risk/Compliance-focused approaches', icon: <Target className="w-5 h-5" /> }
+        { name: 'Query Complexity Scoring', description: 'Keyword-based complexity/intent analysis selects Simple, Complex, Risk-Focused, or Compliance-Focused', icon: <Brain className="w-5 h-5" /> },
+        { name: 'Dependency-Aware Step Execution', description: 'Each step declares its dependencies and runs only once they complete, with per-step timeout and retry', icon: <Zap className="w-5 h-5" /> },
+        { name: 'Plan Self-Validation', description: 'Checks for missing dependencies, lowers confidence for very complex queries, adds an extra validation step for risk-focused ones', icon: <TrendingUp className="w-5 h-5" /> },
+        { name: 'Four Execution Strategies', description: 'Simple/Complex/Risk-Focused/Compliance-Focused plans, each a different step sequence', icon: <Target className="w-5 h-5" /> }
       ],
-      competitors: 'Most solutions use static workflows without intelligent planning or self-adaptation capabilities'
+      competitors: 'Most solutions run the exact same fixed step sequence for every query, regardless of what the query actually asks'
     },
     {
       id: 'cuad_integration',
@@ -80,8 +80,8 @@ export const USPPage: React.FC = () => {
 
   const competitiveAdvantages = [
     {
-      title: '80% Faster Contract Review',
-      description: 'Automated analysis reduces manual review time',
+      title: '4.7x Faster Semantic Search',
+      description: 'Native Neo4j vector indexes vs. brute-force scan, benchmarked on 5,000 contract nodes (7x at the median)',
       icon: <Zap className="w-5 h-5 text-yellow-600" />,
       color: 'border-yellow-200 bg-yellow-50'
     },
@@ -92,8 +92,8 @@ export const USPPage: React.FC = () => {
       color: 'border-teal-200 bg-teal-50'
     },
     {
-      title: '95% Risk Detection Accuracy',
-      description: 'AI-powered identification of contract risks',
+      title: '0.75 F1 on Contract Metadata',
+      description: 'CUAD-benchmarked extraction accuracy, up to 0.99 on parties and document name',
       icon: <Target className="w-5 h-5 text-red-600" />,
       color: 'border-red-200 bg-red-50'
     },
@@ -110,8 +110,8 @@ export const USPPage: React.FC = () => {
       color: 'border-purple-200 bg-purple-50'
     },
     {
-      title: 'Enterprise Reliability',
-      description: '99.9% uptime with circuit breaker protection',
+      title: 'Circuit Breaker Protection',
+      description: 'Redis-backed breakers around Gemini and Neo4j calls fail fast after repeated errors instead of stacking up timeouts',
       icon: <CheckCircle className="w-5 h-5 text-blue-600" />,
       color: 'border-blue-200 bg-blue-50'
     }
@@ -229,23 +229,23 @@ export const USPPage: React.FC = () => {
             <h3 className="font-semibold mb-3 text-slate-800">Why Choose Our Solution</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
               <div>
-                <h4 className="font-medium mb-2 text-slate-700">Business Impact</h4>
+                <h4 className="font-medium mb-2 text-slate-700">Measured Accuracy (CUAD benchmark, 497 contracts)</h4>
                 <div className="space-y-1 text-xs text-slate-600">
-                  <div>• 80% reduction in contract review time</div>
+                  <div>• 0.75 avg F1 on contract metadata (up to 0.99 on parties/document name)</div>
+                  <div>• 0.32 avg F1 on the 36 risk-relevant clause categories - a documented weak spot, not hidden</div>
                   <div>• Cross-contract risk aggregation and insights</div>
-                  <div>• 95% accuracy in risk detection</div>
                   <div>• Complete audit trail compliance</div>
                   <div>• Portfolio-level relationship intelligence</div>
                 </div>
               </div>
               <div>
-                <h4 className="font-medium mb-2 text-slate-700">ROI & Cost Savings</h4>
+                <h4 className="font-medium mb-2 text-slate-700">Measured Performance</h4>
                 <div className="space-y-1 text-xs text-slate-600">
-                  <div>• Reduce legal review costs by 80%</div>
+                  <div>• 4.7x mean / 7x median faster semantic search vs. brute-force scan</div>
+                  <div>• 73% live cache-hit rate on LLM calls - cache hits return in single-digit ms vs. multi-second real calls</div>
+                  <div>• Circuit breakers fail fast on repeated Gemini/Neo4j errors instead of stacking up timeouts</div>
                   <div>• Prevent contract risks before signing</div>
-                  <div>• Accelerate deal closure timelines</div>
                   <div>• Minimize compliance violations</div>
-                  <div>• Optimize contract portfolio performance</div>
                 </div>
               </div>
             </div>
@@ -253,7 +253,7 @@ export const USPPage: React.FC = () => {
           
           <div className="flex justify-center">
             <Badge variant="secondary" className="text-xs">
-              Delivering measurable ROI through intelligent contract automation
+              Every number on this page is a real, reproducible measurement - not an estimate
             </Badge>
           </div>
         </CardContent>

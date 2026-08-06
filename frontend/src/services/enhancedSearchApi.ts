@@ -1,7 +1,14 @@
 import { EnhancedSearchParams } from '../components/features/search/EnhancedSearchInterface';
 import { apiFetch } from '../lib/apiClient';
 
-const API_BASE_URL = 'http://localhost:8000';
+// Real bug found live against the production deployment: this was hardcoded
+// to 'http://localhost:8000', so every call here tried to reach the
+// browser's own machine instead of the deployed backend - every other API
+// call in this app (DocumentUpload.tsx, ChatInput.tsx, apiClient.ts) uses a
+// relative path against the current origin instead, which is what nginx's
+// /api/ proxy (nginx.conf.template) and the Vite dev proxy (vite.config.ts)
+// both expect.
+const API_BASE_URL = '';
 
 export interface EnhancedSearchResponse {
   success: boolean;
@@ -72,7 +79,7 @@ class EnhancedSearchApi {
     formData.append('file', file);
 
     const response = await apiFetch(
-      `${API_BASE_URL}/documents/enhanced/upload?model=${model}&enable_embeddings=${enableEmbeddings}`,
+      `${API_BASE_URL}/api/documents/enhanced/upload?model=${model}&enable_embeddings=${enableEmbeddings}`,
       {
         method: 'POST',
         body: formData
@@ -87,7 +94,7 @@ class EnhancedSearchApi {
   }
 
   async getEmbeddingStatus(contractId: string): Promise<any> {
-    const response = await apiFetch(`${API_BASE_URL}/documents/enhanced/embedding-status/${contractId}`);
+    const response = await apiFetch(`${API_BASE_URL}/api/documents/enhanced/embedding-status/${contractId}`);
     
     if (!response.ok) {
       throw new Error(`Failed to get embedding status: ${response.statusText}`);

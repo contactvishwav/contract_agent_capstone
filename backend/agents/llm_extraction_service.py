@@ -22,6 +22,7 @@ from backend.shared.cache.redis_cache import cache
 from backend.shared.config.phase3_config import Phase3Config
 from backend.shared.monitoring.llm_usage_tracker import llm_usage_tracker
 from backend.shared.monitoring.latency_tracker import track_latency
+from backend.shared.reliability.circuit_breaker import GEMINI_CIRCUIT_BREAKER, CircuitBreakerOpenError
 from backend.shared.utils.llm_concurrency import llm_call_semaphore
 from backend.shared.utils.logger import get_logger
 
@@ -232,7 +233,13 @@ class LLMExtractionService:
 
         try:
             with llm_call_semaphore:
-                raw_result = self._structured_llm.invoke(prompt)
+                with GEMINI_CIRCUIT_BREAKER.guard():
+                    raw_result = self._structured_llm.invoke(prompt)
+        except CircuitBreakerOpenError as e:
+            logger.warning(f"LLM clause extraction skipped - {e}")
+            if raise_on_error:
+                raise
+            return []
         except Exception as e:
             logger.error(f"LLM clause extraction failed: {e}")
             if raise_on_error:
