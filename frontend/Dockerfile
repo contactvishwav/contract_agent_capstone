@@ -24,8 +24,16 @@ EXPOSE 5173
 # that this container is serving requests and that it can actually reach
 # the backend, not just that the process is alive. `wget` is BusyBox
 # (already in this alpine base image), no extra package needed.
+#
+# 127.0.0.1, not localhost: found live on a real Ubuntu Docker host
+# (docs/DEPLOYMENT.md) - this Alpine image's resolver returns ::1 for
+# "localhost" before 127.0.0.1, and nothing here actually listens on the
+# IPv6 loopback, so `wget http://localhost/...` gets a real, immediate
+# "Connection refused" even though the exact same request against
+# 127.0.0.1 succeeds. Never reproduced locally (different Docker Desktop
+# IPv6 configuration) - only surfaced against this real deployment target.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD wget -q --spider http://localhost:5173/api/monitoring/health || exit 1
+  CMD wget -q --spider http://127.0.0.1:5173/api/monitoring/health || exit 1
 
 CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
 
@@ -56,5 +64,7 @@ ENV BACKEND_HOST=backend \
 
 EXPOSE 80
 
+# 127.0.0.1, not localhost - see the `dev` target's HEALTHCHECK comment
+# above for why (found live in the real GCP deployment, docs/DEPLOYMENT.md).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -q --spider http://localhost/api/monitoring/health || exit 1
+  CMD wget -q --spider http://127.0.0.1/api/monitoring/health || exit 1

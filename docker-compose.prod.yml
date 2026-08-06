@@ -134,6 +134,19 @@ services:
     # Empirically measured (--concurrency=1 --pool=solo, real production
     # image, idle after startup): 236 MiB RSS.
     mem_limit: 280m
+    # This service shares backend's image, which bakes in an HTTP
+    # HEALTHCHECK (backend/Dockerfile) checking :8000/api/monitoring/
+    # health - meaningless here, since a Celery worker never runs a web
+    # server at all. Found live in the real deployment (docs/DEPLOYMENT.md):
+    # without this override, `docker ps` reports the worker "unhealthy"
+    # forever, even when it's genuinely fine. A real Celery-level check
+    # instead of just disabling health reporting outright.
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A backend.celery_app inspect ping --timeout 5"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   ui:
     build:
