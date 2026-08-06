@@ -141,9 +141,13 @@ app.include_router(monitoring_router)
 from backend.api.audit_api import router as audit_router
 app.include_router(audit_router)
 
-# Auth API (JWT token issuance)
+# Auth API (JWT token issuance, org invites, MFA)
 from backend.api.auth_api import router as auth_router
 app.include_router(auth_router)
+
+# Google OIDC SSO (org invites/SSO/MFA design report, this engagement)
+from backend.api.sso_api import router as sso_router
+app.include_router(sso_router)
 
 # Policy Management API
 from backend.api.policy_api import router as policy_router

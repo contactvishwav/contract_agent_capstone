@@ -105,12 +105,24 @@ def validate_production_secret() -> None:
 class TokenIdentity:
     """The resolved, verified identity from a validated JWT - tenant_id and
     role a caller cannot forge, unlike the old query-param/header
-    mechanisms they replace."""
+    mechanisms they replace.
+
+    username: added for credential provisioning (org invites/SSO/MFA,
+    this engagement) - MFA and SSO account-linking are inherently
+    per-user concepts, and until this change tokens carried no user
+    identity at all, only tenant+role. Optional and defaults to None so
+    every pre-existing create_access_token(tenant_id=..., role=...) call
+    site (test fixtures especially - conftest.py's auth_headers is used
+    across nearly the whole suite) keeps working unchanged; only the
+    login/MFA/SSO issuance paths populate it now."""
     tenant_id: str
     role: str  # raw claim string; requires_permission (rbac.py) converts to UserRole
+    username: Optional[str] = None
 
 
-def create_access_token(tenant_id: str, role: str, expires_delta: Optional[timedelta] = None) -> str:
+def create_access_token(
+    tenant_id: str, role: str, expires_delta: Optional[timedelta] = None, username: Optional[str] = None,
+) -> str:
     """Issue a signed JWT. See module docstring for the honest scope of
     what "issuance" means today (signed claims, not verified credentials)."""
     now = datetime.now(timezone.utc)
@@ -121,6 +133,8 @@ def create_access_token(tenant_id: str, role: str, expires_delta: Optional[timed
         "iat": now,
         "exp": expire,
     }
+    if username:
+        payload["username"] = username
     return jwt.encode(payload, _get_secret_key(), algorithm=_ALGORITHM)
 
 
@@ -151,4 +165,4 @@ async def get_current_identity(authorization: Optional[str] = Header(None)) -> T
     if not tenant_id or not role:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token is missing tenant_id/role claims")
 
-    return TokenIdentity(tenant_id=tenant_id, role=role)
+    return TokenIdentity(tenant_id=tenant_id, role=role, username=payload.get("username"))

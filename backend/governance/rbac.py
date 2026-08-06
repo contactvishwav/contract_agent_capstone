@@ -19,6 +19,7 @@ class Permission(str, Enum):
     VIEW_REPORTS = "VIEW_REPORTS"
     MANAGE_POLICIES = "MANAGE_POLICIES"
     VIEW_AUDIT = "VIEW_AUDIT"
+    MANAGE_USERS = "MANAGE_USERS"  # invite/provision accounts into one's own tenant
 
 class RBACManager:
     """

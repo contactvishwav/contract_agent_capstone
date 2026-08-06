@@ -42,6 +42,15 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 AUTH_TOKEN_RATE_LIMIT = os.getenv("AUTH_TOKEN_RATE_LIMIT", "10/minute")
 AUTH_REGISTER_RATE_LIMIT = os.getenv("AUTH_REGISTER_RATE_LIMIT", "5/minute")
 
+# Credential-provisioning endpoints (org invites, MFA) - same brute-force
+# rationale as the two above. MFA verify is the obvious code-guessing
+# target (a 6-digit TOTP code, 1 in 1,000,000 per guess - rate limiting is
+# the real defense here, not the keyspace alone). Invite-accept's token
+# has enough entropy that brute-forcing it directly is already infeasible,
+# but it's rate-limited anyway as a cheap, free second layer.
+AUTH_MFA_VERIFY_RATE_LIMIT = os.getenv("AUTH_MFA_VERIFY_RATE_LIMIT", "10/minute")
+AUTH_INVITE_ACCEPT_RATE_LIMIT = os.getenv("AUTH_INVITE_ACCEPT_RATE_LIMIT", "10/minute")
+
 
 def _resolve_storage_uri() -> str:
     try:
