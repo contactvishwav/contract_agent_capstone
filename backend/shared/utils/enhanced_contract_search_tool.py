@@ -503,7 +503,18 @@ class EnhancedContractInput(BaseModel):
     governing_law: Optional[Location] = Field(None, description="Governing law of the contract")
     monetary_value: Optional[MonetaryValue] = Field(None, description="The total amount or value of a contract")
     cypher_aggregation: Optional[str] = Field(None, description="Custom Cypher statement for advanced aggregations")
-    tenant_id: str = Field(..., description="The ID of the tenant requesting the search")
+
+    # tenant_id is deliberately NOT a field here. It previously was
+    # (`Field(..., description=...)`), which meant the LLM had to supply it
+    # itself as a tool-call argument - it has no legitimate way to know the
+    # real authenticated tenant_id, so in practice it fabricated a
+    # plausible-looking placeholder ("default_tenant_id", observed live),
+    # silently scoping every chat search to a tenant that doesn't exist.
+    # The real tenant_id is now injected server-side by contract_chat_
+    # agent.py's execute_tools (from the authenticated JWT, via
+    # config["configurable"]["tenant_id"]) directly into EnhancedContract
+    # SearchTool._run's kwargs, bypassing this schema entirely - there is
+    # no field here for the model to see, guess, or override.
 
 class EnhancedContractSearchTool(BaseTool):
     name: str = "EnhancedContractSearch"

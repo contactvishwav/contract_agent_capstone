@@ -223,7 +223,12 @@ class ContractInput(BaseModel):
         None,
         description="""Custom Cypher statement for advanced aggregations and analytics.""",
     )
-    tenant_id: str = Field(..., description="The ID of the tenant requesting the search")
+
+    # tenant_id is deliberately NOT a field here - see EnhancedContractInput's
+    # identical comment in enhanced_contract_search_tool.py for the full
+    # rationale. The real tenant_id is injected server-side by contract_
+    # chat_agent.py's execute_tools directly into ContractSearchTool._run's
+    # kwargs; the LLM never sees or supplies it.
 
 
 class ContractSearchTool(BaseTool):

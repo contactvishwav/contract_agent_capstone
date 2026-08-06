@@ -29,6 +29,7 @@ from backend.shared.utils.logger import get_logger, correlation_id_var
 from backend.governance.prompt_guard import PromptGuard
 from backend.governance.output_guard import OutputGuard
 from backend.governance.rbac import Permission, requires_permission
+from backend.governance.auth import TokenIdentity
 from backend.infrastructure.audit_logger import AuditLogger, AuditEventType
 
 logger = get_logger(__name__)
@@ -222,7 +223,7 @@ def rebuild_history(history):
     return messages
 
 
-async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, user_role: str = "unknown"):
+async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, tenant_id: str, user_role: str = "unknown"):
     logger.info(f"Processing LLM request for model '{model}' for user_role '{user_role}'")
     
     # Initialize AuditLogger and AgentAuditService for Guard persistence
@@ -266,9 +267,18 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, use
     corr_id = correlation_id_var.get()
     run_tags = [f"correlation_id:{corr_id}"] if corr_id else []
     
+    # tenant_id travels via config["configurable"], not tool-call args - see
+    # contract_chat_agent.py's execute_tools, which reads it from here and
+    # injects it into the tenant-scoped tools' args itself. The LLM never
+    # sees or supplies tenant_id at all (removed from both tools' schemas),
+    # so there is no path for it to guess/fabricate a value that could
+    # reach another tenant's data - the authenticated JWT's tenant_id
+    # (identity.tenant_id, resolved server-side in the /api/run/ route) is
+    # the only source, matching every other tenant-scoped operation in
+    # this system.
     messages = llm_mgr.get_model_by_name(model).astream(
-        input={"messages": input_messages}, 
-        config={"tags": run_tags},
+        input={"messages": input_messages},
+        config={"tags": run_tags, "configurable": {"tenant_id": tenant_id}},
         stream_mode=["messages", "updates"]
     )
 
@@ -368,9 +378,20 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, use
     yield f"data: {json.dumps({'content': '', 'type': 'end'})}\n\n"
 
 
-@app.post("/api/run/", dependencies=[Depends(requires_permission(Permission.ANALYZE))])
-async def run(payload: RunPayload, llm_mgr: LLMManager = Depends(get_llm_manager)):
+@app.post("/api/run/")
+async def run(
+    payload: RunPayload,
+    llm_mgr: LLMManager = Depends(get_llm_manager),
+    identity: TokenIdentity = Depends(requires_permission(Permission.ANALYZE)),
+):
     return StreamingResponse(
-        runner(model=payload.model, prompt=payload.prompt, history=payload.history, llm_mgr=llm_mgr),
+        runner(
+            model=payload.model,
+            prompt=payload.prompt,
+            history=payload.history,
+            llm_mgr=llm_mgr,
+            tenant_id=identity.tenant_id,
+            user_role=identity.role,
+        ),
         media_type="text/event-stream",
     )
