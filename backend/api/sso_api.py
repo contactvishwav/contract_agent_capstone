@@ -20,12 +20,15 @@ redirect only ever echoes `code`+`state`, nothing else. See oidc.py's
 build_authorization_url docstring for why.
 """
 
+import html
+import json
+import os
 import re
 import secrets as _secrets
+import time
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from backend.governance import oidc
 from backend.governance.auth import create_access_token, DEFAULT_TOKEN_EXPIRY
@@ -42,11 +45,50 @@ _invite_repository = InviteRepository()
 SSO_PROVIDER_GOOGLE = "google"
 _USERNAME_INVALID_CHARS = re.compile(r"[^a-zA-Z0-9_.-]")
 
+# Must match authStore.ts's STORAGE_KEY exactly - there is no shared
+# constant between this backend template and the frontend bundle, so both
+# sides comment the coupling explicitly (see authStore.ts's own comment
+# pointing back here).
+_SESSION_STORAGE_KEY = "contract_intelligence_auth"
 
-class SsoTokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    expires_in: int
+
+def _session_bridge_html(token: str, tenant_id: str, role: str) -> HTMLResponse:
+    """
+    Google's redirect lands the real browser on THIS backend route (it has
+    to - that's the exact URL registered as the OAuth client's redirect
+    URI). Previously this returned raw JSON, which is correct for an API
+    client but useless for a real user's browser: nothing established a
+    session in the SPA, so "successfully" completing Google's consent
+    screen just showed a JSON blob instead of logging the user in.
+
+    Fix: render a real (tiny) HTML page instead of JSON. It writes the
+    session directly into localStorage under authStore.ts's exact
+    STORAGE_KEY/shape - computed server-side (tenant_id/role/expiresAt are
+    already known here, no need to re-decode the JWT client-side) - then
+    does a real top-level navigation into the SPA, which picks the session
+    up automatically via authStore.ts's own loadFromStorage() at module
+    load. `html.escape`/`json.dumps` on every embedded value since this is
+    real HTML being templated, not an f-string into trusted markup.
+    """
+    session_json = json.dumps({
+        "token": token,
+        "tenantId": tenant_id,
+        "role": role,
+        "expiresAt": int((time.time() + DEFAULT_TOKEN_EXPIRY.total_seconds()) * 1000),
+    })
+    frontend_url = os.getenv("FRONTEND_BASE_URL", "http://localhost:5173")
+    safe_frontend_url = html.escape(frontend_url, quote=True)
+    body = f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>Signing you in...</title></head>
+<body>
+<p>Signing you in...</p>
+<script>
+  localStorage.setItem({json.dumps(_SESSION_STORAGE_KEY)}, {json.dumps(session_json)});
+  window.location.href = "{safe_frontend_url}";
+</script>
+<noscript>JavaScript is required to complete sign-in. <a href="{safe_frontend_url}">Continue to the app</a>.</noscript>
+</body></html>"""
+    return HTMLResponse(content=body)
 
 
 @router.get("/login")
@@ -91,7 +133,7 @@ async def oidc_callback(code: str = Query(...), state: str = Query(...)):
     if existing is not None:
         token = create_access_token(tenant_id=existing.tenant_id, role=existing.role, username=existing.username)
         logger.info(f"SSO login for existing account '{existing.username}' via Google")
-        return SsoTokenResponse(access_token=token, expires_in=int(DEFAULT_TOKEN_EXPIRY.total_seconds()))
+        return _session_bridge_html(token, existing.tenant_id, existing.role)
 
     if not result.invite_token:
         raise HTTPException(
@@ -108,7 +150,7 @@ async def oidc_callback(code: str = Query(...), state: str = Query(...)):
 
     token = create_access_token(tenant_id=account.tenant_id, role=account.role, username=account.username)
     logger.info(f"SSO account created: '{account.username}' joined tenant '{account.tenant_id}' via Google invite")
-    return SsoTokenResponse(access_token=token, expires_in=int(DEFAULT_TOKEN_EXPIRY.total_seconds()))
+    return _session_bridge_html(token, account.tenant_id, account.role)
 
 
 def _create_sso_account_with_unique_username(invite, identity: "oidc.OidcIdentity"):

@@ -10,25 +10,24 @@ import {
   SelectValue,
 } from '../../shared/ui/select';
 import { ShieldCheck, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { GoogleIcon } from '../../shared/ui/GoogleIcon';
 import { useAuth } from '../../../contexts/AuthContext';
-
-const ROLES = [
-  { value: 'ADMIN', label: 'Admin', description: 'Full access, including policy management and audit trail' },
-  { value: 'LEGAL_REVIEWER', label: 'Legal Reviewer', description: 'Upload and analyze contracts, view reports' },
-  { value: 'AUDITOR', label: 'Auditor', description: 'View reports and audit trail only' },
-  { value: 'VIEWER', label: 'Viewer', description: 'Analyze/query only' },
-];
+import { ROLES } from '../../../lib/roles';
 
 const inputClass =
   'w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]';
 
 export const LoginScreen: React.FC = () => {
-  const { login, loginError, isLoggingIn, register, registerError, isRegistering } = useAuth();
+  const {
+    login, loginError, isLoggingIn, register, registerError, isRegistering,
+    mfaRequired, mfaError, isVerifyingMfa, verifyMfaCode, cancelMfa,
+  } = useAuth();
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [registeredNotice, setRegisteredNotice] = useState<string | null>(null);
 
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [mfaCode, setMfaCode] = useState('');
 
   const [regUsername, setRegUsername] = useState('');
   const [regPassword, setRegPassword] = useState('');
@@ -43,6 +42,23 @@ export const LoginScreen: React.FC = () => {
     } catch {
       // loginError from context already reflects the failure
     }
+  };
+
+  const handleMfaVerify = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!mfaCode.trim()) return;
+    try {
+      await verifyMfaCode(mfaCode.trim());
+      setMfaCode('');
+    } catch {
+      // mfaError from context already reflects the failure
+    }
+  };
+
+  const handleBackFromMfa = () => {
+    cancelMfa();
+    setMfaCode('');
+    setPassword('');
   };
 
   const handleRegister = async (e: React.FormEvent) => {
@@ -67,15 +83,60 @@ export const LoginScreen: React.FC = () => {
             <ShieldCheck className="h-5 w-5" />
             <span className="text-xs font-semibold uppercase tracking-wide">Contract Intelligence</span>
           </div>
-          <CardTitle className="text-xl">{mode === 'login' ? 'Sign in' : 'Create an account'}</CardTitle>
+          <CardTitle className="text-xl">
+            {mfaRequired ? 'Enter your authentication code' : mode === 'login' ? 'Sign in' : 'Create an account'}
+          </CardTitle>
           <CardDescription>
-            {mode === 'login'
+            {mfaRequired
+              ? 'This account has two-factor authentication enabled.'
+              : mode === 'login'
               ? 'Sign in with a real account to receive a signed, tenant-scoped access token.'
-              : "Minimal, self-service registration - there's no admin-provisioning system yet, so this is currently the only way to create an account."}
+              : 'Bootstrap a brand-new organization by creating its first (admin) account. Joining an existing organization needs an invite from one of its admins instead.'}
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {mode === 'login' ? (
+          {mfaRequired ? (
+            <form onSubmit={handleMfaVerify} className="space-y-4">
+              <div className="space-y-1.5">
+                <label htmlFor="mfa-code" className="text-sm font-medium text-slate-700">
+                  Authentication code
+                </label>
+                <input
+                  id="mfa-code"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  value={mfaCode}
+                  onChange={(e) => setMfaCode(e.target.value)}
+                  autoFocus
+                  placeholder="6-digit code, or a backup code"
+                  className={inputClass}
+                />
+                <p className="text-xs text-slate-500">
+                  Enter the 6-digit code from your authenticator app, or one of your saved backup codes if you've lost access to it.
+                </p>
+              </div>
+
+              {mfaError && (
+                <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+                  <span>{mfaError}</span>
+                </div>
+              )}
+
+              <Button type="submit" className="w-full" disabled={isVerifyingMfa || !mfaCode.trim()}>
+                {isVerifyingMfa ? 'Verifying...' : 'Verify'}
+              </Button>
+
+              <button
+                type="button"
+                onClick={handleBackFromMfa}
+                className="w-full text-center text-sm text-slate-500 hover:text-slate-700"
+              >
+                Back to sign in
+              </button>
+            </form>
+          ) : mode === 'login' ? (
             <form onSubmit={handleLogin} className="space-y-4">
               {registeredNotice && (
                 <div className="flex items-start gap-2 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">
@@ -123,6 +184,29 @@ export const LoginScreen: React.FC = () => {
               <Button type="submit" className="w-full" disabled={isLoggingIn || !username.trim() || !password}>
                 {isLoggingIn ? 'Signing in...' : 'Sign in'}
               </Button>
+
+              <div className="relative py-1">
+                <div className="absolute inset-0 flex items-center">
+                  <span className="w-full border-t border-slate-200" />
+                </div>
+                <div className="relative flex justify-center text-xs">
+                  <span className="bg-white px-2 text-slate-400">or</span>
+                </div>
+              </div>
+
+              {/* Real top-level navigation to the backend's real OIDC
+                  redirect, not a fetch() call - GET /api/auth/oidc/login
+                  307s to Google's actual authorization endpoint
+                  (governance/oidc.py), and the callback lands back on this
+                  same origin with a real session already established (see
+                  api/sso_api.py's _session_bridge_html). */}
+              <a
+                href="/api/auth/oidc/login"
+                className="flex w-full items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+              >
+                <GoogleIcon className="h-4 w-4" />
+                Sign in with Google
+              </a>
 
               <button
                 type="button"

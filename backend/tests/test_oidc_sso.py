@@ -20,6 +20,8 @@ report). Two layers:
     boundary: SSO alone must never self-provision into a tenant).
 """
 
+import json
+import re
 import time
 import unittest
 from unittest.mock import MagicMock, patch
@@ -51,6 +53,23 @@ def _make_id_token(
         "iss": iss, "aud": aud, "exp": int(time.time()) + exp_delta,
     }
     return joserfc_jwt.encode({"alg": "RS256", "kid": kid}, claims, _TEST_KEY)
+
+
+def _extract_session_from_bridge_html(html_body: str) -> dict:
+    """
+    A successful GET /callback now renders a real HTML page (api/sso_api.
+    py's _session_bridge_html) instead of JSON - it writes the session
+    into localStorage via an inline `localStorage.setItem(key, "<escaped
+    JSON>")` call and redirects into the SPA, rather than returning
+    {access_token: ...} for a caller to read directly. Extracts the real
+    session dict from that embedded call so tests can still assert on the
+    real token/tenant_id/role, the same way a browser's JS engine would
+    unescape it.
+    """
+    match = re.search(r'setItem\("contract_intelligence_auth", (".*?")\);', html_body)
+    assert match, f"session bridge script not found in response body: {html_body[:500]}"
+    inner_json_text = json.loads(match.group(1))  # un-escapes the JS string literal
+    return json.loads(inner_json_text)  # parses the actual session JSON
 
 
 class OidcModuleTests(unittest.TestCase):
@@ -202,7 +221,20 @@ class SsoApiTests(unittest.TestCase):
             response = self.client.get("/api/auth/oidc/callback?code=x&state=y")
 
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.json()["access_token"])
+        self.assertIn("text/html", response.headers["content-type"])
+        session = _extract_session_from_bridge_html(response.text)
+        self.assertTrue(session["token"])
+        self.assertEqual(session["tenantId"], "tenant_a")
+        self.assertEqual(session["role"], "VIEWER")
+
+        # The embedded token isn't just present - it's a real, independently
+        # verifiable JWT this backend itself issued, decodable the exact
+        # same way any other authenticated route validates one.
+        import asyncio
+        from backend.governance.auth import get_current_identity
+        identity = asyncio.run(get_current_identity(authorization=f"Bearer {session['token']}"))
+        self.assertEqual(identity.tenant_id, "tenant_a")
+        self.assertEqual(identity.role, "VIEWER")
 
         linked = sso_api._user_repository.get_user_by_sso("google", "google-sub-1")
         self.assertIsNotNone(linked)
@@ -243,7 +275,11 @@ class SsoApiTests(unittest.TestCase):
             response = self.client.get("/api/auth/oidc/callback?code=x&state=y")
 
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.json()["access_token"])
+        self.assertIn("text/html", response.headers["content-type"])
+        session = _extract_session_from_bridge_html(response.text)
+        self.assertTrue(session["token"])
+        self.assertEqual(session["tenantId"], "tenant_a")
+        self.assertEqual(session["role"], "ADMIN")
 
     def test_callback_raises_appropriately_on_token_error(self):
         with patch.object(sso_api.oidc, "exchange_code_for_identity", side_effect=oidc.OidcTokenError("bad state")):

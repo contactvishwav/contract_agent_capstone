@@ -4,6 +4,8 @@ import { ChatPage } from './pages/ChatPage';
 import { IntelligencePage } from './pages/IntelligencePage';
 import { DocumentationPage } from './pages/DocumentationPage';
 import { SearchPage } from './pages/SearchPage';
+import { AccountPage } from './pages/AccountPage';
+import { AcceptInvitePage } from './pages/AcceptInvitePage';
 import { ErrorBoundary } from './components/shared/ErrorBoundary';
 import { ContractHistoryProvider } from './contexts/ContractHistoryContext';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
@@ -22,6 +24,8 @@ function AuthenticatedApp() {
         return <IntelligencePage />;
       case 'agents':
         return <DocumentationPage />;
+      case 'account':
+        return <AccountPage />;
       case 'search':
         return (
           <ErrorBoundary>
@@ -49,6 +53,19 @@ function Gate() {
 }
 
 function App() {
+  // The invite-accept link (auth_api.py's create_invite builds it as
+  // "{FRONTEND_BASE_URL}/accept-invite?token=...") needs to render before
+  // the normal auth Gate below - the whole point of this page is that its
+  // visitor doesn't have a session yet. No client-side router exists in
+  // this app (useRouter.ts is in-memory page-switching, not URL-based), so
+  // this is a deliberately minimal, one-off path check rather than pulling
+  // in a routing library for a single real route.
+  const params = new URLSearchParams(window.location.search);
+  const inviteToken = window.location.pathname === '/accept-invite' ? params.get('token') : null;
+  if (inviteToken) {
+    return <AcceptInvitePage token={inviteToken} />;
+  }
+
   return (
     <AuthProvider>
       <ContractHistoryProvider>

@@ -2,10 +2,11 @@ import React from 'react';
 import { Button } from '../shared/ui/button';
 import { UserCircle2, LogOut } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
+import { PageType } from '../../lib/useRouter';
 
 interface NavigationProps {
-  currentPage: 'chat' | 'intelligence' | 'agents' | 'search';
-  onNavigate: (page: 'chat' | 'intelligence' | 'agents' | 'search') => void;
+  currentPage: PageType;
+  onNavigate: (page: PageType) => void;
 }
 
 export const Navigation: React.FC<NavigationProps> = ({ currentPage, onNavigate }) => {
@@ -50,14 +51,18 @@ export const Navigation: React.FC<NavigationProps> = ({ currentPage, onNavigate 
           </div>
           {session && (
             <div className="flex items-center gap-3">
-              <div className="flex items-center gap-1.5 text-sm text-slate-600">
+              <button
+                onClick={() => onNavigate('account')}
+                className={`flex items-center gap-1.5 text-sm rounded-md px-2 py-1 -mx-2 -my-1 transition-colors ${currentPage === 'account' ? 'bg-slate-100 text-slate-800' : 'text-slate-600 hover:bg-slate-50'}`}
+                title="Account & security"
+              >
                 <UserCircle2 className="h-4 w-4 text-slate-400" />
                 <span>
                   Logged in as <span className="font-medium text-slate-800">{session.tenantId}</span>
                   {' · '}
                   <span className="font-medium text-slate-800">{session.role}</span>
                 </span>
-              </div>
+              </button>
               <Button
                 variant="ghost"
                 size="sm"
