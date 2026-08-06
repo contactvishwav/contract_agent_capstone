@@ -138,7 +138,7 @@ async def upload_pdf_enhanced(
             if enable_embeddings:
                 # Create service with injected agent manager
                 enhanced_document_service = EnhancedDocumentServiceFactory.create_service(llm_mgr)
-                result = enhanced_document_service.process_pdf_with_embeddings(processing_request)
+                result = await enhanced_document_service.process_pdf_with_embeddings(processing_request)
             else:
                 # Fallback to regular processing
                 from backend.application.services.document_processing_service import DocumentServiceFactory

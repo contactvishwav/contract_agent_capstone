@@ -23,34 +23,34 @@ class EnhancedDocumentProcessingService:
         self.embedding_validator = EmbeddingValidator()
         self.graph = graph
     
-    def process_pdf_with_embeddings(self, request: DocumentProcessingRequest) -> dict:
+    async def process_pdf_with_embeddings(self, request: DocumentProcessingRequest) -> dict:
         """
         Process uploaded PDF with enhanced multi-level embeddings
         """
-        
+
         try:
             logger.info(f"Starting enhanced PDF processing for: {request.filename}")
-            
+
             # 1. Validate file exists
             if not os.path.exists(request.file_path):
                 raise FileNotFoundError(f"File not found: {request.file_path}")
-            
+
             # 2. Get appropriate LLM model
             model_name = request.processing_options.get("model", "gemini-2.5-flash")
             llm = self._get_llm_for_model(model_name)
-            
+
             # 3. Create PDF processing agent
             pdf_agent = self.pdf_agent_factory.create_agent(llm)
-            
+
             # 4. Process document using agent
-            result = self._process_with_enhanced_embeddings(pdf_agent, request)
-            
+            result = await self._process_with_enhanced_embeddings(pdf_agent, request)
+
             # 5. Clean up temporary file
             self._cleanup_file(request.file_path)
-            
+
             logger.info(f"Enhanced PDF processing completed for: {request.filename}")
             return result
-            
+
         except Exception as e:
             logger.error(f"Enhanced PDF processing failed for {request.filename}: {e}")
             self._cleanup_file(request.file_path)
@@ -80,7 +80,7 @@ class EnhancedDocumentProcessingService:
         else:
             raise ValueError(f"Unknown model: {model_name}")
     
-    def _process_with_enhanced_embeddings(self, pdf_agent, request: DocumentProcessingRequest) -> dict:
+    async def _process_with_enhanced_embeddings(self, pdf_agent, request: DocumentProcessingRequest) -> dict:
         """Process document with enhanced embeddings"""
         
         # Start workflow tracking
@@ -105,8 +105,13 @@ class EnhancedDocumentProcessingService:
         logger.info("Starting PDF agent processing with enhanced embeddings")
         
         try:
-            # Run the PDF agent workflow
-            final_state = pdf_agent.invoke(initial_state)
+            # Run the PDF agent workflow. Must be ainvoke, not invoke: this
+            # graph's store_contract node (pdf_processing_agent.py) is
+            # `async def` (it awaits Neo4jContractRepository.store_contract),
+            # and LangGraph refuses to run an async node from a sync
+            # .invoke() call - "No synchronous function provided" is that
+            # refusal, not a real processing error.
+            final_state = await pdf_agent.ainvoke(initial_state)
             processing_result = final_state.get("processing_result")
             extracted_text = final_state.get("extracted_text", "")
             
