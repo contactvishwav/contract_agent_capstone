@@ -407,7 +407,24 @@ class IntelligenceOrchestrator:
     async def _analyze_with_planning(self, contract_text: str, contract_id: Optional[str] = None, tenant_id: Optional[str] = None, contract_type: Optional[str] = None) -> dict:
         """Analyze contract using autonomous planning agent"""
         logger.info("🧠 STEP 1: Starting Planning Agent Analysis")
-        
+
+        # Real bug found live: execute_plan's own comment claims "planning
+        # agent already started it" and unconditionally calls workflow_
+        # tracker.complete_workflow() at the end - but nothing in this
+        # method (or PlanningAgent) ever called start_workflow(). Every
+        # planning-path run raised "unsupported operand type(s) for -:
+        # 'datetime.datetime' and 'NoneType'" inside complete_workflow()
+        # (workflow_start_time was still None), which the outer except
+        # here silently converted into a full fallback to the traditional
+        # workflow - so the planning path (the documented default,
+        # use_planning=True everywhere) had never actually completed a
+        # single real analysis; every result looked plausible only because
+        # the fallback produces a structurally valid one. start_agent/
+        # complete_agent (used throughout this method) track individual
+        # agents, not the overall workflow timer - a different pair of
+        # methods on the same tracker, confused here.
+        workflow_tracker.start_workflow()
+
         try:
             # Step 1: Track planning agent
             planning_execution = workflow_tracker.start_agent(

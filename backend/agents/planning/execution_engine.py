@@ -392,8 +392,11 @@ class PlanExecutionEngine:
             "execution_start": datetime.now()
         }
         
-        # Don't reset workflow tracker - planning agent already started it
-        # workflow_tracker.start_workflow()
+        # Don't call workflow_tracker.start_workflow() here - the caller
+        # (contract_intelligence_agents.py's _analyze_with_planning) now
+        # genuinely does this before invoking execute_plan (a real bug,
+        # found live, until it did - see that method's own comment).
+        # complete_workflow() below assumes start_workflow() already ran.
 
         publish_step_progress(contract_id, "workflow", "started", plan_id=plan.plan_id, step_count=len(plan.steps))
 
