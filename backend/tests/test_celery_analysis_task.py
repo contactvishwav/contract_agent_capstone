@@ -39,6 +39,9 @@ def _fake_intelligence(processing_complete=True, node_status=None, risk_level="L
         ),
         redlines=[],
         cuad_deviations=[], jurisdiction_info={}, precedent_matches=[],
+        # Supervisor rebuild fields - see domain/entities.py's
+        # ContractIntelligence and tasks.py's _intelligence_to_response_dict.
+        quality_grade={}, escalated=False, analysis_method=None,
     )
 
 

@@ -49,6 +49,14 @@ def _intelligence_to_response_dict(contract_id: str, model: str, intelligence) -
         "processing_time": intelligence.processing_time,
         "model_used": model,
         "phase_used": "phase3_optimized",
+        # Supervisor rebuild: real A-F grade, escalation flag, and which
+        # CUAD mitigation tier actually ran - see PlanExecutionEngine.
+        # _format_final_results. Empty/False/None when analysis ran via
+        # the traditional (non-planning) workflow, which doesn't compute
+        # these.
+        "quality_grade": intelligence.quality_grade,
+        "escalated": intelligence.escalated,
+        "analysis_method": intelligence.analysis_method,
         "results": {
             "clauses": [
                 {

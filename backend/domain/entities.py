@@ -112,6 +112,15 @@ class ContractIntelligence:
     node_status: Dict[str, str] = None
     processing_complete: bool = True
 
+    # Supervisor rebuild: A-F quality grade (backend/agents/supervisor/
+    # quality_grader.py), whether this analysis needs human review (any
+    # step genuinely "failed", not just "partial"), and which CUAD
+    # mitigation tier actually ran (real Phase3->Phase2->Phase1 "Degrade"
+    # fallback, previously computed and discarded before reaching here).
+    quality_grade: Dict[str, Any] = None
+    escalated: bool = False
+    analysis_method: Optional[str] = None
+
     def __post_init__(self):
         if self.cuad_deviations is None:
             self.cuad_deviations = []
@@ -121,6 +130,8 @@ class ContractIntelligence:
             self.precedent_matches = []
         if self.node_status is None:
             self.node_status = {}
+        if self.quality_grade is None:
+            self.quality_grade = {}
 
 @dataclass
 class AgentMessage:
