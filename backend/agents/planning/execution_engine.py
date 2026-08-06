@@ -11,6 +11,8 @@ from backend.agents.intelligence_tools import (
     RiskCalculatorTool, RedlineGeneratorTool
 )
 from backend.agents.agent_workflow_tracker import workflow_tracker
+from backend.agents.supervisor.quality_grader import grade_analysis
+from backend.shared.reliability.circuit_breaker import GEMINI_CIRCUIT_BREAKER
 from google.api_core.exceptions import ResourceExhausted
 import json
 
@@ -409,7 +411,7 @@ class PlanExecutionEngine:
                 logger.info(f"🚀 EXEC STEP 4.{i+1}b: Executing step {step.step_id}")
                 result = await self.step_executor.execute_step(step, self.execution_context)
                 step_results[step.step_id] = result
-                step_status[step.step_type.value] = self._compute_step_status(result)
+                step_status[step.step_type.value] = self._compute_step_status(result, step.step_type)
                 logger.info(f"🚀 EXEC STEP 4.{i+1}c: Step {step.step_id} completed, success: {result.success}")
 
                 # Update context with results
@@ -440,7 +442,7 @@ class PlanExecutionEngine:
             if not step_results[dep_id].success:
                 logger.warning(f"Dependency {dep_id} failed for step {step.step_id}")
     
-    def _compute_step_status(self, result: ExecutionResult) -> str:
+    def _compute_step_status(self, result: ExecutionResult, step_type: Optional[StepType] = None) -> str:
         """
         "success" / "failed" as before, plus a new "partial" state for a
         step that completed (no exception, ExecutionResult.success=True) but
@@ -449,6 +451,21 @@ class PlanExecutionEngine:
         (backend/agents/intelligence_tools.py's PolicyCheckerTool._run),
         threaded through as output_data["status"] when output_data is a
         dict. Anything else keeps the original binary success/failed.
+
+        EXTRACT_CLAUSES special case (a real gap found live): ClauseDetector
+        Tool._run catches every exception from LLMExtractionService.extract_
+        clauses - including CircuitBreakerOpenError - and returns an empty
+        list, which this method would otherwise report as an ordinary
+        "success" with zero clauses. That's indistinguishable from "this
+        contract genuinely has no CUAD clauses" (vanishingly rare for a real
+        contract) from "the Gemini circuit breaker was open and nothing was
+        actually attempted." Checking the real, already-built circuit
+        breaker's live state here - only when the step's own result came
+        back empty, so a real successful extraction is never second-guessed
+        - surfaces that distinction using a signal that already exists,
+        rather than reshaping ClauseDetectorTool's return type (which
+        `extracted_clauses` is consumed as a bare list in several other
+        places for).
         """
         if not result.success:
             return "failed"
@@ -458,6 +475,12 @@ class PlanExecutionEngine:
                 return "partial"
             if tool_status == "failure":
                 return "failed"
+        if (
+            step_type == StepType.EXTRACT_CLAUSES
+            and not result.output_data
+            and GEMINI_CIRCUIT_BREAKER.get_status()["state"] != "closed"
+        ):
+            return "failed"
         return "success"
 
     def _update_context_with_result(self, step: ExecutionStep, result: ExecutionResult):
@@ -501,7 +524,7 @@ class PlanExecutionEngine:
         # must also block a dishonest "processing_complete: True", not just
         # a hard "failed".
         any_failed = any(s in ("failed", "partial") for s in step_status.values())
-        return {
+        result = {
             "clauses": self.execution_context.get("extracted_clauses", []),
             "violations": self.execution_context.get("policy_violations", []),
             "risk_assessment": self.execution_context.get("risk_data", {}),
@@ -514,10 +537,15 @@ class PlanExecutionEngine:
             "processing_complete": not any_failed,
             "planned_execution": True
         }
+        # Built on signals already in `result` above - see quality_grader.py's
+        # module docstring for the full rationale. Additive: nothing above
+        # this line changes shape.
+        result["quality_grade"] = grade_analysis(result)
+        return result
 
     def _format_error_results(self, error_message: str, step_status: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """Format error results"""
-        return {
+        result = {
             "clauses": [],
             "violations": [],
             "risk_assessment": {"overall_risk_score": 0, "risk_level": "UNKNOWN"},
@@ -526,3 +554,5 @@ class PlanExecutionEngine:
             "processing_complete": False,
             "error": error_message
         }
+        result["quality_grade"] = grade_analysis(result)
+        return result
