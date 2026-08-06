@@ -20,6 +20,25 @@ services:
       - JWT_SECRET_KEY=${JWT_SECRET_KEY-}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY-}
       - PHOENIX_COLLECTOR_ENDPOINT=http://phoenix:6006/v1/traces
+      # Google OIDC / org invites (credential-provisioning engagement) -
+      # only api/auth_api.py + api/sso_api.py (this service) touch these;
+      # `worker` runs Celery's analyze_contract_task, which never does, so
+      # it's deliberately not duplicated in that service's environment
+      # block below. Secrets get an empty-string fallback (never a real
+      # value baked into this file) exactly like GOOGLE_API_KEY/
+      # JWT_SECRET_KEY/ENCRYPTION_KEY above; the two non-secret ones
+      # (redirect URI, sandbox sender) get a real usable default, same
+      # convention as NEO4J_URI/REDIS_URL.
+      - GOOGLE_OAUTH_CLIENT_ID=${GOOGLE_OAUTH_CLIENT_ID-}
+      - GOOGLE_OAUTH_CLIENT_SECRET=${GOOGLE_OAUTH_CLIENT_SECRET-}
+      - GOOGLE_OAUTH_REDIRECT_URI=${GOOGLE_OAUTH_REDIRECT_URI-http://localhost:8000/api/auth/oidc/callback}
+      - RESEND_API_KEY=${RESEND_API_KEY-}
+      - INVITE_EMAIL_FROM=${INVITE_EMAIL_FROM-onboarding@resend.dev}
+      # Defaults to the `ui` service's host-mapped port (3000:5173 below),
+      # not Vite's bare dev-server default (5173) - a browser hitting this
+      # link is on the host, same as it is for GOOGLE_OAUTH_REDIRECT_URI
+      # above, not the Docker-internal network.
+      - FRONTEND_BASE_URL=${FRONTEND_BASE_URL-http://localhost:3000}
     depends_on:
       neo4j:
         condition: service_healthy
