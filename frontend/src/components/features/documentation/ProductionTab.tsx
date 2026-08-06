@@ -45,11 +45,16 @@ export const ProductionTab: React.FC = () => {
             <h3 className="font-semibold text-lg mb-4 flex items-center gap-2">
               🛡️ Security & Compliance
             </h3>
+            {/* Authentication/Authorization (multi-tenant access control,
+                role-based permissions, SSO) removed from this roadmap - all
+                real and shipped (JWT auth + RBAC, org invites, TOTP MFA,
+                Google OIDC SSO - backend/api/auth_api.py, sso_api.py), not
+                future work. See docs/CAPSTONE_SUMMARY.md for the build
+                history. Same correction discipline already applied to the
+                Supervisor Agent tab and README earlier this engagement -
+                a roadmap of what's still needed shouldn't list what's
+                already done. */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="bg-white border border-slate-200 p-4 rounded-lg hover:shadow-md transition-shadow">
-                <h4 className="font-medium mb-2 text-red-700">Authentication/Authorization</h4>
-                <p className="text-sm text-slate-600">Multi-tenant access control, role-based permissions, SSO integration</p>
-              </div>
               <div className="bg-white border border-slate-200 p-4 rounded-lg hover:shadow-md transition-shadow">
                 <h4 className="font-medium mb-2 text-red-700">Data Security</h4>
                 <p className="text-sm text-slate-600">End-to-end encryption, secure key management, PII/PHI protection</p>

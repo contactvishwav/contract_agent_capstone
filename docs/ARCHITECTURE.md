@@ -239,11 +239,24 @@ services:
 
 ## Future Enhancements
 
-- **Authentication**: User management and access control
-- **Persistence**: Database storage for conversation history
-- **Monitoring**: Logging and analytics integration
-- **Scaling**: Multi-instance deployment support
-- **Additional Tools**: More specialized contract analysis capabilities
+This section previously listed Authentication and Monitoring as future
+work - both are fully implemented and shipped (real JWT auth with RBAC,
+org invites, TOTP MFA, and Google OIDC SSO in `backend/api/auth_api.py`/
+`sso_api.py`; real Prometheus metrics, health checks, and LLM cost/
+hallucination tracking in `backend/shared/monitoring/`) - see
+`docs/CAPSTONE_SUMMARY.md` for the full build history. Removed rather than
+left inaccurate, per this project's own documentation-accuracy discipline
+(the same correction already applied to the README and the in-app
+Documentation tab).
+
+Genuinely still open:
+
+- **Persistence**: Database storage for conversation history - Contract
+  Chat's history is not currently persisted anywhere; confirmed absent,
+  not just unlisted.
+- **Scaling**: Multi-instance deployment support - a single-VM deployment
+  (GCP e2-micro) by design, not a gap (`docs/CAPSTONE_SUMMARY.md` §10).
+- **Additional Tools**: More specialized contract analysis capabilities.
 
 ## Key Design Decisions
 
