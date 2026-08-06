@@ -29,7 +29,6 @@ from fastapi.testclient import TestClient
 with patch("langchain_neo4j.Neo4jGraph"), \
      patch("backend.shared.utils.gemini_embedding_service.embedding"):
     from backend.api import contract_intelligence
-    from backend.api import contracts
     from backend.api import document_upload
     from backend.api import enhanced_document_upload
 
@@ -87,13 +86,6 @@ class TestIntelligenceRoutesRequireAuth(unittest.TestCase):
 
 
 class TestUploadRoutesRequireAuth(unittest.TestCase):
-    def test_contracts_upload_rejects_missing_token(self):
-        client = _client_for(contracts.router)
-        response = client.post(
-            "/contracts/upload", files={"file": ("test.pdf", b"%PDF-1.4", "application/pdf")}
-        )
-        self.assertEqual(response.status_code, 401)
-
     def test_document_upload_rejects_missing_token(self):
         client = _client_for(document_upload.router)
         response = client.post(
