@@ -31,6 +31,13 @@ class AuditEventType(Enum):
     AGENT_THOUGHT = "agent_thought"
     MODEL_GUARD_CHECK = "model_guard_check"
     USER_INTERACTION = "user_interaction"
+    # A completed workflow had at least one step genuinely "failed" (not
+    # just "partial") - a single roll-up event marking the whole analysis
+    # as needing human review, distinct from the routine per-tool
+    # AGENT_TOOL_CALL failure events already logged for each individual
+    # step. Queryable via the existing GET /api/audit/trail/{resource_id}
+    # route - no new query endpoint needed.
+    WORKFLOW_ESCALATION = "workflow_escalation"
 
 class AuditLogger:
     """Centralized audit logging with Neo4j persistence"""

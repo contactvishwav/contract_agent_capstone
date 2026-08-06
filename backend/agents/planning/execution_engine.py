@@ -426,12 +426,41 @@ class PlanExecutionEngine:
             workflow_tracker.complete_workflow()
 
             # Return final results in expected format
-            return self._format_final_results(step_status)
+            result = self._format_final_results(step_status)
+            self._log_escalation_if_needed(result, contract_id, tenant_id)
+            return result
 
         except Exception as e:
             logger.error(f"Plan execution failed: {e}")
             workflow_tracker.complete_workflow()
-            return self._format_error_results(str(e), step_status)
+            result = self._format_error_results(str(e), step_status)
+            self._log_escalation_if_needed(result, contract_id, tenant_id)
+            return result
+
+    def _log_escalation_if_needed(self, result: Dict[str, Any], contract_id: Optional[str], tenant_id: Optional[str]) -> None:
+        """Writes one roll-up WORKFLOW_ESCALATION audit event when
+        result["escalated"] is True (see _format_final_results/_format_
+        error_results for how that's computed) - queryable via the
+        existing GET /api/audit/trail/{contract_id} route. Never raises: a
+        logging failure must not turn an already-computed real analysis
+        result into a hard error."""
+        if not result.get("escalated"):
+            return
+        try:
+            from backend.infrastructure.audit_logger import AuditLogger, AuditEventType
+            AuditLogger().log_event(
+                event_type=AuditEventType.WORKFLOW_ESCALATION,
+                resource_id=contract_id or "unknown",
+                tenant_id=tenant_id or "demo_tenant_1",
+                action="workflow_escalation",
+                metadata={
+                    "node_status": result.get("node_status", {}),
+                    "quality_grade": result.get("quality_grade", {}).get("grade"),
+                },
+                status="failure",
+            )
+        except Exception as e:
+            logger.warning(f"Failed to log workflow escalation audit event: {e}")
     
     async def _wait_for_dependencies(self, step: ExecutionStep, step_results: Dict[str, ExecutionResult]):
         """Wait for step dependencies to complete"""
@@ -505,6 +534,14 @@ class PlanExecutionEngine:
             self.execution_context["cuad_deviations"] = cuad_data.get("cuad_deviations", [])
             self.execution_context["jurisdiction_info"] = cuad_data.get("jurisdiction_info", {})
             self.execution_context["precedent_matches"] = cuad_data.get("precedent_matches", [])
+            # Real "Degrade" recovery, already running (_execute_cuad_
+            # mitigation's Phase3 -> Phase2 -> Phase1 fallback cascade) but
+            # previously discarded here immediately after being computed -
+            # analysis_method never reached execution_context or the API
+            # response, so a degraded-but-successful analysis looked
+            # identical to a full Phase-3 one. Surfaced now via
+            # _format_final_results's "analysis_method" field.
+            self.execution_context["cuad_analysis_method"] = cuad_data.get("analysis_method")
             # Previously discarded entirely - AdaptiveAnalyzer's output
             # (baseline + any learned-pattern risk adjustment per clause)
             # never reached execution_context or the response. Falls back
@@ -524,6 +561,13 @@ class PlanExecutionEngine:
         # must also block a dishonest "processing_complete: True", not just
         # a hard "failed".
         any_failed = any(s in ("failed", "partial") for s in step_status.values())
+        # "Escalate" recovery signal: any step that genuinely failed
+        # outright (not just "partial") marks the whole workflow for human
+        # review - broader/more sensitive than the quality grade, which
+        # can be F purely from a low grounding rate with no step literally
+        # failing. execute_plan writes the actual WORKFLOW_ESCALATION
+        # audit event; this flag is what it's computed from.
+        escalated = any(s == "failed" for s in step_status.values())
         result = {
             "clauses": self.execution_context.get("extracted_clauses", []),
             "violations": self.execution_context.get("policy_violations", []),
@@ -533,8 +577,10 @@ class PlanExecutionEngine:
             "jurisdiction_info": self.execution_context.get("jurisdiction_info", {}),
             "precedent_matches": self.execution_context.get("precedent_matches", []),
             "validation": self.execution_context.get("validation_results", {}),
+            "analysis_method": self.execution_context.get("cuad_analysis_method"),
             "node_status": step_status,
             "processing_complete": not any_failed,
+            "escalated": escalated,
             "planned_execution": True
         }
         # Built on signals already in `result` above - see quality_grader.py's
@@ -545,13 +591,18 @@ class PlanExecutionEngine:
 
     def _format_error_results(self, error_message: str, step_status: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """Format error results"""
+        step_status = step_status or {}
         result = {
             "clauses": [],
             "violations": [],
             "risk_assessment": {"overall_risk_score": 0, "risk_level": "UNKNOWN"},
             "redlines": [],
-            "node_status": step_status or {},
+            "analysis_method": None,
+            "node_status": step_status,
             "processing_complete": False,
+            # A hard abort always warrants review, regardless of whether
+            # any individual step had already been marked "failed" yet.
+            "escalated": True,
             "error": error_message
         }
         result["quality_grade"] = grade_analysis(result)
