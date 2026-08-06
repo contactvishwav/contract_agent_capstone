@@ -11,6 +11,7 @@ from backend.agents.intelligence_tools import (
     RiskCalculatorTool, RedlineGeneratorTool
 )
 from backend.agents.agent_workflow_tracker import workflow_tracker
+from backend.agents.supervisor.progress_publisher import publish_step_progress
 from backend.agents.supervisor.quality_grader import grade_analysis
 from backend.shared.reliability.circuit_breaker import GEMINI_CIRCUIT_BREAKER
 from google.api_core.exceptions import ResourceExhausted
@@ -393,7 +394,9 @@ class PlanExecutionEngine:
         
         # Don't reset workflow tracker - planning agent already started it
         # workflow_tracker.start_workflow()
-        
+
+        publish_step_progress(contract_id, "workflow", "started", plan_id=plan.plan_id, step_count=len(plan.steps))
+
         step_results: Dict[str, ExecutionResult] = {}
         step_status: Dict[str, str] = {}
 
@@ -411,7 +414,9 @@ class PlanExecutionEngine:
                 logger.info(f"🚀 EXEC STEP 4.{i+1}b: Executing step {step.step_id}")
                 result = await self.step_executor.execute_step(step, self.execution_context)
                 step_results[step.step_id] = result
-                step_status[step.step_type.value] = self._compute_step_status(result, step.step_type)
+                status = self._compute_step_status(result, step.step_type)
+                step_status[step.step_type.value] = status
+                publish_step_progress(contract_id, step.step_type.value, status, step_id=step.step_id)
                 logger.info(f"🚀 EXEC STEP 4.{i+1}c: Step {step.step_id} completed, success: {result.success}")
 
                 # Update context with results
@@ -428,6 +433,7 @@ class PlanExecutionEngine:
             # Return final results in expected format
             result = self._format_final_results(step_status)
             self._log_escalation_if_needed(result, contract_id, tenant_id)
+            publish_step_progress(contract_id, "workflow", "complete", grade=result.get("quality_grade", {}).get("grade"))
             return result
 
         except Exception as e:
@@ -435,6 +441,7 @@ class PlanExecutionEngine:
             workflow_tracker.complete_workflow()
             result = self._format_error_results(str(e), step_status)
             self._log_escalation_if_needed(result, contract_id, tenant_id)
+            publish_step_progress(contract_id, "workflow", "failed", error=str(e))
             return result
 
     def _log_escalation_if_needed(self, result: Dict[str, Any], contract_id: Optional[str], tenant_id: Optional[str]) -> None:

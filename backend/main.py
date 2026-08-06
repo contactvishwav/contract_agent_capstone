@@ -149,6 +149,11 @@ app.include_router(auth_router)
 from backend.api.policy_api import router as policy_router
 app.include_router(policy_router)
 
+# Supervisor Agent API - real rebuild, not the deleted dead-code path
+# (docs/CAPSTONE_SUMMARY.md §8)
+from backend.api.supervisor_api import router as supervisor_router
+app.include_router(supervisor_router)
+
 # Debug routes (development only)
 debug_router = create_debug_router()
 conditionally_include_router(app, debug_router, is_development())

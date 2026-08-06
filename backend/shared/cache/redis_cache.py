@@ -132,11 +132,39 @@ class InMemoryCache:
                 self._cache[key] = existing[start:] if end == -1 else existing[start:end + 1]
             return True
 
+    def publish(self, channel: str, message: str) -> int:
+        # No real pub/sub without real Redis - see progress_publisher.py's
+        # module docstring for why this is a safe no-op (returns 0
+        # subscribers) rather than raising. Live per-step progress simply
+        # isn't available in this degraded fallback mode; every other
+        # real feature that reads the published result afterward
+        # (node_status, the audit trail, quality_grade) is unaffected.
+        return 0
+
+    def pubsub(self):
+        return _NullPubSub()
+
     def lrange(self, key: str, start: int, end: int) -> list:
         existing = self._cache.get(key)
         if not isinstance(existing, list):
             return []
         return existing[start:] if end == -1 else existing[start:end + 1]
+
+
+class _NullPubSub:
+    """Stand-in for redis-py's PubSub object when running against the
+    InMemoryCache fallback (no real Redis reachable) - subscribing works
+    but get_message always reports nothing available, since there is no
+    real cross-process channel to deliver on."""
+
+    def subscribe(self, *channels, **kwargs):
+        pass
+
+    def get_message(self, timeout: Optional[float] = None, **kwargs) -> Optional[dict]:
+        return None
+
+    def close(self):
+        pass
 
 # Global cache instance
 cache = RedisCache()
