@@ -1,18 +1,20 @@
 import hashlib
 import json
-from typing import Any, List, Optional, Type
+from typing import Any, Dict, List, Optional, Type
 from enum import Enum
 from dotenv import load_dotenv
 from langchain_core.tools import BaseTool
 from backend.shared.utils.gemini_embedding_service import embedding
 from langchain_neo4j import Neo4jGraph
 from pydantic import BaseModel, Field
+from backend.agents.reranker_service import RerankerService, get_reranker_llm
 from backend.infrastructure.encryption import field_encryptor
 from backend.shared.cache.redis_cache import cache
 from backend.shared.config.phase3_config import Phase3Config
 from backend.shared.utils.vector_index_config import (
     CONTRACT_EMBEDDING_INDEX, SECTION_EMBEDDING_INDEX, CLAUSE_EMBEDDING_INDEX,
     CHUNK_EMBEDDING_INDEX, VECTOR_SEARCH_OVERFETCH, CHUNK_TEXT_SEARCH_CANDIDATE_LIMIT,
+    RERANK_POOL_SIZE, RERANK_TOP_K,
 )
 from backend.shared.utils.logger import get_logger
 
@@ -48,6 +50,45 @@ graph: Neo4jGraph = Neo4jGraph(
 )
 # embedding imported from gemini_embedding_service (1536 dimensions)
 
+def _cypher_page_size(summary_search: Optional[str]) -> int:
+    """
+    Mirrors search_strategies.py's identical helper: RERANK_POOL_SIZE
+    (wider) when re-ranking will actually run for this request (flag on
+    AND real query text present), else the original page size this file
+    has always used (10) - no reason to overfetch a wider candidate pool
+    just to immediately truncate it back down when there's nothing to
+    rerank with.
+    """
+    if Phase3Config.RERANKING_ENABLED and summary_search:
+        return RERANK_POOL_SIZE
+    return 10
+
+
+def _maybe_rerank(query: Optional[str], items: List[Dict[str, Any]], text_key: str):
+    """
+    Mirrors search_strategies.py's identical helper, adapted to this
+    file's flat-kwargs calling convention (no SearchParams/SearchResult
+    dataclasses here - see docs/CAPSTONE_SUMMARY.md's discussion of why
+    this file stays a separate implementation rather than sharing those
+    types). Returns (items, reranking_metadata_or_None) - callers only
+    add a "reranking" key to their result dict when metadata is not None,
+    so the response shape is byte-for-byte unchanged when the flag is off
+    or there's no query to rerank against.
+    """
+    if not (Phase3Config.RERANKING_ENABLED and query and items):
+        return items[:RERANK_TOP_K], None
+    try:
+        outcome = RerankerService(get_reranker_llm()).rerank(query, items, text_key=text_key, top_k=RERANK_TOP_K)
+    except Exception as e:
+        # See search_strategies.py's identical _maybe_rerank comment: a
+        # construction-time failure (get_reranker_llm()/RerankerService.
+        # __init__ itself raising, before RerankerService.rerank()'s own
+        # internal safety net exists) must not crash the whole search.
+        logger.error(f"Re-ranking setup failed, falling back to unranked results: {e}")
+        return items[:RERANK_TOP_K], {"applied": False, "reason": "error"}
+    return outcome.results, {"applied": outcome.reranked, "reason": outcome.reason}
+
+
 def _multi_level_search_cache_key(
     tenant_id: str, search_level: SearchLevel, clause_types, section_types,
     min_effective_date, max_effective_date, min_end_date, max_end_date,
@@ -77,6 +118,11 @@ def _multi_level_search_cache_key(
         "cypher_aggregation": cypher_aggregation,
         "monetary_value": monetary_value.model_dump() if monetary_value else None,
         "governing_law": governing_law.model_dump() if governing_law else None,
+        # Keyed so flipping RERANKING_ENABLED never serves a stale
+        # cached order (or a stale non-reranked page size) from the
+        # other setting - same requirement already applied to the REST
+        # path's cache key (search_strategies.py / §18).
+        "reranking_enabled": Phase3Config.RERANKING_ENABLED,
     }
     raw = f"vector_search:{json.dumps(key_data, sort_keys=True, default=str)}"
     return hashlib.sha256(raw.encode()).hexdigest()
@@ -107,6 +153,21 @@ def get_contracts_multi_level(
     deviation_analysis/jurisdiction_analysis (shared/cache/redis_cache.py),
     keyed on every filter that affects the result, not just the query text.
     """
+    # search_level arrives as a plain str, not a SearchLevel enum, whenever
+    # this is reached through Contract Chat: EnhancedContractSearchTool is
+    # tenant-scoped, so contract_chat_agent.py's execute_tools calls
+    # tool._run(**args) directly with the LLM's raw tool-call args,
+    # deliberately bypassing args_schema's pydantic validation/coercion
+    # (the same bypass that keeps tenant_id un-spoofable - see
+    # EnhancedContractInput's docstring). A real, pre-existing crash found
+    # live while verifying this session's re-ranking work through Contract
+    # Chat: _multi_level_search_cache_key's search_level.value raised
+    # AttributeError on a plain str. The dispatch below (search_level ==
+    # SearchLevel.X) already worked either way since SearchLevel is a str
+    # Enum, but .value access does not - normalizing once here fixes both.
+    if not isinstance(search_level, SearchLevel):
+        search_level = SearchLevel(search_level)
+
     cache_key = _multi_level_search_cache_key(
         tenant_id, search_level, clause_types, section_types,
         min_effective_date, max_effective_date, min_end_date, max_end_date,
@@ -199,6 +260,7 @@ def _search_documents(embeddings, tenant_id, summary_search, filters, params,
         if filters:
             cypher_statement += f"WHERE {' AND '.join(filters)} "
 
+    params["page_size"] = _cypher_page_size(summary_search)
     cypher_statement += """
     RETURN {
         total_count: count(c),
@@ -209,12 +271,19 @@ def _search_documents(embeddings, tenant_id, summary_search, filters, params,
             effective_date: c.effective_date,
             end_date: c.end_date,
             parties: [(c)<-[r:PARTY_TO]-(party) | {name: party.name, role: r.role}]
-        })[..10]
+        })[..$page_size]
     } AS result
     """
-    
+
     output = graph.query(cypher_statement, params)
-    return [convert_neo4j_date(el) for el in output]
+    converted = [convert_neo4j_date(el) for el in output]
+    if converted and "result" in converted[0]:
+        result_data = converted[0]["result"]
+        contracts, reranking = _maybe_rerank(summary_search, result_data.get("contracts", []), text_key="summary")
+        result_data["contracts"] = contracts
+        if reranking is not None:
+            result_data["reranking"] = reranking
+    return converted
 
 def _search_sections(embeddings, tenant_id, summary_search, section_types, filters, params):
     """Search at section level with tenant isolation"""
@@ -244,6 +313,7 @@ def _search_sections(embeddings, tenant_id, summary_search, section_types, filte
         if filters:
             cypher_statement += f"WHERE {' AND '.join(filters)} "
 
+    params["page_size"] = _cypher_page_size(summary_search)
     cypher_statement += """
     RETURN {
         total_count: count(s),
@@ -252,12 +322,19 @@ def _search_sections(embeddings, tenant_id, summary_search, section_types, filte
             section_type: s.section_type,
             content: s.content,
             order: s.order
-        })[..10]
+        })[..$page_size]
     } AS result
     """
-    
+
     output = graph.query(cypher_statement, params)
-    return [convert_neo4j_date(el) for el in output]
+    converted = [convert_neo4j_date(el) for el in output]
+    if converted and "result" in converted[0]:
+        result_data = converted[0]["result"]
+        sections, reranking = _maybe_rerank(summary_search, result_data.get("sections", []), text_key="content")
+        result_data["sections"] = sections
+        if reranking is not None:
+            result_data["reranking"] = reranking
+    return converted
 
 def _search_clauses(embeddings, tenant_id, summary_search, clause_types, filters, params):
     """Search at clause level with tenant isolation"""
@@ -287,6 +364,7 @@ def _search_clauses(embeddings, tenant_id, summary_search, clause_types, filters
         if filters:
             cypher_statement += f"WHERE {' AND '.join(filters)} "
 
+    params["page_size"] = _cypher_page_size(summary_search)
     cypher_statement += """
     RETURN {
         total_count: count(cl),
@@ -297,12 +375,32 @@ def _search_clauses(embeddings, tenant_id, summary_search, clause_types, filters
             confidence: cl.confidence,
             start_position: cl.start_position,
             end_position: cl.end_position
-        })[..10]
+        })[..$page_size]
     } AS result
     """
-    
+
     output = graph.query(cypher_statement, params)
-    return [convert_neo4j_date(el) for el in output]
+    converted = [convert_neo4j_date(el) for el in output]
+    if converted and "result" in converted[0]:
+        result_data = converted[0]["result"]
+        clauses = result_data.get("clauses", [])
+        # cl.content is encrypted at rest (clause_repository.py's write
+        # path: PIIEngine.redact then field_encryptor.encrypt) - this raw
+        # Cypher read bypassed that repository's own decrypt-on-read
+        # entirely, so this path has been returning base64 ciphertext as
+        # "clause content" to Contract Chat. The exact same bug already
+        # found and fixed in search_strategies.py's ClauseSearchStrategy
+        # (docs/CAPSTONE_SUMMARY.md §18) - found here while wiring
+        # re-ranking, fixed for the same reason: re-ranking a still-
+        # encrypted candidate would score ciphertext, not real clause
+        # text, silently. Decrypted BEFORE re-ranking.
+        for clause in clauses:
+            clause["content"] = field_encryptor.decrypt(clause.get("content") or "")
+        clauses, reranking = _maybe_rerank(summary_search, clauses, text_key="content")
+        result_data["clauses"] = clauses
+        if reranking is not None:
+            result_data["reranking"] = reranking
+    return converted
 
 def _search_relationships(embeddings, tenant_id, summary_search, parties, filters, params):
     """Search at relationship level with tenant isolation"""
@@ -328,6 +426,7 @@ def _search_relationships(embeddings, tenant_id, summary_search, parties, filter
     elif filters:
         cypher_statement += f"WHERE {' AND '.join(filters)} "
     
+    params["page_size"] = _cypher_page_size(summary_search)
     cypher_statement += """
     RETURN {
         total_count: count(r),
@@ -336,12 +435,19 @@ def _search_relationships(embeddings, tenant_id, summary_search, parties, filter
             party_name: p.name,
             role: r.role,
             context: r.context
-        })[..10]
+        })[..$page_size]
     } AS result
     """
-    
+
     output = graph.query(cypher_statement, params)
-    return [convert_neo4j_date(el) for el in output]
+    converted = [convert_neo4j_date(el) for el in output]
+    if converted and "result" in converted[0]:
+        result_data = converted[0]["result"]
+        relationships, reranking = _maybe_rerank(summary_search, result_data.get("relationships", []), text_key="context")
+        result_data["relationships"] = relationships
+        if reranking is not None:
+            result_data["reranking"] = reranking
+    return converted
 
 def _chunk_snippet(content: str) -> str:
     """Equivalent to the old substring(content, 0, 200) + '...' Cypher

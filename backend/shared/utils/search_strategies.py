@@ -5,11 +5,14 @@ from backend.domain.search_entities import SearchParams, SearchResult
 from backend.infrastructure.encryption import field_encryptor
 from backend.shared.config.phase3_config import Phase3Config
 from backend.shared.utils.contract_search_tool import graph, embedding
+from backend.shared.utils.logger import get_logger
 from backend.shared.utils.utils import convert_neo4j_date
 from backend.shared.utils.vector_index_config import (
     CONTRACT_EMBEDDING_INDEX, CLAUSE_EMBEDDING_INDEX, SECTION_EMBEDDING_INDEX,
     VECTOR_SEARCH_OVERFETCH, RERANK_POOL_SIZE, RERANK_TOP_K,
 )
+
+logger = get_logger(__name__)
 
 class SearchStrategy(ABC):
     """Abstract base class for search strategies (Strategy Pattern)"""
@@ -47,7 +50,22 @@ def _maybe_rerank(params: SearchParams, items: List[Dict[str, Any]], text_key: s
     if not (Phase3Config.RERANKING_ENABLED and params.query and items):
         return items[:RERANK_TOP_K], metadata
 
-    outcome = RerankerService(get_reranker_llm()).rerank(params.query, items, text_key=text_key, top_k=RERANK_TOP_K)
+    try:
+        outcome = RerankerService(get_reranker_llm()).rerank(params.query, items, text_key=text_key, top_k=RERANK_TOP_K)
+    except Exception as e:
+        # RerankerService.rerank() already catches failures *inside* its own
+        # LLM call and degrades gracefully (RerankOutcome.reranked=False) -
+        # but get_reranker_llm() or RerankerService.__init__() itself
+        # raising (e.g. a construction-time error) happens before any of
+        # that internal safety net exists. Without this try/except, that
+        # exception would propagate uncaught and crash the whole search
+        # request - a real gap found live while extending re-ranking to
+        # more search levels, and just as real for the original Document/
+        # Clause wiring this helper already served. Search must never
+        # hard-fail because re-ranking failed, full stop.
+        logger.error(f"Re-ranking setup failed, falling back to unranked results: {e}")
+        return items[:RERANK_TOP_K], {**metadata, "reranking": {"applied": False, "reason": "error"}}
+
     metadata = {**metadata, "reranking": {"applied": outcome.reranked, "reason": outcome.reason}}
     return outcome.results, metadata
 
@@ -260,6 +278,7 @@ class SectionSearchStrategy(SearchStrategy):
                 if filters:
                     cypher_statement += f"WHERE {' AND '.join(filters)} "
 
+            cypher_params["page_size"] = _cypher_page_size(params)
             cypher_statement += """
             RETURN {
                 total_count: count(s),
@@ -268,19 +287,21 @@ class SectionSearchStrategy(SearchStrategy):
                     section_type: s.section_type,
                     content: s.content,
                     order: s.order
-                })[..10]
+                })[..$page_size]
             } AS result
             """
-            
+
             output = graph.query(cypher_statement, cypher_params)
-            
+
             if output and len(output) > 0 and "result" in output[0]:
                 result_data = output[0]["result"]
                 sections = [convert_neo4j_date(section) for section in result_data.get("sections", [])]
+                metadata = {"search_level": "section", "section_types": params.section_types}
+                sections, metadata = _maybe_rerank(params, sections, text_key="content", metadata=metadata)
                 return SearchResult(
                     total_count=result_data.get("total_count", 0),
                     items=sections,
-                    search_metadata={"search_level": "section", "section_types": params.section_types}
+                    search_metadata=metadata
                 )
             
             return SearchResult(total_count=0, items=[], search_metadata={"search_level": "section"})
@@ -317,6 +338,7 @@ class RelationshipSearchStrategy(SearchStrategy):
             elif filters:
                 cypher_statement += f"WHERE {' AND '.join(filters)} "
             
+            cypher_params["page_size"] = _cypher_page_size(params)
             cypher_statement += """
             RETURN {
                 total_count: count(r),
@@ -325,19 +347,21 @@ class RelationshipSearchStrategy(SearchStrategy):
                     party_name: p.name,
                     role: r.role,
                     context: r.context
-                })[..10]
+                })[..$page_size]
             } AS result
             """
-            
+
             output = graph.query(cypher_statement, cypher_params)
-            
+
             if output and len(output) > 0 and "result" in output[0]:
                 result_data = output[0]["result"]
                 relationships = [convert_neo4j_date(rel) for rel in result_data.get("relationships", [])]
+                metadata = {"search_level": "relationship", "parties": params.parties}
+                relationships, metadata = _maybe_rerank(params, relationships, text_key="context", metadata=metadata)
                 return SearchResult(
                     total_count=result_data.get("total_count", 0),
                     items=relationships,
-                    search_metadata={"search_level": "relationship", "parties": params.parties}
+                    search_metadata=metadata
                 )
             
             return SearchResult(total_count=0, items=[], search_metadata={"search_level": "relationship"})
