@@ -1,5 +1,6 @@
 from backend.shared.utils.contract_search_tool import ContractSearchTool
 from backend.shared.utils.enhanced_contract_search_tool import EnhancedContractSearchTool
+from backend.mcp.langchain_tools import MCP_CHAT_TOOLS, MCP_CHAT_TOOL_NAMES
 from langchain_core.messages import SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import START, MessagesState, StateGraph
@@ -12,12 +13,15 @@ from datetime import date
 # come from the LLM - see the "tenant_id is deliberately NOT a field here"
 # comments on ContractInput/EnhancedContractInput. execute_tools injects it
 # directly into these tools' kwargs from the request's own auth context.
-_TENANT_SCOPED_TOOL_NAMES = {"ContractSearch", "EnhancedContractSearch"}
+# The 4 MCP-backed tools (MCP_CHAT_TOOL_NAMES) are tenant-scoped the same
+# way, plus also get a server-injected correlation_id - see the
+# MCP_CHAT_TOOL_NAMES branch below.
+_TENANT_SCOPED_TOOL_NAMES = {"ContractSearch", "EnhancedContractSearch"} | MCP_CHAT_TOOL_NAMES
 
 
 def get_agent(llm):
     # Define tools/llm
-    tools = [ContractSearchTool(), EnhancedContractSearchTool()]
+    tools = [ContractSearchTool(), EnhancedContractSearchTool(), *MCP_CHAT_TOOLS]
     llm_with_tools = llm.bind_tools(tools)
 
     # System message
@@ -70,6 +74,16 @@ def get_agent(llm):
         # invoked.
         tenant_id = (config.get("configurable") or {}).get("tenant_id") if config else None
 
+        # The HTTP request's own correlation_id (X-Correlation-ID, or a
+        # freshly-generated one - see TracingMiddleware), threaded the same
+        # way as tenant_id above rather than read from correlation_id_var
+        # inside this node: LangGraph may execute sync nodes like this one
+        # in a worker thread, and a contextvar set in the main request
+        # coroutine is not guaranteed to propagate there. Passing it
+        # explicitly through config["configurable"] (set in main.py's
+        # runner()) avoids that uncertainty entirely.
+        correlation_id = (config.get("configurable") or {}).get("correlation_id") if config else None
+
         # Simple tool execution without ToolNode
         if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
             # Execute tools manually
@@ -101,6 +115,8 @@ def get_agent(llm):
                                 # in tool_call['args'] itself is discarded
                                 # by this overwrite.
                                 args["tenant_id"] = tenant_id
+                                if tool.name in MCP_CHAT_TOOL_NAMES:
+                                    args["correlation_id"] = correlation_id
                                 result = tool._run(**args)
                             else:
                                 result = tool.invoke(args)

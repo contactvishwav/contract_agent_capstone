@@ -276,18 +276,23 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
     corr_id = correlation_id_var.get()
     run_tags = [f"correlation_id:{corr_id}"] if corr_id else []
     
-    # tenant_id travels via config["configurable"], not tool-call args - see
-    # contract_chat_agent.py's execute_tools, which reads it from here and
-    # injects it into the tenant-scoped tools' args itself. The LLM never
-    # sees or supplies tenant_id at all (removed from both tools' schemas),
-    # so there is no path for it to guess/fabricate a value that could
-    # reach another tenant's data - the authenticated JWT's tenant_id
-    # (identity.tenant_id, resolved server-side in the /api/run/ route) is
-    # the only source, matching every other tenant-scoped operation in
-    # this system.
+    # tenant_id and correlation_id travel via config["configurable"], not
+    # tool-call args - see contract_chat_agent.py's execute_tools, which
+    # reads both from here and injects them into the relevant tools' args
+    # itself. The LLM never sees or supplies tenant_id at all (removed from
+    # every tenant-scoped tool's schema), so there is no path for it to
+    # guess/fabricate a value that could reach another tenant's data - the
+    # authenticated JWT's tenant_id (identity.tenant_id, resolved
+    # server-side in the /api/run/ route) is the only source, matching
+    # every other tenant-scoped operation in this system. correlation_id is
+    # this request's own id (corr_id above, from TracingMiddleware) - it's
+    # not a security boundary, just threaded through the same explicit
+    # config path so it reaches the 4 MCP-backed chat tools without relying
+    # on a contextvar surviving into whatever thread LangGraph runs
+    # execute_tools in.
     messages = llm_mgr.get_model_by_name(model).astream(
         input={"messages": input_messages},
-        config={"tags": run_tags, "configurable": {"tenant_id": tenant_id}},
+        config={"tags": run_tags, "configurable": {"tenant_id": tenant_id, "correlation_id": corr_id}},
         stream_mode=["messages", "updates"]
     )
 
