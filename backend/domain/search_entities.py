@@ -12,6 +12,7 @@ class SearchLevel(str, Enum):
 @dataclass
 class SearchParams:
     search_level: SearchLevel
+    tenant_id: str
     query: Optional[str] = None
     clause_types: Optional[List[str]] = None
     section_types: Optional[List[str]] = None

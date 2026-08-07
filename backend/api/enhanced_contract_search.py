@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Depends
+from backend.governance.auth import TokenIdentity
 from backend.governance.rbac import Permission, requires_permission
 from typing import List, Optional
 from pydantic import BaseModel, Field
@@ -49,8 +50,11 @@ class EnhancedSearchRequest(BaseModel):
 # Initialize the enhanced search service
 search_service = EnhancedSearchService()
 
-@router.post("/search/enhanced", dependencies=[Depends(requires_permission(Permission.ANALYZE))])
-async def enhanced_contract_search(request: EnhancedSearchRequest):
+@router.post("/search/enhanced")
+async def enhanced_contract_search(
+    request: EnhancedSearchRequest,
+    identity: TokenIdentity = Depends(requires_permission(Permission.ANALYZE)),
+):
     """Enhanced contract search with multi-level embedding support"""
     try:
         logger.info("\n=== ENHANCED SEARCH ===")
@@ -58,10 +62,14 @@ async def enhanced_contract_search(request: EnhancedSearchRequest):
         logger.info(f"Query: {request.query}")
         logger.info(f"Contract Type: {request.contract_type}")
         logger.info(f"Active: {request.active}")
-        
-        # Convert request to search params
+
+        # Convert request to search params. tenant_id comes exclusively from
+        # the validated JWT (identity.tenant_id), never from the request
+        # body - there is no tenant_id field on EnhancedSearchRequest at all,
+        # so there is no way for a caller to smuggle a different tenant in.
         search_params = SearchParams(
             search_level=request.search_level,
+            tenant_id=identity.tenant_id,
             query=request.query,
             clause_types=request.clause_types,
             section_types=request.section_types,
@@ -97,51 +105,62 @@ async def enhanced_contract_search(request: EnhancedSearchRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
 
-@router.post("/search/clauses", dependencies=[Depends(requires_permission(Permission.ANALYZE))])
-async def search_clauses(request: ClauseSearchRequest):
+@router.post("/search/clauses")
+async def search_clauses(
+    request: ClauseSearchRequest,
+    identity: TokenIdentity = Depends(requires_permission(Permission.ANALYZE)),
+):
     """Search contracts by specific clause types"""
     try:
         search_params = SearchParams(
             search_level=SearchLevel.CLAUSE,
+            tenant_id=identity.tenant_id,
             query=request.query,
             clause_types=request.clause_types
         )
         result = search_service.search(search_params)
-        
-
-        
+        # Was previously computed and discarded (no return at all) - this
+        # route always sent the client an empty 200 response regardless of
+        # what the search found. Found and fixed in passing while adding
+        # tenant_id above; SearchResponseMapper is the same real mapper
+        # /search/enhanced already uses, not a new formatting path.
+        return SearchResponseMapper.to_api_response(result, "clause")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Clause search failed: {str(e)}")
 
-@router.post("/search/sections", dependencies=[Depends(requires_permission(Permission.ANALYZE))])
-async def search_sections(request: SectionSearchRequest):
+@router.post("/search/sections")
+async def search_sections(
+    request: SectionSearchRequest,
+    identity: TokenIdentity = Depends(requires_permission(Permission.ANALYZE)),
+):
     """Search contracts by document sections"""
     try:
         search_params = SearchParams(
             search_level=SearchLevel.SECTION,
+            tenant_id=identity.tenant_id,
             query=request.query,
             section_types=request.section_types
         )
         result = search_service.search(search_params)
-        
-
-        
+        return SearchResponseMapper.to_api_response(result, "section")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Section search failed: {str(e)}")
 
-@router.post("/search/relationships", dependencies=[Depends(requires_permission(Permission.ANALYZE))])
-async def search_relationships(request: RelationshipSearchRequest):
+@router.post("/search/relationships")
+async def search_relationships(
+    request: RelationshipSearchRequest,
+    identity: TokenIdentity = Depends(requires_permission(Permission.ANALYZE)),
+):
     """Search contracts by party relationships"""
     try:
         search_params = SearchParams(
             search_level=SearchLevel.RELATIONSHIP,
+            tenant_id=identity.tenant_id,
             query=request.query,
             parties=request.parties
         )
         result = search_service.search(search_params)
-        
-
-        
+        return SearchResponseMapper.to_api_response(result, "relationship")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Relationship search failed: {str(e)}")
 

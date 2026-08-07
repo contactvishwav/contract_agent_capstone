@@ -1,27 +1,73 @@
 from abc import ABC, abstractmethod
 from typing import Any, List, Dict
+from backend.agents.reranker_service import RerankerService, get_reranker_llm
 from backend.domain.search_entities import SearchParams, SearchResult
+from backend.infrastructure.encryption import field_encryptor
+from backend.shared.config.phase3_config import Phase3Config
 from backend.shared.utils.contract_search_tool import graph, embedding
 from backend.shared.utils.utils import convert_neo4j_date
 from backend.shared.utils.vector_index_config import (
     CONTRACT_EMBEDDING_INDEX, CLAUSE_EMBEDDING_INDEX, SECTION_EMBEDDING_INDEX,
-    VECTOR_SEARCH_OVERFETCH,
+    VECTOR_SEARCH_OVERFETCH, RERANK_POOL_SIZE, RERANK_TOP_K,
 )
 
 class SearchStrategy(ABC):
     """Abstract base class for search strategies (Strategy Pattern)"""
-    
+
     @abstractmethod
     def execute(self, params: SearchParams) -> SearchResult:
         pass
+
+
+def _cypher_page_size(params: SearchParams) -> int:
+    """
+    RERANK_POOL_SIZE (wider) when re-ranking will actually run for this
+    request (flag on AND real query text present - re-ranking an
+    unfiltered/browse-all listing with no query has nothing to judge
+    relevance against), else the original page size. No reason to overfetch
+    a wider candidate pool from Neo4j just to immediately truncate it back
+    down when there is nothing to rerank with.
+    """
+    if Phase3Config.RERANKING_ENABLED and params.query:
+        return RERANK_POOL_SIZE
+    return RERANK_TOP_K
+
+
+def _maybe_rerank(params: SearchParams, items: List[Dict[str, Any]], text_key: str, metadata: Dict[str, Any]):
+    """
+    Applies re-ranking to `items` (the Cypher already returned a
+    RERANK_POOL_SIZE-wide pool in this case - see _cypher_page_size) when
+    the feature flag is on and a real query was given, truncating to
+    RERANK_TOP_K either way so callers get a consistently-sized page
+    regardless of whether reranking ran. Injects an explainability block
+    into search_metadata (not just into each item's original_rank/
+    reranked_rank/relevance_score) so a caller can tell at a glance whether
+    reranking actually engaged for this response.
+    """
+    if not (Phase3Config.RERANKING_ENABLED and params.query and items):
+        return items[:RERANK_TOP_K], metadata
+
+    outcome = RerankerService(get_reranker_llm()).rerank(params.query, items, text_key=text_key, top_k=RERANK_TOP_K)
+    metadata = {**metadata, "reranking": {"applied": outcome.reranked, "reason": outcome.reason}}
+    return outcome.results, metadata
 
 class DocumentSearchStrategy(SearchStrategy):
     """Document-level search implementation"""
     
     def execute(self, params: SearchParams) -> SearchResult:
         try:
-            cypher_params = {}
-            filters = []
+            cypher_params = {"tenant_id": params.tenant_id}
+            # tenant_id first and unconditional (not appended alongside the
+            # optional filters below) - every branch of this query, vector
+            # or not, must carry it. Previously absent entirely: SearchParams
+            # had no tenant_id field, so this endpoint returned every
+            # tenant's contracts to any authenticated caller regardless of
+            # role - a live, currently-reachable cross-tenant leak, found and
+            # fixed the same day the reranking work below was requested,
+            # since reranking cannot honestly claim to preserve tenant
+            # isolation "as strictly as existing search" when existing
+            # search had none.
+            filters = ["c.tenant_id = $tenant_id"]
 
             # Apply all filters
             if params.active is not None:
@@ -70,6 +116,10 @@ class DocumentSearchStrategy(SearchStrategy):
                 if filters:
                     cypher_statement += f"WHERE {' AND '.join(filters)} "
 
+            # Page size: RERANK_POOL_SIZE (wider candidate pool) when
+            # re-ranking will actually run for this request, else the
+            # original top-10 page - see _cypher_page_size.
+            cypher_params["page_size"] = _cypher_page_size(params)
             cypher_statement += """
             RETURN {
                 total_count: count(c),
@@ -80,21 +130,23 @@ class DocumentSearchStrategy(SearchStrategy):
                     effective_date: c.effective_date,
                     end_date: c.end_date,
                     parties: [(c)<-[r:PARTY_TO]-(party) | {name: party.name, role: r.role}]
-                })[..10]
+                })[..$page_size]
             } AS result
             """
-            
+
             output = graph.query(cypher_statement, cypher_params)
-            
+
             if output and len(output) > 0 and "result" in output[0]:
                 result_data = output[0]["result"]
                 contracts = [convert_neo4j_date(contract) for contract in result_data.get("contracts", [])]
+                metadata = {"search_level": "document", "query": params.query}
+                contracts, metadata = _maybe_rerank(params, contracts, text_key="summary", metadata=metadata)
                 return SearchResult(
                     total_count=result_data.get("total_count", 0),
                     items=contracts,
-                    search_metadata={"search_level": "document", "query": params.query}
+                    search_metadata=metadata
                 )
-            
+
             return SearchResult(total_count=0, items=[], search_metadata={"search_level": "document"})
             
         except Exception as e:
@@ -105,8 +157,11 @@ class ClauseSearchStrategy(SearchStrategy):
     
     def execute(self, params: SearchParams) -> SearchResult:
         try:
-            cypher_params = {}
-            filters = []
+            cypher_params = {"tenant_id": params.tenant_id}
+            # See DocumentSearchStrategy's identical comment - same fix,
+            # same real leak, same root cause (SearchParams had no
+            # tenant_id field at all).
+            filters = ["c.tenant_id = $tenant_id"]
 
             if params.clause_types:
                 filters.append("cl.clause_type IN $clause_types")
@@ -131,6 +186,7 @@ class ClauseSearchStrategy(SearchStrategy):
                 if filters:
                     cypher_statement += f"WHERE {' AND '.join(filters)} "
 
+            cypher_params["page_size"] = _cypher_page_size(params)
             cypher_statement += """
             RETURN {
                 total_count: count(cl),
@@ -139,21 +195,33 @@ class ClauseSearchStrategy(SearchStrategy):
                     clause_type: cl.clause_type,
                     content: cl.content,
                     confidence: cl.confidence
-                })[..10]
+                })[..$page_size]
             } AS result
             """
-            
+
             output = graph.query(cypher_statement, cypher_params)
-            
+
             if output and len(output) > 0 and "result" in output[0]:
                 result_data = output[0]["result"]
                 clauses = [convert_neo4j_date(clause) for clause in result_data.get("clauses", [])]
+                # cl.content is encrypted at rest (clause_repository.py's
+                # write path: PIIEngine.redact then field_encryptor.encrypt)
+                # - this raw Cypher read bypassed that repository's own
+                # decrypt-on-read entirely, so this endpoint was returning
+                # base64 ciphertext as "clause content" to the real caller.
+                # Found and fixed in passing while adding tenant_id above.
+                # Decrypted BEFORE re-ranking - re-ranking a still-encrypted
+                # candidate would score ciphertext, not real clause text.
+                for clause in clauses:
+                    clause["content"] = field_encryptor.decrypt(clause.get("content") or "")
+                metadata = {"search_level": "clause", "clause_types": params.clause_types}
+                clauses, metadata = _maybe_rerank(params, clauses, text_key="content", metadata=metadata)
                 return SearchResult(
                     total_count=result_data.get("total_count", 0),
                     items=clauses,
-                    search_metadata={"search_level": "clause", "clause_types": params.clause_types}
+                    search_metadata=metadata
                 )
-            
+
             return SearchResult(total_count=0, items=[], search_metadata={"search_level": "clause"})
             
         except Exception as e:
@@ -164,8 +232,10 @@ class SectionSearchStrategy(SearchStrategy):
     
     def execute(self, params: SearchParams) -> SearchResult:
         try:
-            cypher_params = {}
-            filters = []
+            cypher_params = {"tenant_id": params.tenant_id}
+            # See DocumentSearchStrategy's identical comment - same fix,
+            # same real leak, same root cause.
+            filters = ["c.tenant_id = $tenant_id"]
 
             if params.section_types:
                 filters.append("s.section_type IN $section_types")
@@ -223,11 +293,13 @@ class RelationshipSearchStrategy(SearchStrategy):
     
     def execute(self, params: SearchParams) -> SearchResult:
         try:
-            cypher_params = {}
-            filters = []
-            
+            cypher_params = {"tenant_id": params.tenant_id}
+            # See DocumentSearchStrategy's identical comment - same fix,
+            # same real leak, same root cause.
+            filters = ["c.tenant_id = $tenant_id"]
+
             cypher_statement = "MATCH (c:Contract)<-[r:PARTY_TO]-(p:Party) "
-            
+
             if params.parties:
                 filters.append("p.name IN $parties")
                 cypher_params["parties"] = params.parties

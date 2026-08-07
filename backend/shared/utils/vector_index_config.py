@@ -65,3 +65,16 @@ VECTOR_SEARCH_OVERFETCH = 200
 # fallback recall for not pulling an entire tenant's chunk corpus into
 # memory on every semantic-search miss.
 CHUNK_TEXT_SEARCH_CANDIDATE_LIMIT = 500
+
+# Re-ranking (backend/agents/reranker_service.py, gated by
+# Phase3Config.RERANKING_ENABLED - default off). RERANK_POOL_SIZE is the
+# candidate-pool truncation applied to the already-tenant-filtered Cypher
+# result when reranking is on, wider than the final page size
+# (RERANK_TOP_K) so the reranker has real alternatives to reorder among -
+# reranking a pool that's already been cut down to the final page size
+# would have nothing left to do. Independent of VECTOR_SEARCH_OVERFETCH
+# above (200): that constant governs how many candidates the vector INDEX
+# itself considers before Cypher-level filtering; this one governs how many
+# of *those* (post-filter) survive into the reranking stage.
+RERANK_POOL_SIZE = 30
+RERANK_TOP_K = 10

@@ -72,13 +72,20 @@ class DocumentSearchStrategyVectorTests(unittest.TestCase):
         with patch.object(search_strategies, "graph", fake_graph), \
              patch.object(search_strategies, "embedding", FakeEmbeddingService()):
             strategy = search_strategies.DocumentSearchStrategy()
-            strategy.execute(SearchParams(search_level=SearchLevel.DOCUMENT, query="governing law clause"))
+            strategy.execute(SearchParams(
+                search_level=SearchLevel.DOCUMENT, tenant_id="tenant_1", query="governing law clause"
+            ))
 
         cypher, params = fake_graph.queries[0]
         self.assertIn("db.index.vector.queryNodes", cypher)
         self.assertIn("contract_embedding_vector_index", cypher)
         self.assertNotIn("vector.similarity.cosine", cypher)
         self.assertIn("k", params)
+        # Real, previously-absent tenant scoping (SearchParams had no
+        # tenant_id field at all until this fix - this endpoint returned
+        # every tenant's contracts to any authenticated caller).
+        self.assertIn("c.tenant_id = $tenant_id", cypher)
+        self.assertEqual(params["tenant_id"], "tenant_1")
 
 
 class ClauseSearchStrategyVectorTests(unittest.TestCase):
@@ -87,12 +94,42 @@ class ClauseSearchStrategyVectorTests(unittest.TestCase):
         with patch.object(search_strategies, "graph", fake_graph), \
              patch.object(search_strategies, "embedding", FakeEmbeddingService()):
             strategy = search_strategies.ClauseSearchStrategy()
-            strategy.execute(SearchParams(search_level=SearchLevel.CLAUSE, query="liability cap"))
+            strategy.execute(SearchParams(
+                search_level=SearchLevel.CLAUSE, tenant_id="tenant_1", query="liability cap"
+            ))
 
-        cypher, _ = fake_graph.queries[0]
+        cypher, params = fake_graph.queries[0]
         self.assertIn("db.index.vector.queryNodes", cypher)
         self.assertIn("clause_embedding_vector_index", cypher)
         self.assertNotIn("vector.similarity.cosine", cypher)
+        self.assertIn("c.tenant_id = $tenant_id", cypher)
+        self.assertEqual(params["tenant_id"], "tenant_1")
+
+    def test_clause_content_is_decrypted_before_returning(self):
+        """cl.content is encrypted at rest (clause_repository.py) - this
+        strategy's raw Cypher read must decrypt it, not return ciphertext
+        as if it were the real clause text."""
+        from backend.infrastructure.encryption import field_encryptor
+
+        class FakeGraphWithEncryptedClause:
+            def query(self, cypher, params=None):
+                return [{"result": {
+                    "total_count": 1,
+                    "clauses": [{
+                        "contract_id": "c1", "clause_type": "Governing Law",
+                        "content": field_encryptor.encrypt("This Agreement is governed by Delaware law."),
+                        "confidence": 0.9,
+                    }],
+                }}]
+
+        with patch.object(search_strategies, "graph", FakeGraphWithEncryptedClause()), \
+             patch.object(search_strategies, "embedding", FakeEmbeddingService()):
+            strategy = search_strategies.ClauseSearchStrategy()
+            result = strategy.execute(SearchParams(
+                search_level=SearchLevel.CLAUSE, tenant_id="tenant_1", query="governing law"
+            ))
+
+        self.assertEqual(result.items[0]["content"], "This Agreement is governed by Delaware law.")
 
 
 class SectionSearchStrategyVectorTests(unittest.TestCase):
@@ -101,12 +138,47 @@ class SectionSearchStrategyVectorTests(unittest.TestCase):
         with patch.object(search_strategies, "graph", fake_graph), \
              patch.object(search_strategies, "embedding", FakeEmbeddingService()):
             strategy = search_strategies.SectionSearchStrategy()
-            strategy.execute(SearchParams(search_level=SearchLevel.SECTION, query="termination"))
+            strategy.execute(SearchParams(
+                search_level=SearchLevel.SECTION, tenant_id="tenant_1", query="termination"
+            ))
 
-        cypher, _ = fake_graph.queries[0]
+        cypher, params = fake_graph.queries[0]
         self.assertIn("db.index.vector.queryNodes", cypher)
         self.assertIn("section_embedding_vector_index", cypher)
         self.assertNotIn("vector.similarity.cosine", cypher)
+        self.assertIn("c.tenant_id = $tenant_id", cypher)
+        self.assertEqual(params["tenant_id"], "tenant_1")
+
+
+class RelationshipSearchStrategyVectorTests(unittest.TestCase):
+    def test_semantic_search_scopes_by_tenant(self):
+        fake_graph = FakeVectorGraph()
+        with patch.object(search_strategies, "graph", fake_graph), \
+             patch.object(search_strategies, "embedding", FakeEmbeddingService()):
+            strategy = search_strategies.RelationshipSearchStrategy()
+            strategy.execute(SearchParams(
+                search_level=SearchLevel.RELATIONSHIP, tenant_id="tenant_1", query="acme corp"
+            ))
+
+        cypher, params = fake_graph.queries[0]
+        self.assertIn("c.tenant_id = $tenant_id", cypher)
+        self.assertEqual(params["tenant_id"], "tenant_1")
+
+    def test_non_semantic_search_also_scopes_by_tenant(self):
+        """No query text at all - the WHERE clause is built from the
+        elif-filters branch, a separate code path from the query branch
+        above that needs its own proof tenant_id survived."""
+        fake_graph = FakeVectorGraph()
+        with patch.object(search_strategies, "graph", fake_graph), \
+             patch.object(search_strategies, "embedding", FakeEmbeddingService()):
+            strategy = search_strategies.RelationshipSearchStrategy()
+            strategy.execute(SearchParams(
+                search_level=SearchLevel.RELATIONSHIP, tenant_id="tenant_1", parties=["Acme Corp"]
+            ))
+
+        cypher, params = fake_graph.queries[0]
+        self.assertIn("c.tenant_id = $tenant_id", cypher)
+        self.assertEqual(params["tenant_id"], "tenant_1")
 
 
 class ContractSearchToolVectorTests(unittest.TestCase):

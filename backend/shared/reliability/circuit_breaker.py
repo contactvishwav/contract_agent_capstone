@@ -187,3 +187,17 @@ class CircuitBreaker:
 # implicated in production failures during this engagement.
 GEMINI_CIRCUIT_BREAKER = CircuitBreaker("gemini", failure_threshold=5, recovery_timeout_seconds=30.0)
 NEO4J_CIRCUIT_BREAKER = CircuitBreaker("neo4j", failure_threshold=5, recovery_timeout_seconds=15.0)
+
+# Deliberately a separate instance from GEMINI_CIRCUIT_BREAKER above, not a
+# reuse of it, even though both protect the same underlying Gemini API:
+# search re-ranking (backend/agents/reranker_service.py) is a best-effort
+# UX enhancement on a synchronous, user-facing request path, so it runs
+# under a much stricter timeout (a few seconds) than clause extraction/
+# policy evaluation's 120s budget. Under real network jitter, that tighter
+# timeout will trip *more often* than extraction/policy's own failure rate
+# even when Gemini itself is perfectly healthy - sharing a breaker would
+# let re-ranking's stricter budget spuriously open the breaker that also
+# guards extraction and policy evaluation, degrading something load-bearing
+# because of something optional. Same CLOSED/OPEN/HALF_OPEN mechanism,
+# same Redis-backed persistence, independent failure domain.
+RERANKER_CIRCUIT_BREAKER = CircuitBreaker("gemini_reranker", failure_threshold=5, recovery_timeout_seconds=30.0)

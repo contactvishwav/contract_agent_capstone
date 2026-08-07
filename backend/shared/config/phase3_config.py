@@ -57,6 +57,12 @@ class Phase3Config:
     ENABLE_SEMANTIC_ANALYSIS = os.getenv("ENABLE_SEMANTIC_ANALYSIS", "true").lower() == "true"
     ENABLE_PARALLEL_PROCESSING = os.getenv("ENABLE_PARALLEL_PROCESSING", "true").lower() == "true"
     ENABLE_ADAPTIVE_LEARNING = os.getenv("ENABLE_ADAPTIVE_LEARNING", "true").lower() == "true"
+    # Defaults OFF, deliberately: this is a new stage on a live,
+    # resource-constrained production VM (docs/DEPLOYMENT.md's e2-micro
+    # resource-fit table) - deployable without changing current search
+    # behavior at all, then enabled explicitly once verified stable under
+    # real production load. See backend/agents/reranker_service.py.
+    RERANKING_ENABLED = os.getenv("RERANKING_ENABLED", "false").lower() == "true"
     
     # Fallback Configuration
     ENABLE_PHASE_FALLBACK = os.getenv("ENABLE_PHASE_FALLBACK", "true").lower() == "true"
@@ -82,6 +88,7 @@ class Phase3Config:
             "cache": cls.CACHE_ENABLED,
             "monitoring": cls.MONITORING_ENABLED,
             "fallback": cls.ENABLE_PHASE_FALLBACK,
+            "reranking": cls.RERANKING_ENABLED,
         }
         return feature_flags.get(feature, False)
     
@@ -118,6 +125,7 @@ class Phase3Config:
                 "semantic_analysis": cls.ENABLE_SEMANTIC_ANALYSIS,
                 "parallel_processing": cls.ENABLE_PARALLEL_PROCESSING,
                 "adaptive_learning": cls.ENABLE_ADAPTIVE_LEARNING,
-                "phase_fallback": cls.ENABLE_PHASE_FALLBACK
+                "phase_fallback": cls.ENABLE_PHASE_FALLBACK,
+                "reranking": cls.RERANKING_ENABLED
             }
         }
