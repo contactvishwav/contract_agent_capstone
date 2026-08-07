@@ -1,0 +1,338 @@
+# Interview Prep: Contract Intelligence Platform
+
+*Single source of truth for defending this project under technical follow-up questioning. Every claim below is grounded in a real file:line, a real commit, or a real measured number from `docs/CAPSTONE_SUMMARY.md`/`docs/EVALUATION.md`/the actual benchmark artifacts in `research/benchmark/`. Nothing here is aspirational — where something is genuinely unbuilt or weak, it's stated as such (§8, §10).*
+
+---
+
+## 1. Project High-Level Overview
+
+**Plain-language version.** This is a system that reads legal contracts (PDFs) and tells a legal or compliance team what's actually in them and what's risky about them — automatically, in seconds instead of the hours a human lawyer would spend line-by-line. A user uploads a contract, and the system extracts the important clauses (termination terms, liability caps, non-competes, IP ownership, etc.), checks each one against a set of company policy rules, scores the overall risk of the contract (LOW/MEDIUM/HIGH/CRITICAL), and suggests specific rewrites ("redlines") for anything that violates policy. It also lets a user chat with their own uploaded contracts in natural language and search across their whole contract library semantically (by meaning, not just keyword). The system supports multiple companies ("tenants") on one shared deployment, each fully isolated from the others' data, with real user accounts, login, and (as of this week) single-sign-on and two-factor authentication.
+
+**Technical version.** It's a multi-tenant, JWT-authenticated FastAPI backend backed by Neo4j (a graph database, used both for its graph relationships — Contract→Section→Clause→Party — and as a native vector store for embeddings) and Redis (caching, Celery broker, rate limiting, and several cross-process metric stores). The core analysis pipeline is an LLM-orchestrated agent workflow (`PlanExecutionEngine`, a custom async step executor, not LangGraph, despite a LangGraph-based fallback path existing alongside it) that calls Gemini with structured output for clause extraction and policy evaluation, mixed with a small deterministic rules table for objectively-measurable policy checks. Long-running analysis runs asynchronously via Celery, polled by the frontend. Accuracy is benchmarked against real ground truth from the CUAD (Contract Understanding Atticus Dataset) legal dataset across all 41 of its clause categories, not just a marketing claim. The system is deployed for real on a GCP e2-micro VM behind Caddy (automatic TLS), with encryption at rest, audit logging, a Redis-backed circuit breaker, Prometheus metrics, and — the subject of tonight's own redeploy — a same-day-fixed cross-tenant data leak now live-verified closed in production.
+
+---
+
+## 2. Purpose
+
+Contract review is slow, expensive, and inconsistent when done manually by legal/compliance teams — someone has to read every clause of every contract, cross-reference it against internal policy (acceptable liability caps, required termination notice periods, IP ownership rules, etc.), and flag anything risky, and different reviewers catch different things. This platform automates the first pass: extraction, policy compliance checking, risk scoring, and redline suggestion, so a human reviewer starts from a structured, explainable analysis instead of a blank contract. It's built specifically for the CUAD domain (commercial contracts — services, licensing, distribution, IP, etc.), and the intended users are legal/compliance teams at a company who need to review contracts at a volume or speed that manual review can't keep up with, without giving up the ability to defend every flagged issue (every extracted clause is traceable back to its exact source text, and every policy violation cites the specific rule it violated — see §4's grounding discussion).
+
+---
+
+## 3. AI/ML Concepts Used
+
+- **LLM structured-output extraction** — Gemini with a Pydantic response schema, not manual prompt-parsing or function-calling.
+- **RAG / vector semantic search** — native Neo4j vector indexes over contract/clause/chunk embeddings.
+- **Hybrid deterministic + LLM reasoning** — a small deterministic rules table for objectively-measurable policy checks, an LLM for everything else.
+- **Prompt engineering and versioning** — hint-augmented prompts per weak category, with a real, enforced version-bump mechanism (a source-hash test, not a comment).
+- **Grounding / anti-hallucination verification** — every extracted clause's offset is independently, deterministically re-verified against source text; every policy citation is checked against the real rule set actually offered to the model.
+- **Adaptive / feedback-driven learning** — a real (if simple) closed loop: human review decisions are stored, mined for patterns, and applied to adjust future risk scoring.
+- **Embeddings and semantic search** — Gemini `gemini-embedding-001`, 1536-dim, cosine similarity, cached.
+- **Evaluation methodology** — a real, reproducible benchmark against CUAD ground truth: precision/recall/F1 per category, at real sample sizes, with quota constraints and their effects explicitly documented rather than hidden.
+
+---
+
+## 4. Detailed Explanation of Each Concept
+
+### 4.1 LLM structured-output extraction
+
+**What it is.** Instead of prompting an LLM for free text and regex-parsing the response (fragile), or hand-rolling a function-calling schema, you give the LLM a typed schema (here, a Pydantic model) and the SDK constrains/parses the model's output to match it directly — no post-hoc parsing of prose.
+
+**How this codebase implements it.** `LLMExtractionService` (`backend/agents/llm_extraction_service.py:313-540`) wraps `langchain_google_genai.ChatGoogleGenerativeAI` with `.with_structured_output(_LLMExtractionResponse, include_raw=True)` — the Pydantic schema is `_LLMExtractionResponse`, and `include_raw=True` keeps the raw response around for error diagnosis. The default model is `gemini-2.5-flash` (`DEFAULT_MODEL`, line 273). `extract_clauses(text, candidate_types=None, raise_on_error=False, enable_fallback=True)` (lines 340-411) is the entry point, decorated `@track_latency("clause_extraction")` for cross-process latency observability (§4.6 territory), and it caches results on a sha256 of `(PROMPT_VERSION, model, candidate_types, enable_fallback, text)` (`_cache_key`, lines 449-457) — a re-analysis of the same contract text under the same prompt version costs zero new LLM calls.
+
+Critically, **the LLM is never trusted to report its own character offsets**. The response schema only asks for the clause's verbatim `extracted_text`; `_find_span(extracted_text, source_text)` (lines 516-540, static method) then deterministically locates it: exact substring search first (`source_text.find(...)`), falling back to a whitespace-insensitive regex match (`re.escape` each word, join with `\s+`) for cases where the model normalized whitespace. If neither matches, it returns the sentinel `(-1, -1)` — this is the seed of the grounding/anti-hallucination story in §4.5. The design rationale, stated directly in the `_LLMExtractedClause` docstring, is that general-purpose LLMs cannot reliably count characters — asking for offsets directly produces hallucinated numbers, so the system computes them itself from what the model *can* do reliably (quote text).
+
+**Why this implementation over alternatives.** Free-text + regex parsing was the original (broken) state of this codebase — three classes (`LLMClauseExtractor`, `LLMCUADClassifier`, `ClauseDetectorTool`) all had stubbed `_parse_llm_response()` implementations returning `[]` unconditionally, one of which (`ClauseDetectorTool`) never even called the LLM (`docs/CAPSTONE_SUMMARY.md` §1, §2 item 4). Structured output with `with_structured_output` removes an entire class of parsing bugs by construction. Computing offsets deterministically instead of trusting the model removes a second class of bugs (hallucinated character positions) at the cost of one extra CPU-only string search per clause — a very cheap tradeoff.
+
+**Real, measured performance.** See §9's table — 0.75 average F1 on the 5 metadata columns, 0.32→0.44 average F1 on the 36 risk-relevant columns (partial re-measurement, §4.7 below explains the improvement path). `PROMPT_VERSION = "v3"` (`llm_extraction_service.py:51`) — the current, deployed version.
+
+### 4.2 RAG / vector semantic search
+
+**What it is.** Retrieval-Augmented Generation retrieves relevant chunks of text via similarity search (typically over vector embeddings) and feeds them to an LLM as context, rather than relying purely on the model's parametric knowledge. Here it's used for two things: semantic contract/clause search (a user's natural-language query finds contracts by meaning, not keyword) and precedent matching (finding similar clauses across a tenant's contract history).
+
+**How this codebase implements it.** Embeddings are Gemini `gemini-embedding-001`, 1536 dimensions (`EMBEDDING_DIMENSIONS = 1536`, `backend/shared/utils/vector_index_config.py:14`). Rather than brute-force cosine similarity (the original state — `gds.similarity.cosine()`/`vector.similarity.cosine()` scans, per `docs/CAPSTONE_SUMMARY.md` §4 item 16), the system uses Neo4j's **native vector index**: `VectorIndexMigration._create_vector_index` (`backend/migrations/vector_index_migration.py:53-66`) issues
+```cypher
+CREATE VECTOR INDEX {index_name} IF NOT EXISTS
+FOR (n:{label}) ON (n.{prop})
+OPTIONS {indexConfig: {
+    `vector.dimensions`: {EMBEDDING_DIMENSIONS},
+    `vector.similarity_function`: 'cosine'
+}}
+```
+across `Contract`, `Section`, `Clause`, `Chunk`, and `PolicyDocument` embeddings (7 named indexes in `VECTOR_INDEXES`, `vector_index_config.py:17-32`). Queries use `db.index.vector.queryNodes` — real call sites across `advanced_rag_agent.py:75`, `contract_search_tool.py:152`, `search_strategies.py:61,121,180`, `enhanced_contract_search_tool.py:190,234,277,374`, `embedding_service.py:133,164`, `policy_repository.py:202`, and `chunk_embedding_service.py:241,261`.
+
+Vector search results are cached in Redis: `enhanced_contract_search_tool.py`'s `get_contracts_multi_level` and `chunk_embedding_service.py`'s `ChunkEmbeddingService.search_similar_chunks` both build a cache key as a sha256 hash of a JSON blob (query text/embedding + `tenant_id` + filters — tenant-scoped so one tenant's cache can never leak into another's results), with a dedicated `"vector_search"` TTL bucket of 600 seconds (`phase3_config.py:29`) — deliberately short relative to the 24h LLM-extraction cache TTL, since a new upload can invalidate a cached result set.
+
+**Why this implementation over alternatives.** A dedicated vector database (Pinecone, Weaviate) was avoided in favor of Neo4j's native vector index because the system already needs Neo4j for its graph relationships (Contract→Section→Clause→Party, policy rule graphs) — running a second specialized store would mean keeping two systems in sync for every write, for a benefit (marginal query latency) that native indexing already captures once the brute-force scan was replaced.
+
+**Real, measured performance.** `research/benchmark/vector_index_benchmark.py` benchmarks brute-force `vector.similarity.cosine()` against `db.index.vector.queryNodes` over 5,000 synthetic contract nodes (`N_CONTRACTS = 5000`, `N_QUERIES = 20`), reporting mean/median/p95/min/max for both. Per `docs/CAPSTONE_SUMMARY.md` §4 item 16: **~4.7x mean / ~7x median latency improvement**.
+
+### 4.3 Hybrid deterministic + LLM reasoning
+
+**What it is.** Not every policy check needs a language model — some are pure numeric threshold comparisons ("is the liability cap more than 2x the contract fees?") that an LLM would answer correctly but slower, more expensively, and with a small hallucination risk for no benefit. The system routes each clause through the cheapest reliable method for its category, reserving the LLM for genuinely ambiguous natural-language policy checks.
+
+**How this codebase implements it.** `backend/agents/deterministic_policy_rules.py` defines exactly 5 categories in `DETERMINISTIC_RULES` (lines 23-49): Cap On Liability, Minimum Commitment, Notice Period To Terminate Renewal, Warranty Duration, Renewal Term. `evaluate_deterministic(clause_type, clause_text)` (lines 87-122) regex-extracts a number from the clause text (multiplier, dollar amount, days, or months, via dedicated helper functions at lines 52-74) and compares it against a hardcoded threshold (cap > 2x fees, minimum commitment > $100k, notice < 30 days, warranty/renewal > 12 months) — critically, it returns `None` if it can't confidently extract a number, rather than guessing. The dispatch logic lives in `PolicyCheckerTool._run` (`backend/agents/intelligence_tools.py:136-243`, specifically 166-198): every clause is tried against the deterministic table first; only clauses whose type isn't one of the 5, or that fail regex extraction, fall through to `PolicyEvaluationService.evaluate_clause` (`backend/agents/policy_evaluation_service.py:73-147`), which makes one real LLM call per clause against a tenant's actual uploaded `PolicyRule` set (or a labeled default set if the tenant hasn't uploaded any).
+
+**Why this implementation over alternatives.** A pure-LLM approach for everything would work but adds latency, cost, and a (small but nonzero) hallucination surface to checks that are, in fact, objective arithmetic — a liability cap either is or isn't more than 2x fees; there's no interpretation required. A pure-deterministic approach for everything wouldn't work at all — most real policy language ("shall use commercially reasonable efforts to maintain data security consistent with industry standards") requires actual language understanding to evaluate against a rule, which no regex table can do. The 5-category split is not arbitrary: those specifically are the categories where the "violation" is a number crossing a threshold, not a judgment call.
+
+**Anti-hallucination discipline in the LLM half.** `PolicyEvaluationService._build_prompt` (lines 154-174) lists each applicable rule with its real `rule_id`, explicitly instructing the model to cite that id and "never invent one" (line 167). After the call, `evaluate_clause` verifies every cited `rule_id` actually exists in the `valid_rule_ids` set built from the real rules passed in (lines 123-133) — a violation citing an unknown rule id is discarded and logged, not silently kept. This closes the same class of bug §4.5 describes for clause grounding, applied to policy citations instead of clause text.
+
+**Real, measured performance.** No LLM call happens for ~5/41 categories at all when a numeric threshold is confidently extractable; for everything else, one real Gemini call per clause, tracked via `@track_latency` (§4.6) and circuit-breaker-protected (§5's system-internal features).
+
+### 4.4 Prompt engineering and versioning
+
+**What it is.** As a prompt's wording evolves, any response cached under the old wording needs to be invalidated — otherwise a cache hit silently serves output from a prompt that no longer exists. "Versioning" a prompt means giving it an explicit version string that's part of the cache key, so a wording change and a version bump happen together, not independently.
+
+**How this codebase implements it.** `PROMPT_VERSION` constants exist in both `llm_extraction_service.py` (currently `"v3"`, line 51) and `policy_evaluation_service.py` (currently `"v2"`). This alone is easy to get wrong silently — the version had in fact drifted stale in a real audit finding (`docs/CAPSTONE_SUMMARY.md` §10 item 11: `PROMPT_VERSION` sat at `"v1"` for both files despite `_build_prompt`'s actual wording changing across several commits, meaning a cached result from the old prompt could be silently served under a "new" one that was never actually cache-busted). The fix wasn't just bumping the number — `backend/tests/test_prompt_versioning.py` makes this structurally impossible to repeat: `_source_hash(func)` (lines 41-42) computes `hashlib.sha256(inspect.getsource(func).encode()).hexdigest()` for both `LLMExtractionService._build_prompt` and `PolicyEvaluationService._build_prompt`, and compares the live hash against a literal table (`_EXPECTED_EXTRACTION_PROMPT_HASHES`/`_EXPECTED_POLICY_PROMPT_HASHES`, lines 31-38) keyed by the current declared version. Change the prompt's wording without bumping the version → the hash comparison fails for the (unchanged) declared version. Bump the version without recording its new hash → the lookup fails because no entry exists yet. Both failure directions were verified concretely by temporarily perturbing `_build_prompt`'s wording and confirming the exact expected failure message, per `docs/CAPSTONE_SUMMARY.md` §10 item 11.
+
+The actual `"v3"` prompt changes are themselves a real example of iterative prompt engineering driven by measured weaknesses: `_CATEGORY_HINTS` (`llm_extraction_service.py:137-179`) appends a one-line disambiguating hint to specific weak categories inside `_build_prompt` (lines 459-477) — e.g. for `THIRD_PARTY_BENEFICIARY`: *"only a clause that GRANTS enforcement rights to a non-signatory third party — do NOT match boilerplate stating there are NO third-party beneficiaries, that language is the opposite of this category."* These hints were derived directly from root-causing real false positives/negatives in the 497-contract benchmark (§4.7 below), not guessed.
+
+**Why this implementation over alternatives.** A comment-only convention ("remember to bump this") is exactly what failed the first time. A hash-based test converts "remember to" into "cannot forget to" — the CI suite fails loudly if the two ever drift apart again.
+
+### 4.5 Grounding / anti-hallucination verification
+
+**What it is.** An LLM can state something confidently that isn't actually true of the source material — a paraphrased "extraction" that doesn't correspond to any real text, or a citation to a rule that doesn't exist. Grounding verification means independently checking the model's claims against the actual source of truth (the contract text, the real rule set) rather than trusting the model's own confidence.
+
+**How this codebase implements it.** Two independent grounding checks, both wired into the same shared Redis-backed tracker:
+
+1. **Clause grounding.** As covered in §4.1, `_find_span` deterministically tries to locate the LLM's claimed `extracted_text` in the real source contract. `ClauseDetectorTool._run` (`intelligence_tools.py:46-121`) computes `"grounded": e.start_offset != -1` per clause (lines 88-96) — an ungrounded clause is not dropped (a human reviewer might still want to see it), it's flagged, and the UI shows a "Verified"/"Unverified" badge per clause based on exactly this field (`frontend/src/components/features/intelligence/ClausesDetail.tsx:189-197`).
+2. **Policy citation grounding.** As covered in §4.3, a violation citing a `rule_id` not present in the real rule set offered to the model is discarded, not kept.
+
+Both are counted, not just logged: `backend/shared/monitoring/hallucination_tracker.py`'s `record(category, total, flagged)` (lines 37-53) increments Redis counters for two categories — `"clause_extraction"` (called from `intelligence_tools.py:100`) and `"policy_citation"` (called from `policy_evaluation_service.py:142`) — Redis-backed specifically because extraction/evaluation run in the Celery `worker` container while the metrics endpoints are served by the `backend` container; an in-process counter would silently miss almost all real traffic (this exact bug, for a different tracker, is documented in `docs/CAPSTONE_SUMMARY.md` §10 item 1). The rate is exposed via `GET /api/monitoring/llm-usage`'s `hallucination_tracking` field and `GET /metrics`'s `hallucination_rate{category=...}` Prometheus gauge.
+
+**Why this implementation over alternatives.** A second LLM call to "verify" the first LLM's output is a common pattern, but it doesn't actually solve the problem — it just adds a second place a hallucination could occur, at double the cost and latency. Both checks here are instead deterministic and free: string search for grounding, set-membership for citation validity. Neither can itself hallucinate.
+
+**Real, measured status.** Per `docs/EVALUATION.md` §6: the tracking infrastructure is real and live, but **no production numbers exist yet for either rate** — both are freshly wired counters starting at zero, honestly reported as such rather than a fabricated placeholder rate.
+
+### 4.6 Adaptive / feedback-driven learning
+
+**What it is.** A system that improves its own output based on real outcomes of past decisions, rather than a static rule set that never changes regardless of what happened after.
+
+**How this codebase implements it.** `backend/agents/feedback_learning_system.py`: `FeedbackCollector.collect_decision(decision: LegalDecision)` (lines 103-143) persists a human reviewer's decision (approve/reject/override, with the original analysis, the reviewer's override, and a confidence score) as a `LegalDecision` node in Neo4j, linked to its `Contract` via a `HAS_DECISION` relationship. `PatternLearner.learn_from_decisions(clause_type)` (lines 190-221) requires at least 5 decisions of the same clause type before attempting to learn anything (line 194 — a real, if simple, minimum-sample-size guard) and extracts `approval`/`rejection`/`risk_override` patterns. `AdaptiveAnalyzer._apply_risk_pattern` (lines 429-453) is the payoff: when a learned `risk_override` pattern applies to a clause's *current* baseline risk level, it genuinely overwrites `risk_level` with the pattern's suggested value — while preserving `original_risk_level`, `pattern_confidence`, and `risk_adjustment_pattern_id` for traceability, so a reviewer can see both what the system originally computed and what it adjusted to and why. This is surfaced in the UI, not just the API: `ClausesDetail.tsx` shows a callout ("Risk adjusted from **X** to **Y** based on historical review patterns (N% confidence)") only when a learned pattern actually applied, per `docs/CAPSTONE_SUMMARY.md` §6.
+
+**Why this implementation over alternatives.** This is deliberately not a model-retraining loop (no gradient updates, no fine-tuning) — it's a pattern-matching adjustment layer on top of a fixed extraction/evaluation model. That's a real, load-bearing tradeoff (§7): retraining an LLM needs infrastructure, labeled data volume, and evaluation discipline this project doesn't have; a graph-queryable pattern store that adjusts one specific, auditable field (`risk_level`) based on a minimum-sample threshold is buildable, explainable, and reversible (nothing about the underlying extraction changes) — appropriate for a single-engineer capstone with a defensibility requirement (a legal/compliance user needs to know *why* a risk level changed, not just that it did).
+
+**Honesty about what this replaced.** This closed a real gap found by audit, not built from scratch on a clean slate: `docs/CAPSTONE_SUMMARY.md` §6 item 4 documents that `FeedbackCollector`/`PatternLearner` genuinely stored and learned from history *before* this fix, but the read side was broken at three independent points (the default execution path discarded the enhanced-clause result entirely; the write landed in a field nothing downstream read; `ContractClause` had no field to carry it even if the first two were fixed) — each piece "worked" in isolated component tests, and the break was only visible when proven end-to-end (`FeedbackCollector.collect_decision` ×5 → `PatternLearner` reads back → `AdaptiveAnalyzer` applies → the *next* analysis's `risk_level` genuinely changes, commit `d867299`).
+
+### 4.7 Embeddings and semantic search (evaluation-adjacent)
+
+Covered substantively in §4.2; the additional AI/ML-relevant point here is embedding *reuse*: the same `gemini-embedding-001` embeddings back both semantic contract search (§4.2) and are stored per-`Chunk` for the chunked-document search fallback path — one embedding model, one set of vectors, multiple consumers, rather than separate embedding pipelines per feature.
+
+### 4.8 Evaluation methodology
+
+**What it is.** A rigorous evaluation methodology means defining precisely what counts as correct, scoring against real (not synthetic) ground truth, being explicit about sample sizes and their limits, and reporting negative/weak results as prominently as strong ones.
+
+**How this codebase implements it.** `research/benchmark/evaluate_extraction.py` scores `LLMExtractionService.extract_clauses()` against real ground truth from the CUAD dataset (`theatticusproject/cuad-qa` on HuggingFace), across all 41 CUAD categories split into 5 metadata columns (Document Name, Parties, Agreement Date, Effective Date, Expiration Date) and 36 risk-relevant columns (Cap On Liability, Non-Compete, Termination For Convenience, etc.).
+
+**Scoring is presence + content-match, not span-level IoU** — the ground truth is gold text values per (contract, category), with no character offsets to compare spans against. For each (contract, clause_type): TP = ground truth has a value AND a predicted clause of that type matches it; FN = ground truth has a value, nothing matched; FP = a clause was predicted but ground truth has none for that contract. `text_match(predicted, gold)` (lines 373-390) first checks word-boundary containment (`\b...\b` regex, not raw substring — this specifically fixes a prior over-permissive plain-substring match, per the comment at lines 377-382), then falls back to normalized token-overlap ≥ 0.6 (`normalize_text`, lines 369-370, strips to lowercase alphanumeric tokens). Date columns get date-aware matching: both sides parsed to calendar dates and compared by set intersection, falling back to `text_match` if either side fails to parse; `Expiration Date` specifically uses `parse_expiration_date` (lines 337-366), which can resolve relative-duration phrasing ("12 months after the Effective Date") anchored on the *model's own predicted* Agreement/Effective Date — never gold data, so the resolution step can't leak the answer into the score (comment lines 545-547).
+
+**Reporting discipline, not just methodology.** Precision/recall/F1 are the standard aggregates over TP/FP/FN per category. Standalone, the evaluation report (`docs/EVALUATION.md`) is explicit about every limitation: presence/content-match (not span accuracy — span grounding is checked separately and deterministically by `_find_span`, §4.1/4.5); `gemini-flash-lite-latest` is a rolling alias, not a pinned snapshot, which explains small numeric drift between otherwise-identical runs; small-sample confirmation runs (n=5, n=44) are explicitly flagged as directional, not conclusive.
+
+**Real infrastructure built to make the evaluation itself reliable under quota pressure**: `_RpmLimiter` (lines 102-134), a sliding-window rate limiter added because `gemini-flash-lite-latest`'s free tier caps at 15 requests/minute and the fallback pass (§4.1) roughly doubles request volume on contracts that trigger it; `_extract_with_transient_retry` (lines 66-99), which retries a transient 503/timeout/per-minute-cap error (with backoff, or a fixed 65s wait if the message indicates a per-minute window) but re-raises immediately on a genuine per-day quota exhaustion — the distinction matters because retrying into a hard daily quota wall wastes the retry budget for nothing, while treating a transient blip as fatal would abort an otherwise-completable multi-hour run.
+
+**Why this implementation over alternatives.** An LLM-as-judge scoring approach (asking a second model "is this extraction correct?") was avoided in favor of deterministic, auditable matching against real dataset ground truth — the whole point of measuring accuracy is to have a number that doesn't itself depend on trusting an LLM's judgment.
+
+---
+
+## 5. Features
+
+### User-facing
+
+- **Register / login**, including (as of tonight's work) **Google SSO** and **TOTP MFA** with QR-code setup (`frontend/src/pages/AccountPage.tsx`), and **org-admin invites** (email + role, admin-only section on the Account page).
+- **Upload a PDF contract** (`Upload PDF Contract` on the Intelligence page) — returns a real `contract_id`.
+- **Analyze** — triggers async analysis; the UI polls task status and renders: **Risk Score** (0-100 + LOW/MEDIUM/HIGH/CRITICAL label), the list of extracted clauses (each with a Verified/Unverified grounding badge, a `clause_id` traceability line, and — when applicable — a "risk adjusted from X to Y based on historical patterns" callout), policy violations, and suggested redlines (`frontend/src/components/features/intelligence/ContractIntelligence.tsx`, `ClausesDetail.tsx`).
+- **Contract Chat** — natural-language Q&A grounded in a user's own uploaded contracts, streamed via SSE, with real tool-calling (nav tab `'chat'`).
+- **Semantic Search** — search across a tenant's contract library by meaning (nav tab `'search'`).
+- **Agents** page and **Supervisor** workflow view — visibility into the underlying multi-step analysis (quality grade, per-step status, live SSE progress stream for a running analysis).
+- **Account page** — MFA setup/management, invite management, session info ("Logged in as **{tenant}** · **{role}**").
+- **Documentation tab** — an honestly-maintained in-app description of what's actually built (itself audited and corrected multiple times this engagement, §7/§10).
+
+### System-internal
+
+- **Multi-tenant isolation enforced at the identity layer**, not by convention — `tenant_id` comes exclusively from a validated, signed JWT (`backend/governance/auth.py`), never a client-supplied query/form/header value, on every route (verified directly in `contract_intelligence.py` and `document_upload.py` — see §6).
+- **Audit trail** — every clause extraction, policy check, risk calculation, and redline generation call logs an `AuditLog` node (`backend/infrastructure/audit_logger.py`) with `contract_id`/`tenant_id`/status/metadata, queryable via `GET /api/audit/trail/{contract_id}`.
+- **Circuit breaker** — a real, Redis-backed CLOSED/OPEN/HALF_OPEN state machine (`backend/shared/reliability/circuit_breaker.py`) wrapping the two Gemini call sites (extraction, policy evaluation) and the single Neo4j query choke point, so a failing dependency stops accepting new calls for a cooldown window instead of every request retrying into a known-broken dependency.
+- **Caching** — LLM extraction/policy-evaluation results cached on prompt-version+model+input hash; vector search results cached with a shorter, tenant-scoped TTL; all backed by the same Redis instance, cross-process visible (backend + worker containers).
+- **Encryption at rest** — AES-256-GCM field-level encryption (`backend/infrastructure/encryption.py`) on contract text, clause content, and chunk content, with a swappable key provider (env var locally, GCP Secret Manager in production).
+- **Rate limiting** — Redis-backed, per-route limits on auth endpoints (register, token, MFA verify, invite accept) via `slowapi`.
+- **Security headers** — CSP, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff` on every response; conditional HSTS when a TLS-terminating proxy signals `X-Forwarded-Proto: https`.
+- **Prometheus metrics** (`GET /metrics`) — HTTP latency by route, LLM cost/token counts, hallucination rates, Celery task-state counts, operation p50/p95 latency — all cross-process-correct (worker-recorded, backend-scraped).
+- **Health checks** — `GET /api/monitoring/health` genuinely checks Neo4j + Redis, returns real `503` (not just `200` with a `"status"` field nobody checks) when unhealthy.
+
+---
+
+## 6. End-to-End Workflow
+
+Tracing one real request through the entire system, task by task:
+
+1. **Register** — `POST /api/auth/register` (`backend/api/auth_api.py`) creates a bcrypt-hashed account in Neo4j (`backend/infrastructure/user_repository.py`), rate-limited at `AUTH_REGISTER_RATE_LIMIT` (default 5/minute). Bootstrap-only for an already-provisioned tenant (a second registration against an existing tenant requires an invite — §8).
+2. **Login** — `POST /api/auth/token` verifies the password hash and returns a signed JWT (`create_access_token`, `backend/governance/auth.py:123-138`; HS256, 24h expiry, claims `tenant_id`/`role`/optional `username`). If MFA is enabled, this instead returns `{mfa_required: true, mfa_token}`, and the client completes `POST /api/auth/mfa/verify` with a TOTP or backup code first.
+3. **Upload** — `POST /api/documents/upload` (`backend/api/document_upload.py:29-38`, router prefix `/api/documents`) — gated by `Depends(requires_permission(Permission.UPLOAD))`, which resolves `identity: TokenIdentity` from the bearer token; `tenant_id = identity.tenant_id` (line 45) is used for every downstream write. This route processes synchronously (PDF parsing, contract-node creation) and returns a real `contract_id`.
+4. **Analyze triggers a Celery task** — `POST /api/intelligence/contracts/{contract_id}/analyze` (`backend/api/contract_intelligence.py:26-56`) resolves `identity.tenant_id` from the token (never a query param — the docstring at lines 43-46 states this explicitly), calls `analyze_contract_task.delay(contract_id, identity.tenant_id, model, use_planning)`, and returns `202` immediately with `{task_id, status: "PENDING", status_url}`. The task itself (`backend/tasks.py:116-141`, `@celery_app.task(bind=True, name="analyze_contract")`) runs in the separate `worker` container.
+5. **Clause extraction** — inside the task, `IntelligenceOrchestrator._analyze_with_planning` (the real default — `use_planning=True` at every layer, `contract_intelligence_agents.py:373-405`) builds a plan via `PlanningAgentFactory`/`PlanningAgent.create_execution_plan`, then `PlanExecutionEngine.execute_plan` runs it. The first step, `EXTRACT_CLAUSES`, calls `ClauseDetectorTool._run` (`intelligence_tools.py:46-121`), which uses `LLMExtractionService.extract_clauses` (§4.1) to get real clauses from Gemini, each tagged `grounded` and given a baseline `risk_level` via `compute_baseline_risk_level` (`feedback_learning_system.py:33-65`).
+6. **Policy evaluation** — `CHECK_POLICIES` step, `PolicyCheckerTool._run` (`intelligence_tools.py:136-243`): each clause tries the deterministic table first (§4.3), falls through to `PolicyEvaluationService.evaluate_clause` (one real LLM call per clause, against the tenant's actual policy rules) otherwise. Every violation carries a `clause_id` linking it back to the exact clause that triggered it.
+7. **Risk scoring** — `ASSESS_RISK` step, `RiskCalculatorTool._run` (`intelligence_tools.py:255-344`): starts from a base score of 30.0, adds 25/15/10/5 points per violation by severity (CRITICAL/HIGH/MEDIUM/other), caps at 100, and maps to LOW/MEDIUM/HIGH/CRITICAL via thresholds (≥80/≥60/≥40/else).
+8. **CUAD mitigation (Phase3→2→1 fallback cascade)** — `CUAD_MITIGATION` step attempts the most sophisticated (Phase3, `Optimized*CuadTools`) analysis first; any exception there falls back to Phase2 (`Enhanced*CuadTools`), then Phase1 (base `cuad_mitigation_tools`) — which tier actually ran is recorded in `analysis_method` and surfaced to the API response, so a degraded-but-successful analysis is distinguishable from a full one, not silently indistinguishable.
+9. **Redline generation** — `GENERATE_REDLINES` step, `RedlineGeneratorTool._run` (`intelligence_tools.py:355-403`): builds a suggested rewrite directly from each violation's own `suggested_fix`/`issue`/`severity` (already produced with real rule citations in step 6) — not a template, a direct transformation of already-grounded violation data.
+10. **Response** — `PlanExecutionEngine._format_final_results` assembles `node_status` (per-step success/partial/failed), `processing_complete`, the real quality grade (`quality_grader.py`, A-F rubric based on grounded rate + confidence + step status), and the full clause/violation/risk/redline payload, all persisted so `GET /api/intelligence/tasks/{task_id}/status` can return it once Celery reports `SUCCESS`.
+11. **What the user sees** — the frontend's `pollTaskStatus` helper polls that status route; on `SUCCESS`, `ContractIntelligence.tsx` renders the Risk Score, clause list (with grounding badges), violations, and redlines — a real, explainable result, not fixture data.
+
+---
+
+## 7. Tradeoffs, With Rationale
+
+| Decision | What was chosen | What was given up | Why it was the right call |
+|---|---|---|---|
+| **Single-pass extraction + targeted fallback pass**, not per-category extraction | One LLM call for all 41 categories at once, with a second narrower call *only* for the 8 categories the model essentially never engaged with (`FALLBACK_CATEGORIES`, §4.1) | Some accuracy headroom on the fallback categories specifically (a dedicated call per category would likely do better) | 41 separate calls per contract would be 41x the latency/cost for categories where the model already engages reasonably. The two-tier approach spends the extra call only where the data showed it was needed (0-1 true positives across all 497 contracts) — proportionate to the actual failure mode, not uniform effort. |
+| **Deterministic table vs. LLM-reasoned policy split** | 5 objectively-measurable categories get a regex+threshold check, everything else gets one real LLM call | The deterministic table can't handle a category if its threshold logic doesn't cleanly extract a number (it returns `None` and falls through to the LLM anyway — a conservative failure mode) | Correctness and speed for the categories where "violation" is unambiguous arithmetic; LLM reasoning reserved for genuinely ambiguous natural-language policy language. Also removes hallucination risk entirely for those 5 categories. |
+| **Flash vs. Flash-Lite model substitution under quota constraints** | Full-scale (497-contract) benchmark runs use `gemini-flash-lite-latest`; production inference defaults to `gemini-2.5-flash` | Benchmark numbers are on a *different, weaker* model than what real users hit in production; confirmation samples on the production model are small (44/90, 5/90) | The Gemini free tier caps `gemini-2.5-flash` at 20 requests/day/project — literally impossible to run a 497-contract benchmark on it. The substitution is never silently absorbed — every benchmark artifact's own `model` field states which model produced it, and confirmation samples exist specifically to check whether the production model's numbers track the same *shape* (they do — Expiration Date F1 went 0.26→0.59 on the production model, directionally consistent with the Flash-Lite root-cause finding). |
+| **GCP e2-micro's tight resource budget** | A single Always-Free-tier VM (1GB RAM, burstable vCPU), with every service's `mem_limit` measured from real running images, not estimated (backend 300m, worker 280m, ui 40m, caddy 64m, redis 160m — sum ≈844MB of 1GB, confirmed in `docker-compose.prod.yml`) | No headroom for traffic spikes without the documented 2GB swapfile safety margin; **cold-start time under CPU pressure is real and slow** — tonight's own redeploy took ~6 minutes for the backend container to report healthy, because LangChain/Pydantic schema-building at import time is genuinely CPU-intensive and e2-micro's CPU credits are limited/bursty, not because anything was broken | A free-tier VM was a deliberate scope decision for a capstone project, not a production capacity plan — horizontal scaling infra is explicitly out of scope (§8). The resource-fit was verified empirically (real measured RSS per service, `docs/CAPSTONE_SUMMARY.md` §11), not assumed, specifically because the budget is this tight. |
+| **arm64 build on a Mac, deployed to an amd64 VM** | Building the production Docker image locally on Apple Silicon | The first redeploy attempt tonight crash-looped with `exec format error` — the image's default target platform (`arm64`, Docker Desktop's default on Apple Silicon) didn't match the VM's actual `amd64` architecture | Root-caused immediately via `docker logs` (`exec /app/.venv/bin/fastapi: exec format error` is the canonical Linux signature for an architecture mismatch, not a broken binary), fixed by rebuilding explicitly with `docker buildx build --platform linux/amd64 --target production --load`. A concrete, real, same-night example of a cross-platform build issue diagnosed and fixed under time pressure — see §10 for the full incident narrative. |
+| **Self-hosted (docker-compose) vs. managed Neo4j** | Neo4j AuraDB Free (managed) in the real GCP deployment; local docker-compose Neo4j for dev/CI | AuraDB Free has its own resource ceiling and no control over its own uptime/maintenance windows | Managed backups and DR come for free with AuraDB Free — building and maintaining a self-hosted backup/restore story on a single e2-micro VM (which itself has no persistent-disk redundancy story) would be strictly worse for a capstone deployment. Local dev keeps a self-hosted Neo4j so CI doesn't depend on external network access or Aura quota. |
+| **JWT-stateless auth vs. session-based** | Signed JWTs (HS256, 24h expiry), validated per-request with no server-side session store | No server-side session revocation before natural expiry (no "log out everywhere" mechanism beyond the client discarding the token) | Stateless validation means any backend/worker process can validate a token without a shared session store round-trip — simpler horizontally, and the extension point (`get_current_identity`) was explicitly designed so a real IdP (Auth0/Okta) could later replace only the *issuance* routes without touching validation anywhere else, which is exactly what happened once when token issuance moved from claims-only to real credential verification, and again when SSO/MFA were added (`governance/auth.py`'s module docstring, referenced in `docs/CAPSTONE_SUMMARY.md` §7/§8/§16). |
+| **Caddy over nginx+certbot for TLS** | Caddy, ~13.5MB RSS idle, automatic Let's Encrypt issuance/renewal from a ~10-line Caddyfile | Less ecosystem familiarity than nginx+certbot; one more moving part in front of the existing nginx-served frontend | The deciding factor was operational surface area, not memory: certbot needs a shared ACME-webroot volume, a renewal scheduler, and a reload hook — the classic way these setups silently expire certificates is forgetting that last step. Caddy gets the same outcome with zero extra containers and zero renewal cron jobs. Verified empirically against the real `caddy:2-alpine` image, not just cited figures (`docs/CAPSTONE_SUMMARY.md` §11). |
+| **Async Celery for analysis only, not batch/search/audit** | `POST /analyze` moved to Celery (202 + polling); `batch-analyze` and all read-path routes (search, status, policy, audit) stay synchronous | Slightly more architectural surface (two execution models instead of one) | Analysis is the one genuinely long-running, multi-LLM-call path (empirically 20-25s+ even before the async migration) — moving everything to Celery would add queue latency to routes that are already fast and don't need it. |
+
+---
+
+## 8. Next Steps
+
+Each item below is a real, unbuilt (or partially built) piece, with the genuine engineering reason it isn't done — not "too hard," not "not needed for demo."
+
+1. **Complete the `gemini-2.5-flash` risk-category confirmation sample** (currently 5/90 contracts, `docs/EVALUATION.md` §5b/§5c). *Why not done*: blocked purely on the Gemini free tier's 20-requests/day/project cap on the production model — a quota constraint, not a design gap. *What it would take*: either paid API quota, or running the sample incrementally across many days via the existing checkpoint-resume mechanism already built into `evaluate_extraction.py`.
+2. **Finish the risk-category weak-category re-measurement past 243/510 contracts** (`docs/EVALUATION.md` §4c). *Why not done*: `gemini-flash-lite-latest`'s real per-day cap (discovered live to be 500 requests/day, distinct from its 15/minute cap) — the fallback pass roughly doubles request volume per contract, so one day's quota covers about half the corpus. *What it would take*: the run is checkpoint-resumable already; it just needs more days of quota, or paid quota, to reach the full 510.
+3. **Push the remaining 9-of-36 risk categories still below 0.30 F1** (`docs/EVALUATION.md` §8, e.g. Price Restrictions, Affiliate License-Licensor, Covenant Not To Sue — all flat 0.00). *Why not done*: root-causing these specific categories requires distinguishing "the model genuinely can't find this" from "this clause type is genuinely rare in the corpus" — the latter needs *more real ground-truth labeling*, not a better prompt, and that labeling work hasn't been done. *What it would take*: a manual pass over a sample of contracts to establish real prevalence for these categories before deciding whether a prompt fix or a data-scarcity acceptance is the right call.
+4. **Wire `correlation_id`/`trace_id` end-to-end through the MCP boundary** (`docs/CAPSTONE_SUMMARY.md` §4 item 15, §8). *Why not done*: the capability exists (all 4 MCP tool functions accept an optional `correlation_id`), but nothing in this codebase currently calls from FastAPI into the MCP server in-process — there is no existing call chain to thread a live value through yet. *What it would take*: a decision to actually build an in-process FastAPI→MCP call path (none currently exists architecturally), then threading the identifier through it.
+5. **Build the Supervisor Agent's "Switch" recovery strategy** (fall back to a different LLM provider when the circuit breaker opens) (`docs/CAPSTONE_SUMMARY.md` §9 item 11, §13). *Why not done*: this is a real, separate decision with cost/quality tradeoffs, and needs a second LLM provider's API key configured and its output quality validated against Gemini's — not a quick addition to the existing 3-mechanism-plus-circuit-breaker recovery story. *What it would take*: choosing a second provider (OpenAI/Anthropic/Mistral — all already partially wired in `agent_manager.py` per the original README's multi-provider claims), provisioning a real key, and building a quality-parity check before trusting its output interchangeably.
+6. **Password reset and email verification** (`docs/CAPSTONE_SUMMARY.md` §8/§16 — the one remaining honest gap in the credential story). *Why not done*: genuinely out of scope for tonight's credential-provisioning pass, which focused on org invites, SSO, and MFA. *What it would take*: a reset-token flow mirroring the invite-token pattern already built (`invite_repository.py`'s single-use, sha256-hashed, expiring token design is directly reusable), plus real transactional email (Resend is already integrated for invites).
+7. **Horizontal scaling infrastructure**. *Why not done*: this is a single-VM deployment by deliberate design (GCP e2-micro, Always Free tier) for a capstone project — not a gap, a legitimate scope boundary. Building real horizontal scaling (load balancer, multi-instance Neo4j/Redis, session affinity considerations) is a materially different, larger engineering effort appropriate for a funded production team, not a single-engineer capstone. *What it would take*: a chosen target (GKE, Cloud Run, or a multi-VM setup), a decision on Neo4j clustering (AuraDB has paid tiers with this), and a load balancer in front of multiple backend/worker replicas.
+8. **Close firewall port 8000 on the production VM** (`docs/CAPSTONE_SUMMARY.md` §9 item 10). *Why not done*: not a code gap — blocked on `gcloud` access neither the local dev machine nor the VM's own service account currently has (an IAM/credential-scope gap). *What it would take*: whoever holds real `gcloud` project-owner access running the firewall-rule removal directly.
+9. **A precision@k retrieval-quality metric for GraphRAG/precedent-matching** (`docs/CAPSTONE_SUMMARY.md` §10, "Findings not fixed this pass"). *Why not done*: this needs a real relevance-labeled query set (which contracts are actually true precedents for a sample of queries) — new ground-truth labeling work that doesn't exist yet, not a code change. Fabricating a number without real labels would violate this engagement's own evidence discipline. *What it would take*: a labeling pass, ideally by someone with real legal-precedent judgment, producing a query→relevant-contract-IDs ground truth set.
+10. **A real secrets-manager provider beyond GCP** (e.g. AWS Secrets Manager, HashiCorp Vault). *Why not done*: `IKeyProvider` is a real extension point and `GCPSecretManagerKeyProvider` was built once a real deployment target (GCP) existed — building a second provider before a second deployment target exists would be speculative, unused code. *What it would take*: choosing a second real deployment target that isn't GCP.
+
+---
+
+## 9. Key Numbers to Memorize
+
+### Extraction accuracy (5 metadata columns, 497-contract scale, `gemini-flash-lite-latest`, `extraction_eval_results_risk-categories-flash-lite-497.json`)
+
+| Type | Precision | Recall | F1 |
+|---|---|---|---|
+| Document Name | 1.00 | 0.98 | 0.99 |
+| Parties | 1.00 | 0.95 | 0.97 |
+| Agreement Date | 0.97 | 0.64 | 0.77 |
+| Effective Date | 0.81 | 0.58 | 0.68 |
+| Expiration Date | 0.81 | 0.23 | 0.36 |
+| **Average** | **0.92** | **0.68** | **0.75** |
+
+### Risk-relevant category accuracy — before/after the v3 prompt fix (`docs/EVALUATION.md` §4/§4c)
+
+| | Contracts scored | Avg Precision | Avg Recall | Avg F1 |
+|---|---|---|---|---|
+| OLD (v2 prompt) | 497 | 0.63 | 0.27 | 0.32 |
+| NEW (v3 prompt + fallback pass) | 243 (partial) | 0.64 | 0.37 | **0.44** |
+
+Categories below 0.30 F1: **20/36 → 9/36**. Categories flat at 0.00 F1: **5/36 → 3/36** (Price Restrictions, Affiliate License-Licensor, Covenant Not To Sue remain unfixed). Best single-category improvement: **Joint Ip Ownership +0.494 F1**. Worst regression: **Source Code Escrow −0.127 F1** (FP jumped 3→18 — the hint pushed recall up at a real precision cost, reported honestly rather than hidden).
+
+### Production-model (`gemini-2.5-flash`) confirmation sample — metadata only, 44/90 contracts (`extraction_eval_results_gemini-2.5-flash-stratified.json`)
+
+| Type | Precision | Recall | F1 |
+|---|---|---|---|
+| Document Name | 1.00 | 1.00 | 1.00 |
+| Parties | 1.00 | 1.00 | 1.00 |
+| Agreement Date | 0.91 | 0.79 | 0.84 |
+| Effective Date | 0.77 | 0.87 | 0.82 |
+| Expiration Date | 0.76 | 0.48 | 0.59 |
+
+Directionally consistent with the Flash-Lite root-cause finding: production model closes the weak-date-field gap without any matcher change (Expiration Date F1 0.26→0.59), confirming the original gap was model capability, not the evaluation logic.
+
+### Infrastructure / system numbers
+
+| Metric | Value | Source |
+|---|---|---|
+| Vector search speedup vs. brute-force cosine scan | ~4.7x mean / ~7x median | `research/benchmark/vector_index_benchmark.py`, 5,000 synthetic nodes |
+| Live cache-hit rate (real production pull) | 73% | `docs/CAPSTONE_SUMMARY.md` §12 |
+| Embedding dimensions | 1536 | `vector_index_config.py:14`, `gemini-embedding-001` |
+| Vector-search cache TTL | 600s (10 min) | `phase3_config.py:29` |
+| e2-micro backend `mem_limit` | 300MB (246MiB measured idle) | `docker-compose.prod.yml:98` |
+| e2-micro worker `mem_limit` | 280MB (236MiB measured idle, `--concurrency=1 --pool=solo`) | `docker-compose.prod.yml:136` |
+| e2-micro ui/caddy/redis `mem_limit` | 40MB / 64MB / 160MB | `docker-compose.prod.yml:178,203,226` |
+| Total memory budget used of 1GB | ≈844MB | sum of the above, confirmed against `docker-compose.prod.yml` |
+| Caddy idle RSS | ~13.5MB (60MB image) | `docs/CAPSTONE_SUMMARY.md` §11, vs. certbot alone at 186MB |
+| Tonight's redeploy cold-start time | ~6 minutes to `healthy` on e2-micro | live-observed during tonight's redeploy (§10) |
+| JWT expiry | 24 hours, HS256 | `backend/governance/auth.py:59-60` |
+| Auth rate limits | 10/min token, 5/min register | `backend/shared/middleware/rate_limit.py:42-43` |
+| Invite token expiry | 7 days | `invite_repository.py:37` |
+| Deterministic policy categories | 5 of ~40+ | `deterministic_policy_rules.py:23-49` |
+| MFA backup codes issued | 10, bcrypt-hashed, single-use | `mfa.py`, `user_repository.py:325-334` |
+| CUAD categories benchmarked | 41 (5 metadata + 36 risk-relevant) | `docs/EVALUATION.md` §1 |
+| Corpus size | 510 contracts (497-510 usable, 13 skipped for missing text) | `docs/EVALUATION.md` §1/§4 |
+| Full backend test suite (current, this repo) | 553 passed / 1 skipped / 0 failed | confirmed live via `pytest` this session |
+| Test-count growth across the engagement | 42 → 61 → 84 → 95 → 211 → 241 → 275 → 293 → 317 → 337 → 367 → 376 → 391 → 405 → 409 → 428 → 437 → 450 → 457 → 459 → 470 → 551 → 553/554 | `docs/CAPSTONE_SUMMARY.md`, milestone-by-milestone |
+| Free-tier `gemini-2.5-flash` quota | 20 requests/day/project | `docs/EVALUATION.md` §3 |
+| Free-tier `gemini-flash-lite-latest` quota | 500 requests/day/project, 15 requests/minute | `docs/EVALUATION.md` §4c (both discovered live) |
+
+---
+
+## 10. Anticipated Hard Questions
+
+**"Your risk-relevant category F1 is 0.32-0.44 on average — isn't that the whole point of the product? How can you ship this?"**
+Yes, and this is the single most important accuracy finding of the whole engagement, measured and reported deliberately rather than buried (`docs/CAPSTONE_SUMMARY.md` §4 item 12, §8). The honest framing: metadata extraction (who signed it, when, when it expires) is high-accuracy (0.75 avg F1) and reliable to automate outright. Risk-relevant clause detection is meaningfully harder and currently best used as a *first-pass triage aid for a human reviewer*, not an unsupervised decision-maker — every extracted clause carries a grounding badge and a `clause_id` specifically so a reviewer can verify, not blindly trust, the output. The root-cause work (§4.7/§4.8 items above, `docs/EVALUATION.md` §4c) already improved the measured subset from 0.32→0.44 average F1 by diagnosing *why* each weak category failed (precision error vs. recall gap vs. near-zero engagement) rather than applying a blanket fix, and it's honestly reported that the improvement is on a partial 243/510-contract re-measurement, not the full corpus, because of a real quota constraint. This is a system with known, quantified, and actively-being-closed weaknesses — not a system with hidden ones.
+
+**"You found a live cross-tenant data leak and redeployed it the same night — walk me through what happened and why testing didn't catch it earlier."**
+`backend/api/document_upload.py` — the router registered unconditionally in `main.py` with no environment gate — carried its own undiscovered copy of `GET /debug/contracts`/`/debug/contract-types` with zero `tenant_id` filtering: the exact vulnerability class already found and fixed once before (`docs/CAPSTONE_SUMMARY.md` §10 finding #3), but in a *different* file — a correct, tenant-scoped, fail-closed version already existed at `backend/api/routes/debug.py`. The insecure sibling copy was never touched by that earlier fix because nobody had confirmed it was the *only* copy. It surfaced from a self-triggered audit specifically looking for "code that exists but was never wired in, or wired in but insecure" — the same audit pattern that had already found two other real issues in this engagement (§1's stubbed extraction, §8's dead Supervisor wiring). The fix was to delete the insecure duplicate outright rather than patch it, specifically because maintaining two copies of the same security-sensitive logic is exactly how a fix applied to one and not the other survives an audit undetected. It was git-stash-verified (a new regression test fails on the pre-fix code, passes after), then re-deployed to the real production VM and live-verified against the real public URL (`https://contract-intel.duckdns.org/api/documents/debug/contracts` → 404) rather than trusting the local fix alone. The honest gap this exposes: the repo-level audit found and fixed this locally hours before the redeploy actually happened — a real production system was vulnerable in the gap between "fixed in code" and "deployed," which is exactly why the redeploy and live re-verification mattered as their own separate step, not an afterthought.
+
+**"The planning-path bug (§14) went undetected through multiple 'verified' testing passes, including live end-to-end verification, until it was finally caught. Doesn't that undermine your whole testing story?"**
+It's the opposite — it's the clearest evidence for why this engagement's testing discipline (live verification *in addition to* mocked tests, repeated at multiple points) is necessary and still not sufficient on its own. What happened: `_analyze_with_planning` — the actual default execution path — never called `workflow_tracker.start_workflow()`, so every real invocation raised a `TypeError` immediately after all its real work had already completed successfully. Its own `except Exception` block silently caught this and fell back to the older, working traditional-workflow path, which produced a structurally valid, plausible-looking result — real clauses, real violations, a real risk score — indistinguishable from a genuine planning-path success in every test and every prior live-verification pass, because nothing was asserting on the one differing detail (a `node_status` key-naming difference between the two paths). It was found only when new instrumentation (the Supervisor rebuild's SSE progress stream) gave a concrete reason to watch a *specific real run's* worker logs closely, not from a written test. The honest lesson, stated directly in the doc itself: "mocked *and* even repeated, real, live end-to-end testing can still validate the wrong code path entirely... if a silent fallback exists between the code path being tested and the code path actually running." The mitigation that actually worked was not more tests of the same shape — it was live instrumentation detailed enough to make the *specific* execution path observable, not just its final output shape.
+
+**"Your self-service/invite-based credential system isn't a real enterprise IdP integration — what are the actual limits?"**
+Correct, and stated plainly rather than oversold. What's real: bootstrap registration (first user of a new tenant only), admin-only org invites (single-use, sha256-hashed, 7-day expiry, tenant-scoped from the JWT not the request body), real Google OIDC SSO (authorization-code+PKCE against Google's actual endpoints, invite-gated so a Google identity alone can never self-provision), and real TOTP MFA with backup codes and anti-replay — all live-verified against real infrastructure (a real Google consent screen clicked through, real independently-computed TOTP codes, real email delivery via Resend), not mocked. What's genuinely still missing: password reset and email verification — real, honest gaps, not deferred euphemistically. What this isn't: a full enterprise IdP integration (Okta, Azure AD, Auth0-as-a-managed-service) with SCIM provisioning, group-based role mapping, or admin-console-driven org management at scale. The reason this is a reasonable stopping point rather than an oversight: the validation layer (`get_current_identity`/`requires_permission`) was explicitly designed as a stable extension point from the start, and this has already been proven twice — once when token issuance moved from claims-only to real credential verification, and again when SSO/MFA were layered on top — with zero changes needed to validation logic either time. A real enterprise IdP would be a third swap of the same issuance layer, not a rearchitecture.
+
+**"You're running this on a single VM with no horizontal scaling — how does this handle real load?"**
+It doesn't, and that's a stated, deliberate scope boundary, not an oversight (§8/§10, `docs/CAPSTONE_SUMMARY.md` §10's "Findings not fixed this pass"). This is a GCP e2-micro Always-Free-tier VM chosen specifically because a real, live, TLS-terminated, publicly-reachable deployment is more valuable to actually build and verify for a capstone than a theoretical multi-instance architecture that was never stood up. Every resource limit on it was empirically measured, not guessed (backend 246MiB idle RSS measured directly, not estimated), and the Celery worker deliberately runs `--concurrency=1 --pool=solo` because the default would fork one full process per CPU core — not viable on a 2-vCPU-burstable box. What this genuinely can't do: serve meaningful concurrent load, survive the VM going down without manual intervention, or scale beyond what one process per service can handle. What real horizontal scaling would need: a chosen target (GKE/Cloud Run/multi-VM), a load balancer, a decision on Neo4j clustering (a paid AuraDB tier), and session-affinity consideration for the Celery worker pool — a materially larger, differently-scoped effort appropriate for a funded team, not a single-engineer capstone.
+
+**"Tell me about a real production issue you debugged."**
+Tonight's redeploy, concretely: after committing the cross-tenant-leak fix, the first attempt to bring the fixed image up on the real GCP VM crash-looped both `backend` and `worker` containers with `exec /app/.venv/bin/fastapi: exec format error` in `docker logs`. That's the canonical Linux signal for an architecture mismatch, not a corrupted build — the image had been built on a Mac (Apple Silicon, `arm64` by default) but the VM runs `amd64`. Root-caused from the error text alone, fixed by rebuilding explicitly with `docker buildx build --platform linux/amd64 --target production --load` and re-verifying the image's `Architecture` field before re-transferring it. The second, separate finding: even with the correct architecture, the backend container took roughly 6 minutes to report `healthy` — genuinely still starting (Redis connecting, then the rate limiter initializing, then LangChain/Pydantic schema construction at import time, all visible progressing in real logs), not stuck, just slow under e2-micro's limited/bursty CPU credit budget. Confirmed via `docker stats` showing real, sustained CPU usage (not zero, not a hang) throughout, and via `docker inspect`'s `Health.Status` transitioning from `starting`→`unhealthy` (an artifact of the healthcheck's `retries=3` firing before the app was actually ready, not a real failure)→`healthy` once import finished. Both findings were confirmed live against the real deployed URL afterward: the old leak paths return 404, the health check and root page both return 200.
+
+---
+
+## 11. Anything Else
+
+### Glossary
+
+- **CUAD** — Contract Understanding Atticus Dataset. A real, published legal-AI benchmark dataset: 500+ commercial contracts annotated across 41 clause categories (`theatticusproject/cuad-qa` on HuggingFace). This project's clause taxonomy, extraction targets, and accuracy benchmark are all built directly against it.
+- **GraphRAG** — Retrieval-Augmented Generation where the retrieval substrate is a graph database (here, Neo4j) rather than a pure vector store — retrieval can exploit both vector similarity *and* real graph relationships (Contract→Section→Clause→Party).
+- **RBAC** — Role-Based Access Control. Four roles (`ADMIN`, `LEGAL_REVIEWER`, `AUDITOR`, `VIEWER`), each mapped to a fixed permission set (`backend/governance/rbac.py`).
+- **TOTP** — Time-based One-Time Password, the standard behind most authenticator-app MFA (Google Authenticator, Authy). 30-second time steps, HMAC-based.
+- **OIDC** — OpenID Connect, an identity layer on top of OAuth 2.0. Used here for "Sign in with Google."
+- **PKCE** — Proof Key for Code Exchange, an OAuth extension that prevents authorization-code interception attacks; used in this project's real Google OIDC flow.
+- **Grounding** — verifying that an LLM's claimed output (a quoted clause, a cited rule) is actually, verifiably present in/consistent with real source data, rather than trusting the model's confidence.
+- **F1 score** — the harmonic mean of precision and recall; the standard single-number summary of extraction/classification accuracy used throughout this project's evaluation.
+- **Circuit breaker** — a reliability pattern that stops sending requests to a known-failing dependency for a cooldown window, instead of every caller retrying into the same failure.
+- **`node_status`** — this codebase's per-step (`extract_clauses`/`check_policies`/etc.) success/partial/failed tracking, threaded through the planning engine to the API response so a partial failure is reported honestly instead of masked as a full success.
+
+### Quick-reference index of key commits/files
+
+| Topic | File(s) | Commit(s) |
+|---|---|---|
+| Real LLM extraction (replacing stubs) | `backend/agents/llm_extraction_service.py` | `e6553cb` |
+| RBAC ADMIN-default bug | `backend/governance/rbac.py` | `2cc284f` |
+| JWT auth migration | `backend/governance/auth.py` | `a93f029` |
+| Native vector index | `backend/migrations/vector_index_migration.py` | (P3 item 16, `docs/CAPSTONE_SUMMARY.md` §4) |
+| Hybrid policy/risk engine | `backend/agents/deterministic_policy_rules.py`, `policy_evaluation_service.py` | `7c6ecc6` |
+| Risk-category benchmark (headline finding) | `research/benchmark/`, `docs/EVALUATION.md` | `2636751` |
+| Weak-category fix (v3 prompt, fallback pass) | `backend/agents/llm_extraction_service.py` | (§15, `docs/CAPSTONE_SUMMARY.md`) |
+| Real circuit breaker | `backend/shared/reliability/circuit_breaker.py` | `e518cf4` |
+| Planning-path silent-fallback bug | `backend/agents/contract_intelligence_agents.py` | `7b5ef5f` |
+| Supervisor Agent rebuild | `backend/agents/supervisor/quality_grader.py`, `execution_engine.py` | `149251e`, `8058aed`, `d5d9845`, `6872180` |
+| Credential provisioning (invites/SSO/MFA) | `backend/governance/oidc.py`, `mfa.py`, `backend/infrastructure/invite_repository.py` | `615b3b7`, `46fd221` |
+| Cross-tenant leak fix + frontend audit | `backend/api/document_upload.py` | `51dd33a` |
+| Tonight's production redeploy | `docker-compose.prod.yml`, GCP VM | (this session — live-verified, no code commit) |
+
+### Evaluation reproduction (if asked to demonstrate live)
+
+```bash
+# Full 41-category run, rate-limited (required for gemini-flash-lite-latest)
+GOOGLE_API_KEY=... python research/benchmark/evaluate_extraction.py \
+  --model gemini-flash-lite-latest --run-name <label> --rpm-limit 8
+```
+Resumes automatically from checkpoint (`docs/EVALUATION.md` §7). Full backend test suite: `source backend/.venv/bin/activate && python -m pytest backend/tests/ -q --ignore=backend/tests/test_mcp_capabilities.py` (553 passed / 1 skipped as of this document).
