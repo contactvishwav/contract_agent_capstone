@@ -34,7 +34,7 @@ The Contract Intelligence Agent is an agentic GraphRAG system designed to proces
 - **Agent Framework**: LangGraph for orchestrating AI agents
 - **LLM Integration**: LangChain with multiple provider support
 - **Database**: Neo4j Graph Database
-- **Embeddings**: Google Generative AI Embeddings (text-embedding-004)
+- **Embeddings**: Google Generative AI Embeddings (`gemini-embedding-001`, 1536-dimensional)
 - **Environment**: Docker containerized
 
 ### Frontend
@@ -91,9 +91,30 @@ Advanced contract querying capabilities with:
 
 **Advanced Features:**
 - Custom Cypher query support for complex analytics
-- Vector similarity search for semantic matching
+- Vector similarity search for semantic matching, via a real Neo4j native
+  vector index (`db.index.vector.queryNodes`), not a brute-force scan
 - Aggregation capabilities for business intelligence
 - Relationship-based filtering
+
+**Optional second-stage re-ranking** (`backend/agents/reranker_service.py`,
+document and clause search levels, gated by `RERANKING_ENABLED` -
+default off): retrieves a wider candidate pool (30) from the vector
+index, then one batched Gemini structured-output call jointly scores
+query+candidate relevance and returns the top 10 in re-ranked order - a
+cross-encoder-style joint judgment is more accurate than cosine
+similarity's independent-encoding order alone. A local cross-encoder
+(sentence-transformers) was evaluated and rejected for this deployment:
+measured directly, loading `cross-encoder/ms-marco-MiniLM-L-6-v2` and
+running one batched 30-candidate inference cost ~209MB real RSS on top
+of torch's own ~300MB+ import overhead - against the production
+e2-micro VM's already-committed ~844MB of 1GB (see `docs/DEPLOYMENT.md`),
+this doesn't fit without real OOM risk. Gemini adds no incremental
+deployed memory and reuses the same circuit-breaker/timeout/caching
+infrastructure already protecting every other Gemini call in this
+codebase; on any failure (timeout, circuit open, malformed response) it
+falls back to the original unranked order rather than failing the
+request. See `docs/CAPSTONE_SUMMARY.md` for the full build/verification
+history.
 
 ### 4. Frontend Chat Interface
 
@@ -225,7 +246,10 @@ services:
 ## Performance Optimizations
 
 - **Streaming Responses**: Real-time user feedback
-- **Vector Search**: Efficient semantic matching with cosine similarity
+- **Vector Search**: Efficient semantic matching via Neo4j's native vector
+  index (cosine similarity), with an optional Gemini re-ranking second
+  stage over a wider candidate pool for document/clause search (default
+  off - see "Contract Search Tool" above)
 - **Connection Pooling**: Neo4j driver optimization
 - **Caching**: Schema refresh disabled for performance
 - **Lazy Loading**: LLM agents initialized on demand

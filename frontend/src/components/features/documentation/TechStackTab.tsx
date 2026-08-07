@@ -91,12 +91,30 @@ export const TechStackTab: React.FC = () => {
               </div>
               <div className="mt-4 pt-4 border-t border-slate-200">
                 <div className="flex items-center justify-center space-x-4 text-xs text-slate-600">
-                  <span>768-dimensional embeddings</span>
+                  <span>1536-dimensional embeddings (Gemini gemini-embedding-001)</span>
                   <span>•</span>
-                  <span>Cosine similarity matching</span>
-                  <span>•</span>
-                  <span>Real-time semantic search</span>
+                  <span>Cosine similarity matching via Neo4j native vector index</span>
                 </div>
+              </div>
+              {/* Re-ranking: real, built, gated behind RERANKING_ENABLED
+                  (default off) - a genuine second stage on top of vector
+                  search, not vector search itself, so described as its own
+                  optional capability rather than folded into the bullets
+                  above. See docs/CAPSTONE_SUMMARY.md for the full build
+                  history, including why Gemini was chosen over a local
+                  cross-encoder for this specific e2-micro deployment. */}
+              <div className="mt-4 pt-4 border-t border-slate-200 text-sm">
+                <div className="flex items-center space-x-2 mb-1">
+                  <span>🎯 Optional re-ranking (document &amp; clause levels)</span>
+                </div>
+                <p className="text-xs text-slate-600">
+                  A wider candidate pool (30) is retrieved from the vector index, then one
+                  batched Gemini call jointly scores query+candidate relevance and re-orders
+                  the top 10 - more accurate than similarity order alone, since a cross-encoder
+                  judges the query and document together rather than independently. Off by
+                  default (<code>RERANKING_ENABLED</code>); falls back to the original vector-search
+                  order on any failure, so search never breaks because re-ranking did.
+                </p>
               </div>
             </div>
           </div>
