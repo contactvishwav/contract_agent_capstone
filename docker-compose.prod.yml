@@ -78,6 +78,14 @@ services:
       - NEO4J_DATABASE=${NEO4J_DATABASE-neo4j}
       - REDIS_URL=redis://redis:6379
       - CACHE_ENABLED=true
+      # Search re-ranking (backend/agents/reranker_service.py) - defaults
+      # off. Deployable without changing live search behavior; enable
+      # deliberately (set RERANKING_ENABLED=true here or in the real
+      # .env.production on the VM) only after verifying stable under real
+      # production load. See docs/DEPLOYMENT.md's rollout guidance. Only
+      # this service, not worker below - reranking lives in the FastAPI
+      # search route, not the Celery analysis task.
+      - RERANKING_ENABLED=${RERANKING_ENABLED-false}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:?Set GOOGLE_API_KEY}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:?Set JWT_SECRET_KEY to a real generated secret}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:?Set ENCRYPTION_KEY to a real generated secret (or set KEY_PROVIDER=gcp below and this is ignored)}
