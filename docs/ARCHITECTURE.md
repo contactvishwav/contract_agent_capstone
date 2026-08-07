@@ -97,23 +97,35 @@ Advanced contract querying capabilities with:
 - Relationship-based filtering
 
 **Optional second-stage re-ranking** (`backend/agents/reranker_service.py`,
-document and clause search levels, gated by `RERANKING_ENABLED` -
-default off): retrieves a wider candidate pool (30) from the vector
-index, then one batched Gemini structured-output call jointly scores
-query+candidate relevance and returns the top 10 in re-ranked order - a
-cross-encoder-style joint judgment is more accurate than cosine
-similarity's independent-encoding order alone. A local cross-encoder
-(sentence-transformers) was evaluated and rejected for this deployment:
-measured directly, loading `cross-encoder/ms-marco-MiniLM-L-6-v2` and
-running one batched 30-candidate inference cost ~209MB real RSS on top
-of torch's own ~300MB+ import overhead - against the production
-e2-micro VM's already-committed ~844MB of 1GB (see `docs/DEPLOYMENT.md`),
-this doesn't fit without real OOM risk. Gemini adds no incremental
-deployed memory and reuses the same circuit-breaker/timeout/caching
-infrastructure already protecting every other Gemini call in this
-codebase; on any failure (timeout, circuit open, malformed response) it
-falls back to the original unranked order rather than failing the
-request. See `docs/CAPSTONE_SUMMARY.md` for the full build/verification
+gated by `RERANKING_ENABLED` - default off): retrieves a wider candidate
+pool (30) from the vector index, then one batched Gemini structured-output
+call jointly scores query+candidate relevance and returns the top 10 in
+re-ranked order - a cross-encoder-style joint judgment is more accurate
+than cosine similarity's independent-encoding order alone. Wired into
+every level of both real search implementations - `search_strategies.py`'s
+4 REST API strategies (document/clause/section/relationship) and the
+separate, LangChain-tool-facing `enhanced_contract_search_tool.py`'s
+`get_contracts_multi_level` (document/section/clause/relationship,
+used by Contract Chat). Those two implementations were deliberately kept
+separate rather than consolidated into one - they'd already diverged in
+real, load-bearing ways before re-ranking touched either one (different
+similarity thresholds, different filter/search-level capabilities,
+separate caching schemes, different return contracts) - see
+`docs/CAPSTONE_SUMMARY.md` §20 for the full investigation behind that
+call. A local cross-encoder (sentence-transformers) was evaluated and
+rejected for this deployment: measured directly, loading
+`cross-encoder/ms-marco-MiniLM-L-6-v2` and running one batched
+30-candidate inference cost ~209MB real RSS on top of torch's own
+~300MB+ import overhead - against the production e2-micro VM's
+already-committed ~844MB of 1GB (see `docs/DEPLOYMENT.md`), this doesn't
+fit without real OOM risk. Gemini adds no incremental deployed memory and
+reuses the same circuit-breaker/timeout/caching infrastructure already
+protecting every other Gemini call in this codebase; on any failure
+(timeout, circuit open, malformed response, or even a construction-time
+failure building the re-ranking LLM client itself - a real gap found and
+fixed while extending this to more search levels) it falls back to the
+original unranked order rather than failing the request. See
+`docs/CAPSTONE_SUMMARY.md` §18/§20 for the full build/verification
 history.
 
 ### 4. Frontend Chat Interface
@@ -129,6 +141,37 @@ history.
 - Model switching during conversation
 - Tool call visualization
 - Conversation history persistence
+
+### 5. MCP Server & In-Process Call Bridge (`backend/mcp_server.py`, `backend/mcp/`)
+
+A real Model Context Protocol server (`fastmcp`) exposing 4 tools -
+clause-library search, playbook rule lookup, precedent-clause search, and
+contract-metadata fetch - backed by real business logic
+(`PolicyRepository`, `EnhancedPrecedentMatcherTool`,
+`Neo4jContractRepository`). Runs standalone over stdio
+(`python backend/mcp_server.py`) for external MCP clients, exactly as
+before.
+
+**New: an in-process call path** (`backend/mcp/client_bridge.py`) lets
+FastAPI call these same 4 tools without a subprocess or socket, using
+`fastmcp`'s in-memory transport (`fastmcp.Client(mcp_server)` against the
+live server instance, over the real MCP protocol). Bound into the
+Contract Chat agent (`backend/contract_chat_agent.py`) as 4 additional
+LangChain tools, alongside the existing 2 contract/clause search tools -
+genuinely new capabilities for chat (policy/playbook/precedent/metadata
+lookups), not a duplicate path to what chat already did.
+
+**Tracing**: a real HTTP request's `correlation_id`
+(`TracingMiddleware`) travels explicitly through the LangGraph
+`config["configurable"]` dict (alongside the existing, identically-
+threaded `tenant_id`) into these tools' `_run`, reaching the real MCP
+tool's own execution and its audit-trail entry - not a contextvar relied
+on to survive whatever thread LangGraph runs the tool-execution node in.
+Live-verified end to end against real container logs: one id spans the
+HTTP layer, the LLM's own tool-selection decision, the in-process MCP
+call, and the tool's real log/audit output. See `docs/CAPSTONE_SUMMARY.md`
+§19 for the full build/verification history, including a real
+`fastmcp`/pytest interaction bug found and fixed along the way.
 
 ## Data Model
 
