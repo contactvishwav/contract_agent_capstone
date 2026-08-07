@@ -30,6 +30,7 @@ from backend.agents import llm_extraction_service, policy_evaluation_service
 
 _EXPECTED_EXTRACTION_PROMPT_HASHES = {
     "v2": "96a11b4f2007b701080ed70e1d72b5e64176f420de18f5ce7c02067e02ba54ad",
+    "v3": "ee7751236b8bda18b8b6f183cfecd4ff8bd50864104ad7984dc6725053abf38b",
 }
 
 _EXPECTED_POLICY_PROMPT_HASHES = {

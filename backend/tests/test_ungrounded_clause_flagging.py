@@ -58,14 +58,18 @@ SOURCE_TEXT = "Payment is due Net 90 days. Governing law is California law."
 class ClauseGroundingFlagTests(unittest.TestCase):
     def test_grounded_clause_marked_true(self):
         llm = FakeLLM([("Governing Law", "California law")])
-        clauses = json.loads(ClauseDetectorTool(llm=llm)._run(SOURCE_TEXT, contract_id="c1"))
+        # enable_fallback=False: this FakeLLM ignores prompt content and
+        # always returns the same fixed clauses, so a second (fallback)
+        # call would just double-count them - this test is about the
+        # grounded flag, not the fallback pass (covered separately).
+        clauses = json.loads(ClauseDetectorTool(llm=llm)._run(SOURCE_TEXT, contract_id="c1", enable_fallback=False))
 
         self.assertEqual(len(clauses), 1)
         self.assertTrue(clauses[0]["grounded"])
 
     def test_ungrounded_clause_marked_false_not_silently_dropped(self):
         llm = FakeLLM([("Governing Law", "text that does not appear in the source contract at all")])
-        clauses = json.loads(ClauseDetectorTool(llm=llm)._run(SOURCE_TEXT, contract_id="c1"))
+        clauses = json.loads(ClauseDetectorTool(llm=llm)._run(SOURCE_TEXT, contract_id="c1", enable_fallback=False))
 
         # Still present (flagged, not excluded) - a hallucination-risk clause
         # is still worth a human's attention.

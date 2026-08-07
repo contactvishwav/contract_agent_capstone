@@ -100,8 +100,8 @@ class ClauseExtractionCachingTests(unittest.TestCase):
         service = LLMExtractionService(llm)
         text = "This agreement is governed by California law applies."
 
-        first = service.extract_clauses(text)
-        second = service.extract_clauses(text)
+        first = service.extract_clauses(text, enable_fallback=False)
+        second = service.extract_clauses(text, enable_fallback=False)
 
         self.assertEqual(llm.call_count, 1, "second identical call must not re-invoke the LLM")
         self.assertEqual(len(first), 1)
@@ -111,8 +111,8 @@ class ClauseExtractionCachingTests(unittest.TestCase):
         llm = CountingFakeLLM([self._clause_response("California law applies."), self._clause_response("Texas law applies.")])
         service = LLMExtractionService(llm)
 
-        service.extract_clauses("Contract A: California law applies.")
-        service.extract_clauses("Contract B: Texas law applies.")
+        service.extract_clauses("Contract A: California law applies.", enable_fallback=False)
+        service.extract_clauses("Contract B: Texas law applies.", enable_fallback=False)
 
         self.assertEqual(llm.call_count, 2, "different contract text must not share a cache entry")
 
@@ -136,8 +136,8 @@ class ClauseExtractionCachingTests(unittest.TestCase):
         service = LLMExtractionService(llm)
         text = "Repeated text with caching turned off."
 
-        service.extract_clauses(text)
-        service.extract_clauses(text)
+        service.extract_clauses(text, enable_fallback=False)
+        service.extract_clauses(text, enable_fallback=False)
 
         self.assertEqual(llm.call_count, 2, "CACHE_ENABLED=False must bypass caching entirely")
 
@@ -146,8 +146,8 @@ class ClauseExtractionCachingTests(unittest.TestCase):
         service = LLMExtractionService(llm)
         text = "Track my usage please."
 
-        service.extract_clauses(text)
-        service.extract_clauses(text)
+        service.extract_clauses(text, enable_fallback=False)
+        service.extract_clauses(text, enable_fallback=False)
 
         summary = self.tracker.get_summary()["by_operation"]["clause_extraction"]
         self.assertEqual(summary["total_calls"], 2)

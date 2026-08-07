@@ -121,7 +121,16 @@ class LLMCUADClassifier(ICUADClassifier):
         relevant_type_names = self._select_relevant_types(content)
         candidate_types = [CUADClauseType(t) for t in relevant_type_names] if relevant_type_names else None
 
-        extracted = self._service.extract_clauses(content, candidate_types=candidate_types)
+        # enable_fallback=False: this classifies a single already-extracted
+        # clause snippet, not a full document - the fallback pass exists for
+        # whole-contract extraction where FALLBACK_CATEGORIES's rare types
+        # are easy to miss among 41 competing categories. Doubling this
+        # call's cost to re-ask about those same 8 types on a short snippet
+        # already known to be about something else isn't the intervention
+        # that was measured, and isn't warranted here regardless.
+        extracted = self._service.extract_clauses(
+            content, candidate_types=candidate_types, enable_fallback=False
+        )
 
         return [
             CUADClassification(

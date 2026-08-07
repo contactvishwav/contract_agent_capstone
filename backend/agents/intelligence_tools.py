@@ -43,8 +43,21 @@ class ClauseDetectorTool(BaseTool):
         # convention in this codebase, e.g. EnhancedPrecedentMatcherTool)
         object.__setattr__(self, '_llm', llm)
 
-    def _run(self, contract_text: str, contract_id: Optional[str] = None, tenant_id: Optional[str] = None) -> str:
-        """Extract clauses from contract text using real LLM-based extraction"""
+    def _run(
+        self,
+        contract_text: str,
+        contract_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        enable_fallback: bool = True,
+    ) -> str:
+        """Extract clauses from contract text using real LLM-based extraction.
+
+        enable_fallback defaults to True (the real production behavior: a
+        second, narrower LLM call for FALLBACK_CATEGORIES when the primary
+        pass found none of them - see llm_extraction_service.py). Exposed
+        here mainly so tests unrelated to that behavior can pass False and
+        keep asserting on exactly one LLM call.
+        """
         try:
             # No truncation: gemini-2.5-flash supports over 1M input tokens,
             # and clauses like Expiration Date often appear late in long
@@ -56,7 +69,7 @@ class ClauseDetectorTool(BaseTool):
             # of whether extraction is ever actually invoked).
             llm = self._llm or get_default_llm()
             service = LLMExtractionService(llm)
-            extracted = service.extract_clauses(contract_text)
+            extracted = service.extract_clauses(contract_text, enable_fallback=enable_fallback)
 
             seen: Dict[str, int] = {}
             clauses = []

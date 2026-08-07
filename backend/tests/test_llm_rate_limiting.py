@@ -66,7 +66,10 @@ class ConcurrencySemaphoreAppliedTests(unittest.TestCase):
         fake_semaphore = MagicMock()
         with patch("backend.agents.llm_extraction_service.llm_call_semaphore", fake_semaphore):
             service = LLMExtractionService(FakeLLM(_LLMExtractionResponse(clauses=[])))
-            service.extract_clauses("Some contract text.")
+            # enable_fallback=False: this test is about the semaphore
+            # wrapping a single .invoke() call, not the FALLBACK_CATEGORIES
+            # second-pass behavior (covered in test_extraction_fallback_pass.py).
+            service.extract_clauses("Some contract text.", enable_fallback=False)
 
         fake_semaphore.__enter__.assert_called_once()
         fake_semaphore.__exit__.assert_called_once()

@@ -80,7 +80,11 @@ class ClauseIdStabilityTests(unittest.TestCase):
         ])
         tool = ClauseDetectorTool(llm=llm)
 
-        clauses = json.loads(tool._run(TEXT, contract_id="contract_1"))
+        # enable_fallback=False: this FakeLLM ignores prompt content and
+        # always returns the same fixed clauses, so a second (fallback)
+        # call would just double-count them - this test is about dup-id
+        # suffixing, not the fallback pass (covered separately).
+        clauses = json.loads(tool._run(TEXT, contract_id="contract_1", enable_fallback=False))
 
         self.assertEqual(len(clauses), 2)
         self.assertNotEqual(clauses[0]["clause_id"], clauses[1]["clause_id"])

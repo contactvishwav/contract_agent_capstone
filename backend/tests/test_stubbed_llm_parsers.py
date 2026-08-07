@@ -91,7 +91,10 @@ class TestLLMExtractionService(unittest.TestCase):
         fake_llm, structured = make_fake_llm(response)
 
         service = LLMExtractionService(fake_llm)
-        result = service.extract_clauses(source_text)
+        # enable_fallback=False: this test is about parsing/offset
+        # resolution, not the FALLBACK_CATEGORIES second-pass behavior
+        # (covered separately in test_extraction_fallback_pass.py).
+        result = service.extract_clauses(source_text, enable_fallback=False)
 
         structured.invoke.assert_called_once()
         self.assertEqual(len(result), 1)
@@ -120,7 +123,7 @@ class TestLLMExtractionService(unittest.TestCase):
         ])
         fake_llm, _ = make_fake_llm(response)
 
-        result = LLMExtractionService(fake_llm).extract_clauses(source_text)
+        result = LLMExtractionService(fake_llm).extract_clauses(source_text, enable_fallback=False)
 
         self.assertEqual(len(result), 1)
         self.assertNotEqual(result[0].start_offset, -1)
@@ -147,10 +150,15 @@ class TestLLMClauseExtractorRealExtraction(unittest.TestCase):
             )
         ])
         fake_llm, structured = make_fake_llm(response)
+        # This call site uses the real default (candidate_types=None,
+        # enable_fallback=True) - TERMINATION_FOR_CONVENIENCE isn't in
+        # FALLBACK_CATEGORIES, so a second, narrower call fires to check
+        # for those. Second canned response is empty (nothing found there).
+        structured.invoke.side_effect = [_wrap_raw(response), _wrap_raw(_LLMExtractionResponse(clauses=[]))]
 
         clauses = LLMClauseExtractor(fake_llm).extract_clauses(source_text, section_id="sec_1")
 
-        structured.invoke.assert_called_once()
+        self.assertEqual(structured.invoke.call_count, 2, "primary pass + fallback pass for FALLBACK_CATEGORIES")
         self.assertEqual(len(clauses), 1)
         clause = clauses[0]
         self.assertIsInstance(clause, Clause)
@@ -211,9 +219,14 @@ class TestClauseDetectorToolRealExtraction(unittest.TestCase):
             )
         ])
         response_b = _LLMExtractionResponse(clauses=[])
+        empty = _wrap_raw(_LLMExtractionResponse(clauses=[]))
 
         fake_llm, structured = make_fake_llm(response_a)
-        structured.invoke.side_effect = [_wrap_raw(response_a), _wrap_raw(response_b)]
+        # This tool's real call site uses the default (candidate_types=None,
+        # enable_fallback=True), so each tool._run() below makes a primary
+        # call plus a fallback call for FALLBACK_CATEGORIES (empty in both
+        # cases here, since neither example touches those 8 rare types).
+        structured.invoke.side_effect = [_wrap_raw(response_a), empty, _wrap_raw(response_b), empty]
 
         tool = ClauseDetectorTool(llm=fake_llm)
         result_a = json.loads(tool._run(contract_a_text))

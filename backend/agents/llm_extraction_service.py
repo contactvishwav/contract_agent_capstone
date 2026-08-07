@@ -14,7 +14,7 @@ import hashlib
 import os
 import re
 from enum import Enum
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -40,7 +40,15 @@ logger = get_logger(__name__)
 # _build_prompt's real source against a table keyed by PROMPT_VERSION, so
 # editing the prompt without bumping this constant (or bumping it without
 # updating that table) fails CI.
-PROMPT_VERSION = "v2"
+#
+# v3 (weak-category accuracy pass, docs/EVALUATION.md): _build_prompt now
+# appends a short per-category hint for the categories that were scoring
+# below 0.30 F1 due to genuine recall/precision gaps (see _CATEGORY_HINTS),
+# and extract_clauses gained a conditional fallback pass (see
+# FALLBACK_CATEGORIES / _run_fallback_pass) for the categories the model
+# was essentially never attempting. Bumped so cached v2 results (extracted
+# without either change) are never served under the new behavior.
+PROMPT_VERSION = "v3"
 
 
 class CUADClauseType(str, Enum):
@@ -94,6 +102,142 @@ class CUADClauseType(str, Enum):
     INSURANCE = "Insurance"
     COVENANT_NOT_TO_SUE = "Covenant Not To Sue"
     THIRD_PARTY_BENEFICIARY = "Third Party Beneficiary"
+
+
+# Root-caused against the 497-contract flash-lite benchmark
+# (docs/EVALUATION.md, weak-category accuracy pass): the 20 risk-relevant
+# categories scoring below 0.30 F1 split into two groups, driven by real
+# per-contract failure inspection, not guesswork.
+#
+# Group A/C below: the model DOES engage with these categories (real TPs
+# exist) but under-recalls, or in two cases over-triggers on the wrong
+# clause shape. A one-line hint appended next to the category name in the
+# main single-pass prompt is the proportionate fix - these are not
+# candidates for the heavier fallback pass because the model isn't
+# ignoring them, it just needs sharper guidance than the bare category
+# name provides.
+#
+# Group A (precision fixes - the model finds *a* clause but the wrong one):
+#   - Third Party Beneficiary: 103 of 497 contracts got a false positive,
+#     almost all boilerplate "no third party beneficiaries" DISCLAIMER
+#     clauses being matched as if they granted rights.
+#   - Change Of Control: 18 of 96 false negatives were the model quoting
+#     the bare definition of "Change of Control" instead of the operative
+#     consequence clause CUAD's gold span actually points to.
+# Group C (recall gaps - the model already finds some real examples):
+#   Non-Disparagement, Most Favored Nation, Source Code Escrow,
+#   Rofr/Rofo/Rofn, Ip Ownership Assignment, Revenue/Profit Sharing,
+#   Minimum Commitment, Exclusivity, Uncapped Liability, Price Restrictions.
+#
+# Deliberately NOT applied to the 8 FALLBACK_CATEGORIES below, or to the
+# categories that already score well (Document Name/Parties/dates etc.) -
+# padding every category with a hint would dilute the already-dense
+# 41-category prompt without a demonstrated need for the categories that
+# work today.
+_CATEGORY_HINTS: Dict["CUADClauseType", str] = {
+    CUADClauseType.THIRD_PARTY_BENEFICIARY: (
+        "only a clause that GRANTS enforcement rights to a non-signatory "
+        "third party - do NOT match boilerplate stating there are NO "
+        "third-party beneficiaries, that language is the opposite of this category"
+    ),
+    CUADClauseType.CHANGE_OF_CONTROL: (
+        "the operative clause describing what happens upon a change of "
+        "control (e.g. consent required, assignment restricted, termination "
+        "triggered) - not a bare definition of the term \"Change of Control\""
+    ),
+    CUADClauseType.NON_DISPARAGEMENT: (
+        "a promise not to make negative or disparaging public statements about the other party"
+    ),
+    CUADClauseType.MOST_FAVORED_NATION: (
+        "a promise to extend the best price or terms given to any other customer"
+    ),
+    CUADClauseType.SOURCE_CODE_ESCROW: (
+        "an obligation to deposit source code with a third-party escrow agent"
+    ),
+    CUADClauseType.ROFR_ROFO_ROFN: (
+        "a right of first refusal, first offer, or first negotiation before "
+        "a party may deal with a third party"
+    ),
+    CUADClauseType.IP_OWNERSHIP_ASSIGNMENT: (
+        "a clause assigning ownership of newly-created intellectual property to one of the parties"
+    ),
+    CUADClauseType.REVENUE_PROFIT_SHARING: (
+        "an obligation to share a percentage of revenue or profit with the other party"
+    ),
+    CUADClauseType.MINIMUM_COMMITMENT: (
+        "a minimum purchase, volume, usage, or spend the counterparty must commit to"
+    ),
+    CUADClauseType.EXCLUSIVITY: (
+        "an obligation to deal exclusively with the other party in some market, territory, or product line"
+    ),
+    CUADClauseType.UNCAPPED_LIABILITY: (
+        "a carve-out stating some type of liability is NOT subject to the contract's liability cap"
+    ),
+    CUADClauseType.PRICE_RESTRICTIONS: (
+        "a restriction on the price a party may charge, e.g. a resale price or MSRP floor/ceiling"
+    ),
+}
+
+# The 8 categories where the 497-contract benchmark showed the model
+# essentially never attempting the category at all (0-1 true positives,
+# near-zero false positives too - not wrong guesses, no guesses). A prompt
+# hint alone is unlikely to fix "never engages with this category" inside
+# an already-dense 41-category list, so these instead get a smaller,
+# dedicated follow-up LLM call (see _run_fallback_pass) - fired only when
+# the primary pass found none of them, mirroring the deterministic-table
+# vs. LLM-reasoned split already used in PolicyEvaluationService /
+# evaluate_deterministic, adapted here as "broad single pass" vs.
+# "targeted narrow pass" rather than "deterministic" vs. "LLM".
+FALLBACK_CATEGORIES: List["CUADClauseType"] = [
+    CUADClauseType.VOLUME_RESTRICTION,
+    CUADClauseType.COMPETITIVE_RESTRICTION_EXCEPTION,
+    CUADClauseType.UNLIMITED_ALL_YOU_CAN_EAT_LICENSE,
+    CUADClauseType.JOINT_IP_OWNERSHIP,
+    CUADClauseType.AFFILIATE_LICENSE_LICENSEE,
+    CUADClauseType.AFFILIATE_LICENSE_LICENSOR,
+    CUADClauseType.COVENANT_NOT_TO_SUE,
+    CUADClauseType.POST_TERMINATION_SERVICES,
+]
+
+# Richer per-category guidance for the fallback pass - a hint plus a short
+# illustrative example, since this call has far fewer competing categories
+# to describe (8 instead of 41) and exists specifically because a bare
+# category name plus one-line hint was judged insufficient for categories
+# the model wasn't attempting at all.
+_FALLBACK_CATEGORY_GUIDANCE: Dict["CUADClauseType", str] = {
+    CUADClauseType.VOLUME_RESTRICTION: (
+        "a cap on the QUANTITY a party may buy, sell, or use. "
+        'Example: "Distributor shall not resell more than 10,000 units of the Product per calendar quarter."'
+    ),
+    CUADClauseType.COMPETITIVE_RESTRICTION_EXCEPTION: (
+        "a carve-out EXCUSING a party from an otherwise-applicable non-compete or exclusivity obligation. "
+        'Example: "Notwithstanding the foregoing, Company may continue to operate its existing Widget business."'
+    ),
+    CUADClauseType.UNLIMITED_ALL_YOU_CAN_EAT_LICENSE: (
+        "a license granting unlimited use, copies, or users with no quantity cap. "
+        'Example: "Licensee may install and use the Software on an unlimited number of devices."'
+    ),
+    CUADClauseType.JOINT_IP_OWNERSHIP: (
+        "a clause stating intellectual property will be OWNED JOINTLY by both parties, not assigned to one. "
+        'Example: "Any Improvements developed jointly shall be jointly owned by both parties."'
+    ),
+    CUADClauseType.AFFILIATE_LICENSE_LICENSEE: (
+        "a clause extending the LICENSE GRANT to the licensee's affiliates/subsidiaries, not just the signing party. "
+        'Example: "The license granted herein extends to Licensee\'s Affiliates."'
+    ),
+    CUADClauseType.AFFILIATE_LICENSE_LICENSOR: (
+        "a clause under which the LICENSOR's affiliates (not just the signing licensor) also grant rights or are bound. "
+        'Example: "Licensor and its Affiliates hereby grant to Licensee a license under any patents they own."'
+    ),
+    CUADClauseType.COVENANT_NOT_TO_SUE: (
+        "a promise not to bring a legal claim or lawsuit against the other party, distinct from a liability cap or release. "
+        'Example: "Company covenants not to sue Customer for infringement of the Licensed Patents."'
+    ),
+    CUADClauseType.POST_TERMINATION_SERVICES: (
+        "an obligation to continue providing services, support, or transition assistance for a period AFTER the agreement ends. "
+        'Example: "Following termination, Vendor shall provide transition assistance for up to 90 days."'
+    ),
+}
 
 
 class _LLMExtractedClause(BaseModel):
@@ -198,14 +342,19 @@ class LLMExtractionService:
         text: str,
         candidate_types: Optional[List[CUADClauseType]] = None,
         raise_on_error: bool = False,
+        enable_fallback: bool = True,
     ) -> List[ExtractedClause]:
         """
-        Extract all applicable CUAD clauses from `text` in a single LLM call.
+        Extract all applicable CUAD clauses from `text` in a single LLM call,
+        plus (by default) a second, smaller conditional call for the small
+        set of categories the primary pass tends not to attempt at all.
 
         candidate_types optionally restricts which categories the model is
         asked about - used by LLMCUADClassifier to narrow classification of
         an already-extracted clause to a keyword-relevant subset instead of
-        all 41 types.
+        all 41 types. The fallback pass only runs for full (candidate_types
+        is None) extraction, since a caller that already narrowed the
+        category set has made its own scoping decision.
 
         raise_on_error defaults to False (production behavior: degrade to []
         rather than crash a caller on a transient LLM/network failure).
@@ -214,15 +363,24 @@ class LLMExtractionService:
         stop a long batch run cleanly instead of burning through the rest of
         it on calls that are guaranteed to keep failing.
 
+        enable_fallback controls the second call described above (see
+        FALLBACK_CATEGORIES) - it only fires when the primary pass found
+        none of those categories, so most contracts (which genuinely don't
+        contain any of these rare clause types) still cost one LLM call, not
+        two. Defaults to True for real accuracy; callers that need to
+        conserve quota can pass False to get exactly the old single-pass
+        behavior.
+
         Re-analyzing the same contract text previously re-billed the LLM
         every time (docs/ENTERPRISE_READINESS.md §9) - results are now
-        cached on a hash of (prompt version, model, candidate_types, text),
-        so an identical request is free and instant on a cache hit.
+        cached on a hash of (prompt version, model, candidate_types,
+        enable_fallback, text), so an identical request is free and instant
+        on a cache hit.
         """
         if not self._structured_llm or not text or not text.strip():
             return []
 
-        cache_key = self._cache_key(text, candidate_types)
+        cache_key = self._cache_key(text, candidate_types, enable_fallback)
         if Phase3Config.CACHE_ENABLED:
             cached = cache.get(cache_key)
             if cached is not None:
@@ -230,7 +388,32 @@ class LLMExtractionService:
                 return [ExtractedClause(**c) for c in cached]
 
         prompt = self._build_prompt(text, candidate_types)
+        result = self._invoke(prompt, text, raise_on_error)
 
+        if enable_fallback and candidate_types is None:
+            found_types = {c.clause_type for c in result}
+            missing = [t for t in FALLBACK_CATEGORIES if t not in found_types]
+            if missing:
+                fallback_prompt = self._build_fallback_prompt(text, missing)
+                # raise_on_error deliberately NOT propagated from this second
+                # call: a failure here means only the 8 rarest categories are
+                # missing, not that extraction itself failed - degrading to
+                # the primary pass's result is more useful than discarding it.
+                result = result + self._invoke(fallback_prompt, text, raise_on_error=False)
+
+        if Phase3Config.CACHE_ENABLED:
+            cache.set(
+                cache_key,
+                [c.model_dump() for c in result],
+                ttl=Phase3Config.get_cache_ttl("clause_extraction"),
+            )
+
+        return result
+
+    def _invoke(self, prompt: str, source_text: str, raise_on_error: bool) -> List[ExtractedClause]:
+        """One structured-output LLM call, shared by the primary and
+        fallback passes: identical guard rails (circuit breaker, semaphore,
+        usage tracking, error handling), different prompt text only."""
         try:
             with llm_call_semaphore:
                 with GEMINI_CIRCUIT_BREAKER.guard():
@@ -261,27 +444,53 @@ class LLMExtractionService:
             "clause_extraction", self._model_name, cache_hit=False, usage_metadata=usage_metadata
         )
 
-        result = [self._resolve_offsets(clause, text) for clause in response.clauses]
+        return [self._resolve_offsets(clause, source_text) for clause in response.clauses]
 
-        if Phase3Config.CACHE_ENABLED:
-            cache.set(
-                cache_key,
-                [c.model_dump() for c in result],
-                ttl=Phase3Config.get_cache_ttl("clause_extraction"),
-            )
-
-        return result
-
-    def _cache_key(self, text: str, candidate_types: Optional[List[CUADClauseType]]) -> str:
+    def _cache_key(
+        self,
+        text: str,
+        candidate_types: Optional[List[CUADClauseType]],
+        enable_fallback: bool = True,
+    ) -> str:
         types_part = ",".join(sorted(t.value for t in (candidate_types or [])))
-        raw = f"clause_extraction:{PROMPT_VERSION}:{self._model_name}:{types_part}:{text}"
+        raw = f"clause_extraction:{PROMPT_VERSION}:{self._model_name}:{types_part}:{enable_fallback}:{text}"
         return hashlib.sha256(raw.encode()).hexdigest()
 
     def _build_prompt(self, text: str, candidate_types: Optional[List[CUADClauseType]]) -> str:
         types = candidate_types or list(CUADClauseType)
-        type_list = "\n".join(f"- {t.value}" for t in types)
+        type_list = "\n".join(
+            f"- {t.value}: {_CATEGORY_HINTS[t]}" if t in _CATEGORY_HINTS else f"- {t.value}"
+            for t in types
+        )
         return f"""You are a contract analysis assistant. Identify every clause in the
 contract text below that matches one of the following CUAD clause categories:
+
+{type_list}
+
+For each match, extract the clause VERBATIM - do not paraphrase, summarize,
+reword, or alter whitespace/punctuation - so that it can be located as an
+exact substring of the source text below. Include a confidence score between
+0.0 and 1.0. Only include matches you are reasonably confident about. If a
+category has no matching clause in this text, omit it entirely.
+
+Contract text:
+{text}"""
+
+    def _build_fallback_prompt(self, text: str, types: List[CUADClauseType]) -> str:
+        """
+        Narrow, example-backed follow-up prompt for FALLBACK_CATEGORIES -
+        used only when the primary pass (all 41 categories at once) found
+        none of them, since the benchmark showed the model essentially never
+        attempting these categories in that dense a list. Fewer competing
+        categories plus a worked example each is the intervention being
+        tested here, not just a re-ask of the same question.
+        """
+        type_list = "\n".join(
+            f"- {t.value}: {_FALLBACK_CATEGORY_GUIDANCE.get(t, '')}" for t in types
+        )
+        return f"""You are a contract analysis assistant. The categories below are rare,
+easy-to-miss clause types. Carefully re-read the contract text below and
+identify every clause that matches one of these CUAD clause categories:
 
 {type_list}
 
