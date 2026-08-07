@@ -140,9 +140,15 @@ async def upload_pdf(
             # Extract full text for storage
             logger.info("Step 5: Extracting text from PDF")
             try:
-                from backend.infrastructure.text_extractors import TextExtractionService
+                from backend.infrastructure.text_extractors import TextExtractionService, extract_text_async
                 text_extractor = TextExtractionService()
-                full_text = text_extractor.extract_with_fallback(temp_path)
+                # extract_text_async, not extract_with_fallback directly -
+                # a real production incident (504 on upload, backend
+                # unresponsive to its own health check for the duration)
+                # traced back to this synchronous, CPU-bound call blocking
+                # this process's single event loop. See text_extractors.py's
+                # docstring for the full incident/fix rationale.
+                full_text = await extract_text_async(text_extractor, temp_path)
                 logger.info(f"Text extraction completed. Length: {len(full_text)} characters")
                 
                 # Validate content quality

@@ -92,11 +92,24 @@ class DocumentProcessingService:
             f"PDF file: {request.filename}"
         )
         
-        # Create initial state
+        # Create initial state. extracted_text is seeded from
+        # processing_options["full_text"] when the caller already
+        # extracted it (document_upload.py's /upload route always does,
+        # before ever reaching here) - a real, confirmed bug found live
+        # during a production incident: this was hardcoded to None
+        # unconditionally, so extract_text_node below unconditionally
+        # re-extracted the SAME file from scratch on every single upload,
+        # wasting real CPU-bound work (confirmed in production logs: a
+        # second, redundant extraction of the identical file, genuinely
+        # re-running PyPDFExtractor a second time) and doubling this
+        # request's exposure to the same slow-extraction risk that caused
+        # the incident. should_continue already handles a populated
+        # extracted_text correctly (routes straight to analyze_contract),
+        # so no other change is needed to skip the redundant node.
         initial_state = {
             "file_path": request.file_path,
             "tenant_id": request.tenant_id or "default-tenant",
-            "extracted_text": None,
+            "extracted_text": (request.processing_options or {}).get("full_text"),
             "contract_data": None,
             "processing_result": None,
             "messages": []

@@ -2,7 +2,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph import START, StateGraph, END
 from backend.agents.pdf_state import PDFProcessingState
 from backend.domain.value_objects import ProcessingResult, ProcessingStatus, ContractData
-from backend.infrastructure.text_extractors import TextExtractionService
+from backend.infrastructure.text_extractors import TextExtractionService, extract_text_async
 from backend.infrastructure.contract_analyzer import LLMContractAnalyzer
 from backend.infrastructure.contract_repository import Neo4jContractRepository
 import logging
@@ -21,10 +21,33 @@ def get_pdf_processing_agent(llm):
     contract_analyzer = LLMContractAnalyzer(llm)
     contract_repository = Neo4jContractRepository()
     
-    def extract_text_node(state: PDFProcessingState) -> PDFProcessingState:
-        """Extract text from PDF - Single Responsibility"""
+    async def extract_text_node(state: PDFProcessingState) -> PDFProcessingState:
+        """Extract text from PDF - Single Responsibility.
+
+        START always routes here first regardless of state (see the graph
+        wiring below), so a caller that already extracted the text (e.g.
+        document_upload.py's /upload route, which threads it through
+        processing_options["full_text"] -> initial_state["extracted_text"])
+        must be honored here, not just in should_continue's routing - a
+        real, confirmed bug found live during a production incident:
+        this node used to unconditionally re-extract, wasting a second
+        full CPU-bound extraction pass on every single upload and
+        doubling that request's exposure to slow-extraction risk.
+
+        The real extraction call itself runs via extract_text_async - off
+        the event loop, bounded by EXTRACTION_TIMEOUT_SECONDS - not
+        TextExtractionService.extract_with_fallback directly. The same
+        incident found that a synchronous, CPU-bound call in a request's
+        path can block this single-worker backend's entire event loop,
+        including its own health check, for the call's full duration.
+        """
+        if state.get("extracted_text"):
+            logger.info(
+                f"Reusing already-extracted text ({len(state['extracted_text'])} characters) - skipping re-extraction"
+            )
+            return state
         try:
-            text = text_extractor.extract_with_fallback(state["file_path"])
+            text = await extract_text_async(text_extractor, state["file_path"])
             logger.info(f"Extracted {len(text)} characters")
             return {**state, "extracted_text": text}
         except Exception as e:

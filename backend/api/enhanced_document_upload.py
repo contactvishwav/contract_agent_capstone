@@ -97,9 +97,16 @@ async def upload_pdf_enhanced(
         # Extract full text for storage
         logger.info("Step 5: Extracting text from PDF")
         try:
-            from backend.infrastructure.text_extractors import TextExtractionService
+            from backend.infrastructure.text_extractors import TextExtractionService, extract_text_async
             text_extractor = TextExtractionService()
-            full_text = text_extractor.extract_with_fallback(temp_path)
+            # extract_text_async, not extract_with_fallback directly - see
+            # text_extractors.py's docstring: a real production incident
+            # traced a client-visible 504 (and the backend going
+            # unresponsive to its own health check) to this exact
+            # synchronous, CPU-bound call blocking the single-worker
+            # event loop for the /api/documents/upload route; this route
+            # has the identical shape and the identical risk.
+            full_text = await extract_text_async(text_extractor, temp_path)
             logger.info(f"Text extraction completed. Length: {len(full_text)} characters")
 
             # Content/PII validation (P3 item 21) - this endpoint previously
