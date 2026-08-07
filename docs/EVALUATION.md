@@ -124,108 +124,114 @@ The 20 categories split into three groups, each getting a different, targeted tr
 
 **Dilution guard**: neither hint list touches the 5 metadata columns, Governing Law, or any category that was already scoring reasonably — added guidance is scoped exclusively to the 20 categories that needed it, specifically to avoid degrading the categories that already worked by crowding the prompt (verified below — no regression on metadata).
 
-### Re-measurement: 243 of 510 contracts (`extraction_eval_results_risk-categories-flash-lite-497-v3.json`, `gemini-flash-lite-latest`)
+### Re-measurement: 492 of 510 contracts (`extraction_eval_results_risk-categories-flash-lite-497-v3.json`, `gemini-flash-lite-latest`)
 
-**This is a partial re-run, not yet the full corpus** — the free tier's real per-day cap on `gemini-flash-lite-latest` turned out to be 500 requests/day (distinct from its 15 requests/minute cap, both discovered live while running this pass), and the fallback pass roughly doubles request volume on contracts that trigger it, so one day's quota now covers roughly half the 510-contract corpus instead of all of it. The run is checkpoint-resumable exactly like every other run in this project; the remaining ~267 contracts complete on a subsequent day's quota without re-spending anything already measured. The comparison below uses ratios (precision/recall/F1), which are far less sensitive to the sample-size difference (243 vs. 497) than raw counts — but categories with small absolute gold-positive counts still carry real sampling noise, called out explicitly below.
+**This is a 492/510 (96.5%) sample, not yet the full corpus** — stopped on a genuine per-day quota exhaustion on `gemini-flash-lite-latest` (500 requests/day, distinct from its 15 requests/minute cap, both discovered live while running this pass; the fallback pass roughly doubles request volume on contracts that trigger it). Of the 510 total, 13 are skipped permanently (no cached text) leaving 497 usable, and 492 of those are evaluated — 5 remain. The run is checkpoint-resumable exactly like every other run in this project; the remaining 5 contracts complete on a subsequent day's quota without re-spending anything already measured, via the identical command in the "Reproducing" subsection below. The comparison below uses ratios (precision/recall/F1), which are far less sensitive to the sample-size difference than raw counts — but categories with small absolute gold-positive counts still carry real sampling noise, called out explicitly below. (An earlier draft of this section reported a 243/510 partial sample — superseded by this larger, more reliable measurement; see the note on how the two differ, below.)
 
 **Before/after on the 20 targeted categories:**
 
-| Category | Group | OLD F1 (497 contracts) | NEW F1 (243 contracts) | Δ |
+| Category | Group | OLD F1 (497 contracts, v2) | NEW F1 (492 contracts, v3) | Δ |
 |---|---|---|---|---|
-| Joint Ip Ownership | B | 0.043 | 0.537 | **+0.494** |
-| Third Party Beneficiary | A | 0.250 | 0.647 | **+0.397** |
-| Affiliate License-Licensee | B | 0.034 | 0.387 | **+0.353** |
-| Competitive Restriction Exception | B | 0.000 | 0.286 | **+0.286** |
-| Revenue/Profit Sharing | C | 0.169 | 0.444 | **+0.275** |
-| Uncapped Liability | C | 0.212 | 0.447 | **+0.235** |
-| Change Of Control | A | 0.271 | 0.500 | **+0.229** |
-| Exclusivity | C | 0.255 | 0.477 | **+0.222** |
-| Unlimited/All-You-Can-Eat-License | B | 0.000 | 0.200 | +0.200 |
-| Ip Ownership Assignment | C | 0.189 | 0.381 | +0.192 |
-| Rofr/Rofo/Rofn | C | 0.196 | 0.360 | +0.164 |
-| Post-Termination Services | B | 0.011 | 0.175 | +0.164 |
-| Minimum Commitment | C | 0.242 | 0.327 | +0.085 |
-| Volume Restriction | B | 0.000 | 0.080 | +0.080 |
-| Non-Disparagement | C | 0.298 | 0.372 | +0.074 |
+| Joint Ip Ownership | B | 0.043 | 0.431 | **+0.388** |
+| Unlimited/All-You-Can-Eat-License | B | 0.000 | 0.300 | **+0.300** |
+| Affiliate License-Licensee | B | 0.034 | 0.297 | **+0.263** |
+| Third Party Beneficiary | A | 0.250 | 0.485 | **+0.235** |
+| Revenue/Profit Sharing | C | 0.169 | 0.402 | **+0.233** |
+| Uncapped Liability | C | 0.212 | 0.434 | **+0.222** |
+| Competitive Restriction Exception | B | 0.000 | 0.211 | **+0.211** |
+| Exclusivity | C | 0.255 | 0.452 | **+0.197** |
+| Change Of Control | A | 0.271 | 0.467 | **+0.196** |
+| Most Favored Nation | C | 0.242 | 0.378 | +0.136 |
+| Non-Disparagement | C | 0.298 | 0.424 | +0.126 |
+| Minimum Commitment | C | 0.242 | 0.368 | +0.126 |
+| Post-Termination Services | B | 0.011 | 0.131 | +0.120 |
+| Volume Restriction | B | 0.000 | 0.097 | +0.097 |
+| Rofr/Rofo/Rofn | C | 0.196 | 0.289 | +0.093 |
+| Ip Ownership Assignment | C | 0.189 | 0.282 | +0.093 |
+| Affiliate License-Licensor | B | 0.000 | 0.059 | +0.059 |
+| Covenant Not To Sue | B | 0.020 | 0.058 | +0.038 |
 | Price Restrictions | C | 0.000 | 0.000 | +0.000 |
-| Affiliate License-Licensor | B | 0.000 | 0.000 | +0.000 |
-| Covenant Not To Sue | B | 0.020 | 0.000 | −0.020 |
-| Most Favored Nation | C | 0.242 | 0.143 | −0.099 |
-| Source Code Escrow | C | 0.222 | 0.095 | −0.127 |
+| Source Code Escrow | C | 0.222 | 0.133 | −0.089 |
 
-**15 of 20 improved, several substantially; 2 unchanged at 0.00; 3 got worse — reported honestly rather than only showing the wins:**
+**18 of 20 improved, 1 unchanged at 0.00, 1 got worse — reported honestly rather than only showing the wins.** This is a meaningfully different split from the earlier 243-contract partial sample (15 improved / 2 unchanged / 3 worse) — the larger sample changed two categories' stories specifically:
 
-- **Covenant Not To Sue** (Group B): fallback pass didn't help — went from 1 TP (out of 97 gold-positive) to 0 (out of 60). One of 8 fallback categories where the intervention didn't land; F1 was already near-zero either way.
-- **Most Favored Nation** (Group C): 4→1 TP, but gold-positive count in this partial sample is only 12 (vs. 28 in the full old run) — a 1-example swing on this small a base is within sampling noise for a genuinely rare category, not strong evidence the hint hurt.
-- **Source Code Escrow** (Group C): the clearest real regression — FP jumped from 3 to 18 while FN dropped from 11 to 1. The hint pushed recall up sharply but at a real precision cost: the model now over-triggers on escrow-adjacent language that isn't a true match. Worth narrowing this specific hint if revisited.
+- **Covenant Not To Sue** (Group B): looked like a regression at 243 contracts (1 TP → 0 TP) but the fuller 492-contract sample shows a real, if small, improvement (+0.038) — the 243-sample's "regression" was itself sampling noise on a rare category, not a real effect of the fallback pass.
+- **Most Favored Nation** (Group C): same story — looked like a regression at 243 contracts (−0.099, on only 12 gold-positive examples) but improves clearly at 492 contracts (+0.136). Flagged explicitly at the time as "within sampling noise for a genuinely rare category, not strong evidence the hint hurt" — that read turned out to be correct.
+- **Source Code Escrow** (Group C): the one category that regresses in both samples, and gets *worse* with more data (−0.127 at 243 contracts, −0.089 at 492 — still negative, not converging toward zero). FP count grew from 3 (v2 baseline) to 43 (492-contract v3): the hint pushed recall up but at a real, worsening precision cost — the model over-triggers on escrow-adjacent language that isn't a true match. The one targeted category clearly worth narrowing if revisited.
 
 **No dilution regression on the categories intentionally left untouched** (the explicit concern raised before implementing):
 
-| Category | OLD F1 | NEW F1 | Δ |
+| Category | OLD F1 | NEW F1 (492) | Δ |
 |---|---|---|---|
-| Document Name | 0.990 | 0.990 | +0.000 |
-| Parties | 0.975 | 0.985 | +0.010 |
-| Agreement Date | 0.766 | 0.739 | −0.027 |
+| Document Name | 0.990 | 0.978 | −0.012 |
+| Parties | 0.975 | 0.971 | −0.004 |
+| Agreement Date | 0.766 | 0.753 | −0.013 |
 | Effective Date | 0.679 | 0.662 | −0.017 |
-| Expiration Date | 0.358 | 0.402 | +0.044 |
-| Governing Law | 0.978 | 0.986 | +0.008 |
+| Expiration Date | 0.358 | 0.384 | +0.026 |
+| Governing Law | 0.978 | 0.977 | −0.001 |
 
-All within normal sample-to-sample variance (compare to the ±0.02-0.03 spread already documented between the two independent 497-contract runs in §4). The other 15 risk categories not touched by any hint or fallback pass also moved within a similar noise band (mostly small positive drift, attributable to the different 243-vs-497 contract sample composition, not the prompt change) — full numbers in the raw results JSON.
+All within normal sample-to-sample variance (compare to the ±0.02-0.03 spread already documented between the two independent 497-contract runs in §4) — smaller than the 243-contract sample's own deltas on these same columns, consistent with a larger sample converging rather than drifting. The other 15 risk categories not touched by any hint or fallback pass also moved within a similar noise band — full numbers in the raw results JSON.
 
 **Averages, all 36 risk-relevant categories (not just the 20 targeted):**
 
 | | Avg Precision | Avg Recall | Avg F1 |
 |---|---|---|---|
 | OLD (497 contracts, v2 prompt) | 0.631 | 0.269 | 0.323 |
-| NEW (243 contracts, v3 prompt + fallback) | 0.644 | 0.373 | **0.435** |
+| 243-contract partial (earlier draft of this section) | 0.644 | 0.373 | 0.435 |
+| NEW (492 contracts, v3 prompt + fallback) | 0.642 | 0.356 | **0.427** |
 
-Categories below 0.30 F1: **20/36 → 9/36**. Categories flat at 0.00 F1: **5/36 → 3/36** (Price Restrictions, Affiliate License-Licensor, Covenant Not To Sue remain unfixed).
+The 492-contract average F1 (0.427) is honestly *slightly lower* than the earlier 243-contract figure (0.435) — the larger sample is the more reliable number, and the small drop is exactly the kind of regression-to-the-mean a partial sample can show before settling; it does not change the qualitative result (still up **+0.104** from the 0.323 baseline, a real and substantial improvement). Categories below 0.30 F1: **20/36 → 10/36** (243-contract partial reported 9/36 — see below for exactly which categories moved with the larger sample). Categories flat at 0.00 F1: **5/36 → 1/36** (only Price Restrictions remains completely unfixed; Affiliate License-Licensor and Covenant Not To Sue, both flat 0.00 at 243 contracts, now show small real positive F1 at 492).
 
-**Full new 41-category table** (243/510 contracts, `gemini-flash-lite-latest`, PROMPT_VERSION v3), sorted by F1 descending:
+**What changed between the 243-contract partial and this 492-contract measurement, specifically** (the two categories below moved in each direction relative to the 0.30 threshold — worth knowing precisely in case it comes up):
+
+- **Moved above 0.30** with the larger sample: Most Favored Nation (0.140 → 0.378), Unlimited/All-You-Can-Eat-License (0.200 → 0.300, landing exactly at the threshold).
+- **Newly dropped below 0.30** with the larger sample: Affiliate License-Licensee (0.390 → 0.297), Ip Ownership Assignment (0.380 → 0.282), Rofr/Rofo/Rofn (0.360 → 0.289) — each was just above 0.30 at 243 contracts and settles just below it with more data; none of these three is a targeted-hint regression, they're a reminder that a 243-contract sample's numbers close to a threshold aren't fully stable.
+
+**Full new 41-category table** (492/510 contracts, `gemini-flash-lite-latest`, PROMPT_VERSION v3), sorted by F1 descending:
 
 | Type | Precision | Recall | F1 | TP | FP | FN |
 |---|---|---|---|---|---|---|
-| Document Name | 1.00 | 0.98 | 0.99 | 238 | 0 | 5 |
-| Governing Law | 0.98 | 0.99 | 0.99 | 213 | 5 | 1 |
-| Parties | 1.00 | 0.97 | 0.98 | 236 | 0 | 7 |
-| Anti-Assignment | 0.98 | 0.72 | 0.83 | 133 | 3 | 52 |
-| Agreement Date | 0.96 | 0.60 | 0.74 | 133 | 5 | 89 |
-| Notice Period To Terminate Renewal | 0.71 | 0.73 | 0.72 | 40 | 16 | 15 |
-| No-Solicit Of Employees | 0.84 | 0.61 | 0.71 | 16 | 3 | 10 |
-| Renewal Term | 0.70 | 0.68 | 0.69 | 61 | 26 | 29 |
-| Insurance | 0.73 | 0.64 | 0.68 | 48 | 18 | 27 |
-| Termination For Convenience | 0.70 | 0.65 | 0.67 | 63 | 27 | 34 |
-| Cap On Liability | 0.92 | 0.52 | 0.67 | 71 | 6 | 65 |
-| Effective Date | 0.80 | 0.57 | 0.66 | 105 | 27 | 80 |
-| Third Party Beneficiary | 0.58 | 0.73 | 0.65 | 11 | 8 | 4 |
-| Audit Rights | 0.60 | 0.62 | 0.61 | 69 | 46 | 42 |
-| License Grant | 0.95 | 0.38 | 0.54 | 55 | 3 | 90 |
-| Joint Ip Ownership | 0.85 | 0.39 | 0.54 | 11 | 2 | 17 |
-| Non-Compete | 0.73 | 0.42 | 0.54 | 27 | 10 | 37 |
-| Non-Transferable License | 0.80 | 0.37 | 0.51 | 32 | 8 | 54 |
-| No-Solicit Of Customers | 0.86 | 0.35 | 0.50 | 6 | 1 | 11 |
-| Change Of Control | 0.73 | 0.38 | 0.50 | 25 | 9 | 41 |
-| Exclusivity | 0.78 | 0.34 | 0.48 | 31 | 9 | 59 |
-| Uncapped Liability | 0.70 | 0.33 | 0.45 | 21 | 9 | 43 |
-| Revenue/Profit Sharing | 0.93 | 0.29 | 0.44 | 26 | 2 | 63 |
-| Liquidated Damages | 0.89 | 0.30 | 0.44 | 8 | 1 | 19 |
-| Expiration Date | 0.83 | 0.27 | 0.40 | 44 | 9 | 122 |
-| Warranty Duration | 0.47 | 0.35 | 0.40 | 9 | 10 | 17 |
-| Affiliate License-Licensee | 0.48 | 0.32 | 0.39 | 12 | 13 | 25 |
-| Ip Ownership Assignment | 0.56 | 0.29 | 0.38 | 20 | 16 | 49 |
-| Non-Disparagement | 0.40 | 0.35 | 0.37 | 8 | 12 | 15 |
-| Rofr/Rofo/Rofn | 1.00 | 0.22 | 0.36 | 9 | 0 | 32 |
-| Minimum Commitment | 0.53 | 0.24 | 0.33 | 17 | 15 | 55 |
-| Irrevocable Or Perpetual License | 0.75 | 0.19 | 0.30 | 6 | 2 | 26 |
-| Competitive Restriction Exception | 0.58 | 0.19 | 0.29 | 7 | 5 | 30 |
-| Unlimited/All-You-Can-Eat-License | 1.00 | 0.11 | 0.20 | 1 | 0 | 8 |
-| Post-Termination Services | 0.69 | 0.10 | 0.17 | 9 | 4 | 81 |
-| Most Favored Nation | 0.50 | 0.08 | 0.14 | 1 | 1 | 11 |
-| Source Code Escrow | 0.05 | 0.50 | 0.10 | 1 | 18 | 1 |
-| Volume Restriction | 0.22 | 0.05 | 0.08 | 2 | 7 | 39 |
-| Price Restrictions | 0.00 | 0.00 | 0.00 | 0 | 4 | 10 |
-| Affiliate License-Licensor | 0.00 | 0.00 | 0.00 | 0 | 5 | 11 |
-| Covenant Not To Sue | 0.00 | 0.00 | 0.00 | 0 | 2 | 60 |
+| Document Name | 1.00 | 0.96 | 0.98 | 471 | 0 | 21 |
+| Governing Law | 0.96 | 0.99 | 0.98 | 419 | 15 | 5 |
+| Parties | 1.00 | 0.94 | 0.97 | 463 | 0 | 28 |
+| Anti-Assignment | 0.95 | 0.70 | 0.81 | 254 | 12 | 109 |
+| No-Solicit Of Employees | 0.91 | 0.71 | 0.80 | 40 | 4 | 16 |
+| Agreement Date | 0.94 | 0.63 | 0.75 | 281 | 17 | 167 |
+| Notice Period To Terminate Renewal | 0.75 | 0.76 | 0.75 | 81 | 27 | 26 |
+| Renewal Term | 0.70 | 0.66 | 0.68 | 112 | 47 | 57 |
+| Effective Date | 0.80 | 0.56 | 0.66 | 195 | 48 | 151 |
+| Termination For Convenience | 0.67 | 0.61 | 0.64 | 108 | 54 | 69 |
+| Insurance | 0.73 | 0.56 | 0.63 | 88 | 33 | 70 |
+| Cap On Liability | 0.90 | 0.45 | 0.60 | 119 | 13 | 146 |
+| Audit Rights | 0.58 | 0.56 | 0.57 | 116 | 83 | 91 |
+| Non-Compete | 0.76 | 0.42 | 0.54 | 47 | 15 | 65 |
+| Non-Transferable License | 0.81 | 0.39 | 0.53 | 51 | 12 | 80 |
+| License Grant | 0.95 | 0.34 | 0.51 | 85 | 4 | 162 |
+| Third Party Beneficiary | 0.44 | 0.53 | 0.48 | 16 | 20 | 14 |
+| No-Solicit Of Customers | 0.69 | 0.37 | 0.48 | 11 | 5 | 19 |
+| Change Of Control | 0.77 | 0.34 | 0.47 | 39 | 12 | 77 |
+| Liquidated Damages | 0.90 | 0.30 | 0.46 | 18 | 2 | 41 |
+| Exclusivity | 0.74 | 0.33 | 0.45 | 56 | 20 | 116 |
+| Uncapped Liability | 0.61 | 0.34 | 0.43 | 36 | 23 | 71 |
+| Joint Ip Ownership | 0.70 | 0.31 | 0.43 | 14 | 6 | 31 |
+| Non-Disparagement | 0.45 | 0.40 | 0.42 | 14 | 17 | 21 |
+| Irrevocable Or Perpetual License | 0.86 | 0.27 | 0.41 | 18 | 3 | 49 |
+| Revenue/Profit Sharing | 0.87 | 0.26 | 0.40 | 41 | 6 | 116 |
+| Expiration Date | 0.82 | 0.25 | 0.38 | 80 | 18 | 239 |
+| Most Favored Nation | 0.78 | 0.25 | 0.38 | 7 | 2 | 21 |
+| Minimum Commitment | 0.58 | 0.27 | 0.37 | 43 | 31 | 117 |
+| Warranty Duration | 0.49 | 0.24 | 0.32 | 17 | 18 | 55 |
+| Unlimited/All-You-Can-Eat-License | 1.00 | 0.18 | 0.30 | 3 | 0 | 14 |
+| Affiliate License-Licensee | 0.35 | 0.26 | 0.30 | 15 | 28 | 43 |
+| Rofr/Rofo/Rofn | 0.93 | 0.17 | 0.29 | 14 | 1 | 68 |
+| Ip Ownership Assignment | 0.46 | 0.20 | 0.28 | 24 | 28 | 94 |
+| Competitive Restriction Exception | 0.46 | 0.14 | 0.21 | 10 | 12 | 63 |
+| Source Code Escrow | 0.09 | 0.31 | 0.13 | 4 | 43 | 9 |
+| Post-Termination Services | 0.52 | 0.07 | 0.13 | 13 | 12 | 160 |
+| Volume Restriction | 0.23 | 0.06 | 0.10 | 5 | 17 | 76 |
+| Affiliate License-Licensor | 0.09 | 0.04 | 0.06 | 1 | 10 | 22 |
+| Covenant Not To Sue | 0.43 | 0.03 | 0.06 | 3 | 4 | 94 |
+| Price Restrictions | 0.00 | 0.00 | 0.00 | 0 | 8 | 15 |
 
 **Reproducing / completing this run**:
 
@@ -233,7 +239,7 @@ Categories below 0.30 F1: **20/36 → 9/36**. Categories flat at 0.00 F1: **5/36
 GOOGLE_API_KEY=... python research/benchmark/evaluate_extraction.py \
   --model gemini-flash-lite-latest --run-name risk-categories-flash-lite-497-v3 --rpm-limit 8
 ```
-Resumes automatically from the existing checkpoint. `--rpm-limit` paces real HTTP requests (new in this pass — `_RpmLimiter` in `evaluate_extraction.py`) to stay under the free tier's per-minute cap; transient errors (503s, timeouts, and the per-minute token-quota window) now retry automatically instead of ending the run, while a genuine per-day quota exhaustion still fails fast by design (`_extract_with_transient_retry`, reusing `execution_engine.py`'s existing `_is_quota_exhausted`).
+Resumes automatically from the existing checkpoint — currently at 492/510 (5 remaining, 13 permanently skipped for missing text), stopped on a genuine per-day quota exhaustion. `--rpm-limit` paces real HTTP requests (new in this pass — `_RpmLimiter` in `evaluate_extraction.py`) to stay under the free tier's per-minute cap; transient errors (503s, timeouts, and the per-minute token-quota window) now retry automatically instead of ending the run, while a genuine per-day quota exhaustion still fails fast by design (`_extract_with_transient_retry`, reusing `execution_engine.py`'s existing `_is_quota_exhausted`).
 
 ## 5. Confirmation samples on the production model (`gemini-2.5-flash`)
 
@@ -259,7 +265,7 @@ Directionally consistent with §4a's root-cause analysis: the production model i
 
 ### 5c. v3-prompt confirmation spot-check (`extraction_eval_results_risk-categories-2.5-flash-v3.json`)
 
-Same 20/day quota wall stopped this at **5 of 90 contracts** too, and — because the stratified sample is drawn fresh per `--run-name` — this is a *different* 5 contracts than §5b, not a rerun of the same ones. Not a valid before/after pair; included only because it's a real artifact from this pass. On Group A's two categories specifically: Change Of Control went 0.667→1.000 (1 more TP, consistent with §4c's direction); Third Party Beneficiary went 0.667→0.000 (0 TP, 3 FP in this specific 5-contract draw) — the opposite direction from §4c's 243-contract flash-lite result (0.250→0.647). At n=5 this is expected sampling noise, not a contradiction of the larger, more reliable flash-lite measurement — **§4c's 243-contract sample is the result to trust here, not this spot-check.** A larger production-model sample (blocked on the same 20/day cap) is needed before drawing any real conclusion about `gemini-2.5-flash` specifically.
+Same 20/day quota wall stopped this at **5 of 90 contracts** too, and — because the stratified sample is drawn fresh per `--run-name` — this is a *different* 5 contracts than §5b, not a rerun of the same ones. Not a valid before/after pair; included only because it's a real artifact from this pass. On Group A's two categories specifically: Change Of Control went 0.667→1.000 (1 more TP, consistent with §4c's direction); Third Party Beneficiary went 0.667→0.000 (0 TP, 3 FP in this specific 5-contract draw) — the opposite direction from §4c's 492-contract flash-lite result (0.250→0.485). At n=5 this is expected sampling noise, not a contradiction of the larger, more reliable flash-lite measurement — **§4c's 492-contract sample is the result to trust here, not this spot-check.** A larger production-model sample (blocked on the same 20/day cap) is needed before drawing any real conclusion about `gemini-2.5-flash` specifically.
 
 ## 6. Grounding, hallucination rate, cost, and latency
 
@@ -295,8 +301,8 @@ Results land in `research/benchmark/extraction_eval_results_<run_name>.json`; a 
 - **Presence/content-match, not span accuracy.** A clause matched on fuzzy token overlap is scored correct even if the extracted span differs from the gold span in minor ways. Span-level grounding is checked separately (and deterministically) by `_find_span`, not by this benchmark.
 - **`gemini-flash-lite-latest` is a rolling alias**, not a pinned model snapshot — the two 497-contract runs in §4 were not run against a guaranteed-identical model version, which is the most likely explanation for their small numeric differences on the same 5 metadata columns.
 - **The risk-category confirmation samples on the production model (§5b, §5c) are too small (n=5 each) to trust**, and are two different 5-contract draws rather than a before/after pair on the same contracts — flagged explicitly rather than presented alongside the real numbers without caveat.
-- **§4c's weak-category re-measurement is a 243/510-contract partial sample**, not the full corpus — blocked on `gemini-flash-lite-latest`'s real per-day request quota (discovered to be 500/day live during this pass), which the fallback pass's extra calls now consume roughly twice as fast as before. The remaining ~267 contracts are queued to complete via the same checkpoint-resume mechanism on a later day's quota; the qualitative result (15/20 targeted categories improved, no metadata regression) is unlikely to reverse, but exact F1 values may shift slightly once the full corpus is measured.
-- **9 of 36 risk-relevant categories remain below 0.30 F1** after the §4c pass (down from 20/36) — Price Restrictions, Affiliate License-Licensor, and Covenant Not To Sue remain at a flat 0.00 F1 with no real fix found yet; Source Code Escrow got measurably worse (a real, reported regression, not a rounding artifact). Some of the remaining gap may be genuine corpus rarity rather than model failure, which would change the right remediation (more ground truth, not a better prompt) — this is `docs/CAPSTONE_SUMMARY.md` §9 item 9's still-open thread.
+- **§4c's weak-category re-measurement is a 492/510-contract (96.5%) sample**, not the full corpus — stopped on a genuine per-day quota exhaustion on `gemini-flash-lite-latest` (discovered to be 500/day live during this pass), which the fallback pass's extra calls now consume roughly twice as fast as before. 13 contracts are permanently skipped (no cached text); 5 remain and are queued to complete via the same checkpoint-resume mechanism on a later day's quota. The qualitative result (18/20 targeted categories improved, no metadata regression) held up as the sample grew from 243 to 492 contracts — two categories that looked like regressions at 243 contracts (Covenant Not To Sue, Most Favored Nation) turned out to be real improvements once measured on more data, a concrete demonstration of why this report waited for a larger sample rather than reporting the 243-contract numbers as final.
+- **10 of 36 risk-relevant categories remain below 0.30 F1** after the §4c pass (down from 20/36) — Price Restrictions is the only one still at a flat 0.00 F1 with no real fix found yet (Affiliate License-Licensor and Covenant Not To Sue, both flat 0.00 at the earlier 243-contract sample, now show small real positive F1); Source Code Escrow got measurably worse and remains the one real, reproducible regression from the targeted hints (worse at 492 contracts than at 243, not converging toward zero). Some of the remaining gap may be genuine corpus rarity rather than model failure, which would change the right remediation (more ground truth, not a better prompt) — this is `docs/CAPSTONE_SUMMARY.md` §9 item 9's still-open thread.
 
 ## 9. Search re-ranking: a sound mechanism, honestly not yet measured
 

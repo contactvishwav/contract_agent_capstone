@@ -232,7 +232,7 @@ export const USPPage: React.FC = () => {
                 <h4 className="font-medium mb-2 text-slate-700">Measured Accuracy (CUAD benchmark, 497 contracts)</h4>
                 <div className="space-y-1 text-xs text-slate-600">
                   <div>• 0.75 avg F1 on contract metadata (up to 0.99 on parties/document name)</div>
-                  <div>• 0.44 avg F1 on the 36 risk-relevant clause categories (up from 0.32) after a targeted prompt/fallback-pass fix for the 20 weakest categories - 243/510 contracts re-measured so far, full corpus in progress (docs/EVALUATION.md §4c)</div>
+                  <div>• 0.43 avg F1 on the 36 risk-relevant clause categories (up from 0.32) after a targeted prompt/fallback-pass fix for the 20 weakest categories - 492/510 contracts re-measured (96.5%), stopped on quota exhaustion, full corpus in progress (docs/EVALUATION.md §4c)</div>
                   <div>• Cross-contract risk aggregation and insights</div>
                   <div>• Complete audit trail compliance</div>
                   <div>• Portfolio-level relationship intelligence</div>
