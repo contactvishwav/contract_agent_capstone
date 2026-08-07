@@ -48,8 +48,10 @@ import json
 import os
 import re
 import sys
-from collections import defaultdict
+import time
+from collections import defaultdict, deque
 from datetime import datetime
+from typing import Optional
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, REPO_ROOT)
@@ -58,6 +60,78 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(os.path.join(REPO_ROOT, "backend", ".env"))
 
 from backend.agents.llm_extraction_service import LLMExtractionService, CUADClauseType, get_default_llm  # noqa: E402
+from backend.agents.planning.execution_engine import _is_quota_exhausted  # noqa: E402
+
+
+def _extract_with_transient_retry(service, text, filename, max_attempts=3, backoff_seconds=8.0):
+    """
+    A real per-DAY quota exhaustion (_is_quota_exhausted, same helper
+    execution_engine.py uses to fail fast rather than retry into a 429)
+    still stops this script's run immediately - that fail-fast behavior is
+    intentional (retrying a per-day quota wall within one run's lifetime
+    cannot succeed).
+
+    Two other failure modes recover within seconds to a minute and get a
+    few short retries here instead of ending the whole run over one bad
+    contract:
+      - transient infrastructure errors (a 503 UNAVAILABLE, a read timeout)
+      - a PER-MINUTE quota window (observed: the free tier's 250K input-
+        tokens/minute cap on gemini-flash-lite-latest, distinct from the
+        per-day request cap - the API's own error names this
+        "GenerateContentInputTokensPerModelPerMinute-FreeTier" and reports
+        a retry delay of only a few seconds, since the window itself resets
+        every minute)
+    """
+    last_error = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return service.extract_clauses(text, raise_on_error=True)
+        except Exception as e:
+            message = str(e)
+            if _is_quota_exhausted(e) and "PerMinute" not in message:
+                raise
+            last_error = e
+            if attempt < max_attempts:
+                wait = 65.0 if "PerMinute" in message else backoff_seconds
+                print(f"\n  transient error on {filename} (attempt {attempt}/{max_attempts}): {e} "
+                      f"- retrying in {wait:.0f}s")
+                time.sleep(wait)
+    raise last_error
+
+
+class _RpmLimiter:
+    """
+    Sliding-window requests-per-minute limiter, used only by this script.
+
+    The weak-category accuracy pass added a conditional second (fallback)
+    LLM call per contract for FALLBACK_CATEGORIES (llm_extraction_service.
+    py), which roughly doubled this script's real request rate and tripped
+    the free tier's per-minute cap on gemini-flash-lite-latest (observed:
+    "limit: 15, model: gemini-3.5-flash-lite" - a *rate* limit, distinct
+    from the per-day cap on the production model gemini-2.5-flash). Paces
+    at the individual HTTP request level (not per-contract) since a single
+    contract can make 1 or 2 real requests depending on whether the
+    fallback pass fires.
+    """
+
+    def __init__(self, rpm: Optional[int]):
+        self.rpm = rpm
+        self._times = deque()
+
+    def wait(self):
+        if not self.rpm:
+            return
+        now = time.monotonic()
+        while self._times and now - self._times[0] > 60.0:
+            self._times.popleft()
+        if len(self._times) >= self.rpm:
+            sleep_for = 60.0 - (now - self._times[0]) + 0.1
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+            now = time.monotonic()
+            while self._times and now - self._times[0] > 60.0:
+                self._times.popleft()
+        self._times.append(time.monotonic())
 
 BENCHMARK_CSV = os.path.join(os.path.dirname(__file__), "extraction_benchmark.csv")
 CORPUS_JSON = os.path.join(os.path.dirname(__file__), "cuad_contract_texts.json")
@@ -531,7 +605,7 @@ def evaluate_contract(column_gold: dict, predicted_by_type: dict, risk_gold: dic
     return results
 
 
-def main(limit=None, model=None, sample=None, seed=42, fresh=False, run_name=None, stratified_sample_size=None):
+def main(limit=None, model=None, sample=None, seed=42, fresh=False, run_name=None, stratified_sample_size=None, rpm_limit=None):
     if not os.path.exists(CORPUS_JSON):
         print(f"ERROR: {CORPUS_JSON} not found. Run prepare_corpus.py first.")
         sys.exit(1)
@@ -545,6 +619,22 @@ def main(limit=None, model=None, sample=None, seed=42, fresh=False, run_name=Non
         print("ERROR: no GOOGLE_API_KEY (or GEMINI_API_KEY) configured - cannot run extraction.")
         sys.exit(1)
     service = LLMExtractionService(llm)
+    if rpm_limit:
+        # Paces every real HTTP request the service makes (primary pass AND
+        # the conditional fallback pass), not just once per contract - a
+        # contract can cost 1 or 2 requests depending on whether
+        # FALLBACK_CATEGORIES fires, so pacing at the request level (by
+        # wrapping _invoke) is what actually keeps this script under a
+        # free-tier requests-per-minute cap.
+        limiter = _RpmLimiter(rpm_limit)
+        original_invoke = service._invoke
+
+        def _paced_invoke(prompt, source_text, raise_on_error, _orig=original_invoke, _limiter=limiter):
+            _limiter.wait()
+            return _orig(prompt, source_text, raise_on_error)
+
+        service._invoke = _paced_invoke
+        print(f"Rate-limiting to {rpm_limit} requests/minute.")
     print(f"Using model: {model}" + (f"  (run: {run_name})" if run_name else ""))
 
     risk_ground_truth = {}
@@ -630,7 +720,7 @@ def main(limit=None, model=None, sample=None, seed=42, fresh=False, run_name=Non
             continue
 
         try:
-            extracted = service.extract_clauses(text, raise_on_error=True)
+            extracted = _extract_with_transient_retry(service, text, filename)
         except Exception as e:
             print(f"\nSTOPPING new attempts: extraction failed on {filename}: {e}")
             print("This looks like a quota/rate-limit or network failure rather than a "
@@ -726,6 +816,11 @@ if __name__ == "__main__":
                          help="Suffix for checkpoint/results/stratified-sample files (e.g. "
                               "gemini-2.5-flash-stratified), so this run doesn't collide with another "
                               "model's or sample's files. Omit to use the plain default filenames.")
+    parser.add_argument("--rpm-limit", type=int, default=None, dest="rpm_limit",
+                         help="Cap real HTTP requests/minute (paces both the primary and any fallback "
+                              "call). Use when a model's free-tier per-minute cap is lower than this "
+                              "script's natural request rate (observed: gemini-flash-lite-latest at 15 "
+                              "RPM) - unset means no pacing.")
     args = parser.parse_args()
     main(limit=args.limit, model=args.model, sample=args.sample, seed=args.seed, fresh=args.fresh,
-         run_name=args.run_name, stratified_sample_size=args.stratified_sample_size)
+         run_name=args.run_name, stratified_sample_size=args.stratified_sample_size, rpm_limit=args.rpm_limit)
