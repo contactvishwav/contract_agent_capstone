@@ -132,16 +132,18 @@ class RealCrossTenantIsolationViaTokenTests(unittest.TestCase):
         identity.tenant_id - confirms the enqueued task itself receives
         tenant B's tenant_id, not tenant A's, when tenant B's contract_id
         guess/collision happens to match a real contract_id."""
-        with patch("backend.tasks.analyze_contract_task.delay") as mock_delay:
-            mock_delay.return_value = MagicMock(id="task-123")
-            self.client.post(
+        with patch("backend.api.contract_intelligence.task_ownership_store.enqueue") as mock_enqueue:
+            mock_enqueue.return_value = MagicMock(id="task-123")
+            response = self.client.post(
                 "/api/intelligence/contracts/CONTRACT_1/analyze",
                 headers=auth_headers(tenant_id="tenant_b", role="ADMIN"),
             )
-        # contract_id, tenant_id, model, use_planning
-        called_args = mock_delay.call_args[0]
+        self.assertEqual(response.status_code, 202)
+        # task, authenticated tenant owner, then the real Celery args tuple.
+        called_args = mock_enqueue.call_args.args
         self.assertEqual(called_args[1], "tenant_b")
-        self.assertNotEqual(called_args[1], "tenant_a")
+        self.assertEqual(called_args[2][1], "tenant_b")
+        self.assertNotEqual(called_args[2][1], "tenant_a")
 
 
 class TenantScopedFakeGraph:

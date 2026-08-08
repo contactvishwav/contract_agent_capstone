@@ -47,7 +47,7 @@ class StreamProgressGeneratorTests(unittest.TestCase):
             _msg("workflow", "complete"),
         ])
         with patch("backend.agents.supervisor.progress_publisher.subscribe", return_value=pubsub):
-            events = list(supervisor_api._stream_progress("c1"))
+            events = list(supervisor_api._stream_progress("c1", "tenant_a"))
 
         self.assertEqual(len(events), 4)
         self.assertIn('"step_type": "workflow"', events[0])
@@ -62,7 +62,7 @@ class StreamProgressGeneratorTests(unittest.TestCase):
             _msg("workflow", "failed", error="boom"),
         ])
         with patch("backend.agents.supervisor.progress_publisher.subscribe", return_value=pubsub):
-            events = list(supervisor_api._stream_progress("c1"))
+            events = list(supervisor_api._stream_progress("c1", "tenant_a"))
 
         self.assertEqual(len(events), 3)
         self.assertIn('"status": "failed"', events[-1])
@@ -74,7 +74,7 @@ class StreamProgressGeneratorTests(unittest.TestCase):
             _msg("workflow", "complete"),
         ])
         with patch("backend.agents.supervisor.progress_publisher.subscribe", return_value=pubsub):
-            events = list(supervisor_api._stream_progress("c1"))
+            events = list(supervisor_api._stream_progress("c1", "tenant_a"))
 
         # Only the two real "message"-type events, the subscribe confirmation is skipped.
         self.assertEqual(len(events), 2)
@@ -84,7 +84,7 @@ class StreamProgressGeneratorTests(unittest.TestCase):
         with patch("backend.agents.supervisor.progress_publisher.subscribe", return_value=pubsub), \
              patch.object(supervisor_api, "_STREAM_MAX_SECONDS", 0.05), \
              patch.object(supervisor_api, "_POLL_TIMEOUT_SECONDS", 0.01):
-            events = list(supervisor_api._stream_progress("c1"))
+            events = list(supervisor_api._stream_progress("c1", "tenant_a"))
 
         self.assertTrue(any("stream_timeout" in e for e in events))
         self.assertTrue(pubsub.closed)

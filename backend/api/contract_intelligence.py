@@ -5,6 +5,7 @@ from fastapi.responses import StreamingResponse
 from backend.application.services.contract_intelligence_service import ContractIntelligenceServiceFactory
 from backend.llm_manager import LLMManager
 from backend.infrastructure.contract_repository import Neo4jContractRepository
+from backend.infrastructure.task_ownership import TaskOwnershipUnavailable, task_ownership_store
 import json
 import logging
 from typing import Optional
@@ -46,7 +47,14 @@ async def analyze_contract_intelligence(
     """
     from backend.tasks import analyze_contract_task
 
-    task = analyze_contract_task.delay(contract_id, identity.tenant_id, model, use_planning)
+    try:
+        task = task_ownership_store.enqueue(
+            analyze_contract_task,
+            identity.tenant_id,
+            (contract_id, identity.tenant_id, model, use_planning),
+        )
+    except TaskOwnershipUnavailable:
+        raise HTTPException(status_code=503, detail="Analysis queue authorization is unavailable")
     logger.info(f"Enqueued analysis task {task.id} for contract {contract_id} (tenant {identity.tenant_id})")
 
     return {
@@ -71,6 +79,15 @@ async def get_analysis_task_status(
     """
     from celery.result import AsyncResult
     from backend.celery_app import celery_app
+
+    try:
+        authorized = task_ownership_store.is_owner(task_id, identity.tenant_id)
+    except TaskOwnershipUnavailable:
+        raise HTTPException(status_code=503, detail="Task status is unavailable")
+    if not authorized:
+        # Unknown, expired, corrupt, and other-tenant identifiers are
+        # deliberately indistinguishable.
+        raise HTTPException(status_code=404, detail="Task not found")
 
     result = AsyncResult(task_id, app=celery_app)
 

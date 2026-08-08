@@ -139,8 +139,8 @@ class AnalyzeRouteEnqueuesAndStatusPollingTests(unittest.TestCase):
         self.client = TestClient(app)
 
     def test_analyze_route_enqueues_and_returns_202_with_task_id(self):
-        with patch("backend.tasks.analyze_contract_task.delay") as mock_delay:
-            mock_delay.return_value = MagicMock(id="task-abc-123")
+        with patch("backend.api.contract_intelligence.task_ownership_store.enqueue") as mock_enqueue:
+            mock_enqueue.return_value = MagicMock(id="task-abc-123")
             response = self.client.post(
                 "/api/intelligence/contracts/CONTRACT_1/analyze",
                 headers=auth_headers(tenant_id="tenant_a", role="ADMIN"),
@@ -151,7 +151,7 @@ class AnalyzeRouteEnqueuesAndStatusPollingTests(unittest.TestCase):
         self.assertEqual(body["task_id"], "task-abc-123")
         self.assertEqual(body["status"], "PENDING")
         self.assertIn("task-abc-123", body["status_url"])
-        mock_delay.assert_called_once()
+        mock_enqueue.assert_called_once()
 
     def test_status_polling_reflects_success_after_real_eager_execution(self):
         fake_service = MagicMock()
@@ -163,10 +163,11 @@ class AnalyzeRouteEnqueuesAndStatusPollingTests(unittest.TestCase):
         ):
             task = analyze_contract_task.delay("CONTRACT_1", "tenant_a")
 
-        response = self.client.get(
-            f"/api/intelligence/tasks/{task.id}/status",
-            headers=auth_headers(tenant_id="tenant_a", role="ADMIN"),
-        )
+        with patch("backend.api.contract_intelligence.task_ownership_store.is_owner", return_value=True):
+            response = self.client.get(
+                f"/api/intelligence/tasks/{task.id}/status",
+                headers=auth_headers(tenant_id="tenant_a", role="ADMIN"),
+            )
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["status"], "SUCCESS")
@@ -182,27 +183,23 @@ class AnalyzeRouteEnqueuesAndStatusPollingTests(unittest.TestCase):
         ):
             task = analyze_contract_task.apply(args=("MISSING_CONTRACT", "tenant_a"))
 
-        response = self.client.get(
-            f"/api/intelligence/tasks/{task.id}/status",
-            headers=auth_headers(tenant_id="tenant_a", role="ADMIN"),
-        )
+        with patch("backend.api.contract_intelligence.task_ownership_store.is_owner", return_value=True):
+            response = self.client.get(
+                f"/api/intelligence/tasks/{task.id}/status",
+                headers=auth_headers(tenant_id="tenant_a", role="ADMIN"),
+            )
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["status"], "FAILURE")
         self.assertIn("not found", body["error"].lower())
 
-    def test_status_polling_for_unknown_task_id_is_pending_not_an_error(self):
-        """Matches real Celery/Redis-backend semantics: an unrecognized
-        task_id (never enqueued, or its result already expired) reads back
-        as PENDING, not a 404 or 500 - there's no way to distinguish
-        "doesn't exist" from "hasn't started yet" in Celery's own result
-        backend model."""
-        response = self.client.get(
-            "/api/intelligence/tasks/never-enqueued-task-id/status",
-            headers=auth_headers(tenant_id="tenant_a", role="ADMIN"),
-        )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "PENDING")
+    def test_status_polling_for_unknown_task_id_is_not_found(self):
+        with patch("backend.api.contract_intelligence.task_ownership_store.is_owner", return_value=False):
+            response = self.client.get(
+                "/api/intelligence/tasks/never-enqueued-task-id/status",
+                headers=auth_headers(tenant_id="tenant_a", role="ADMIN"),
+            )
+        self.assertEqual(response.status_code, 404)
 
     def test_status_polling_requires_auth(self):
         response = self.client.get("/api/intelligence/tasks/some-task-id/status")

@@ -82,12 +82,15 @@ class ExecuteWorkflowEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         fake_task = MagicMock(id="task-123")
         fake_analyze_task = MagicMock()
-        fake_analyze_task.delay.return_value = fake_task
+        fake_analyze_task.apply_async.return_value = fake_task
 
-        with patch("backend.tasks.analyze_contract_task", fake_analyze_task, create=True):
+        with patch("backend.tasks.analyze_contract_task", fake_analyze_task, create=True), \
+             patch.object(supervisor_api.task_ownership_store, "enqueue", return_value=fake_task) as mock_enqueue:
             response = await supervisor_api.execute_workflow(request, identity=identity)
 
-        fake_analyze_task.delay.assert_called_once_with("c1", "tenant_a", "gemini-2.5-flash", True)
+        mock_enqueue.assert_called_once_with(
+            fake_analyze_task, "tenant_a", ("c1", "tenant_a", "gemini-2.5-flash", True)
+        )
         self.assertEqual(response["workflow_id"], "task-123")
         self.assertEqual(response["status"], "PENDING")
         self.assertEqual(response["contract_id"], "c1")
@@ -104,7 +107,8 @@ class WorkflowStatusEndpointTests(unittest.IsolatedAsyncioTestCase):
         return fake
 
     async def test_pending_status_includes_circuit_breaker_state(self):
-        with patch("celery.result.AsyncResult", return_value=self._fake_async_result("PENDING")):
+        with patch("celery.result.AsyncResult", return_value=self._fake_async_result("PENDING")), \
+             patch.object(supervisor_api.task_ownership_store, "is_owner", return_value=True):
             from backend.governance.auth import TokenIdentity
             identity = TokenIdentity(tenant_id="tenant_a", role="admin")
             response = await supervisor_api.get_workflow_status("task-1", identity=identity)
@@ -121,7 +125,8 @@ class WorkflowStatusEndpointTests(unittest.IsolatedAsyncioTestCase):
             "escalated": False,
             "analysis_method": "enhanced_phase2_fallback",
         })
-        with patch("celery.result.AsyncResult", return_value=fake_result):
+        with patch("celery.result.AsyncResult", return_value=fake_result), \
+             patch.object(supervisor_api.task_ownership_store, "is_owner", return_value=True):
             from backend.governance.auth import TokenIdentity
             identity = TokenIdentity(tenant_id="tenant_a", role="admin")
             response = await supervisor_api.get_workflow_status("task-1", identity=identity)
@@ -134,7 +139,8 @@ class WorkflowStatusEndpointTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_failure_status_reports_real_error(self):
         fake_result = self._fake_async_result("FAILURE", info=RuntimeError("boom"))
-        with patch("celery.result.AsyncResult", return_value=fake_result):
+        with patch("celery.result.AsyncResult", return_value=fake_result), \
+             patch.object(supervisor_api.task_ownership_store, "is_owner", return_value=True):
             from backend.governance.auth import TokenIdentity
             identity = TokenIdentity(tenant_id="tenant_a", role="admin")
             response = await supervisor_api.get_workflow_status("task-1", identity=identity)

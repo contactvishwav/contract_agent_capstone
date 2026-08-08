@@ -407,7 +407,7 @@ class PlanExecutionEngine:
         # found live, until it did - see that method's own comment).
         # complete_workflow() below assumes start_workflow() already ran.
 
-        publish_step_progress(contract_id, "workflow", "started", plan_id=plan.plan_id, step_count=len(plan.steps))
+        publish_step_progress(contract_id, tenant_id, "workflow", "started", plan_id=plan.plan_id, step_count=len(plan.steps))
 
         step_results: Dict[str, ExecutionResult] = {}
         step_status: Dict[str, str] = {}
@@ -428,7 +428,7 @@ class PlanExecutionEngine:
                 step_results[step.step_id] = result
                 status = self._compute_step_status(result, step.step_type)
                 step_status[step.step_type.value] = status
-                publish_step_progress(contract_id, step.step_type.value, status, step_id=step.step_id)
+                publish_step_progress(contract_id, tenant_id, step.step_type.value, status, step_id=step.step_id)
                 logger.info(f"🚀 EXEC STEP 4.{i+1}c: Step {step.step_id} completed, success: {result.success}")
 
                 # Update context with results
@@ -445,7 +445,7 @@ class PlanExecutionEngine:
             # Return final results in expected format
             result = self._format_final_results(step_status)
             self._log_escalation_if_needed(result, contract_id, tenant_id)
-            publish_step_progress(contract_id, "workflow", "complete", grade=result.get("quality_grade", {}).get("grade"))
+            publish_step_progress(contract_id, tenant_id, "workflow", "complete", grade=result.get("quality_grade", {}).get("grade"))
             return result
 
         except Exception as e:
@@ -453,7 +453,13 @@ class PlanExecutionEngine:
             workflow_tracker.complete_workflow()
             result = self._format_error_results(str(e), step_status)
             self._log_escalation_if_needed(result, contract_id, tenant_id)
-            publish_step_progress(contract_id, "workflow", "failed", error=str(e))
+            publish_step_progress(
+                contract_id,
+                tenant_id,
+                "workflow",
+                "failed",
+                error_type=type(e).__name__,
+            )
             return result
 
     def _log_escalation_if_needed(self, result: Dict[str, Any], contract_id: Optional[str], tenant_id: Optional[str]) -> None:
@@ -470,7 +476,7 @@ class PlanExecutionEngine:
             AuditLogger().log_event(
                 event_type=AuditEventType.WORKFLOW_ESCALATION,
                 resource_id=contract_id or "unknown",
-                tenant_id=tenant_id or "demo_tenant_1",
+                tenant_id=tenant_id,
                 action="workflow_escalation",
                 metadata={
                     "node_status": result.get("node_status", {}),

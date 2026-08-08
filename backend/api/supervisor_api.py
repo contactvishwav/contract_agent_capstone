@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from backend.governance.auth import TokenIdentity
 from backend.governance.rbac import Permission, requires_permission
 from backend.infrastructure.contract_repository import Neo4jContractRepository
+from backend.infrastructure.task_ownership import TaskOwnershipUnavailable, task_ownership_store
 from backend.shared.reliability.circuit_breaker import GEMINI_CIRCUIT_BREAKER, NEO4J_CIRCUIT_BREAKER
 from backend.shared.utils.logger import get_logger
 
@@ -42,7 +43,7 @@ _STREAM_MAX_SECONDS = 300
 _POLL_TIMEOUT_SECONDS = 1.0
 
 
-def _stream_progress(contract_id: str):
+def _stream_progress(contract_id: str, tenant_id: str):
     """Real generator - subscribes to the real Redis channel via
     progress_publisher.subscribe and yields each message as it actually
     arrives, formatted as an SSE event. Terminates on a "workflow"
@@ -54,7 +55,7 @@ def _stream_progress(contract_id: str):
     """
     from backend.agents.supervisor.progress_publisher import subscribe
 
-    pubsub = subscribe(contract_id)
+    pubsub = subscribe(contract_id, tenant_id)
     start = time.time()
     try:
         while time.time() - start < _STREAM_MAX_SECONDS:
@@ -106,7 +107,7 @@ async def stream_workflow_progress(
         raise HTTPException(status_code=404, detail=f"Contract not found: {contract_id}")
 
     return StreamingResponse(
-        _stream_progress(contract_id),
+        _stream_progress(contract_id, identity.tenant_id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -134,7 +135,14 @@ async def execute_workflow(
     """
     from backend.tasks import analyze_contract_task
 
-    task = analyze_contract_task.delay(request.contract_id, identity.tenant_id, request.model, True)
+    try:
+        task = task_ownership_store.enqueue(
+            analyze_contract_task,
+            identity.tenant_id,
+            (request.contract_id, identity.tenant_id, request.model, True),
+        )
+    except TaskOwnershipUnavailable:
+        raise HTTPException(status_code=503, detail="Workflow queue authorization is unavailable")
     logger.info(f"Enqueued supervised workflow {task.id} for contract {request.contract_id} (tenant {identity.tenant_id})")
 
     return {
@@ -164,6 +172,13 @@ async def get_workflow_status(
     """
     from celery.result import AsyncResult
     from backend.celery_app import celery_app
+
+    try:
+        authorized = task_ownership_store.is_owner(workflow_id, identity.tenant_id)
+    except TaskOwnershipUnavailable:
+        raise HTTPException(status_code=503, detail="Workflow status is unavailable")
+    if not authorized:
+        raise HTTPException(status_code=404, detail="Workflow not found")
 
     result = AsyncResult(workflow_id, app=celery_app)
     circuit_breakers = {
