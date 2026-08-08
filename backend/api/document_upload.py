@@ -217,6 +217,14 @@ async def upload_pdf(
                     
                     chunking_agent = ChunkingAgent(embedding_service)
                     contract_id = file.filename.replace('.pdf', '')
+                    # `contract_id` is reassigned below (Step 7) to the real,
+                    # UUID-based Contract.file_id once it exists - this
+                    # filename-derived value is captured under its own name
+                    # so it survives that reassignment, for the real->Document
+                    # link performed after Step 7 (see chunking_document_id
+                    # usage below).
+                    chunking_document_id = contract_id
+                    async_chunking_succeeded = False
 
                     # Try async enhanced chunking first
                     try:
@@ -227,19 +235,51 @@ async def upload_pdf(
                                 "filename": file.filename,
                                 "document_type": "contract",
                                 "file_size": len(full_text)
-                            }
+                            },
+                            tenant_id=tenant_id
                         )
 
                         if chunking_result["success"]:
-                            logger.info(f"Enhanced chunking completed: {chunking_result['chunk_count']} chunks, "
-                                      f"strategy: {chunking_result['plan'].strategy_type}, "
-                                      f"quality: {chunking_result['quality_assessment']['overall_quality']:.2f}")
+                            # success is determined here, before any
+                            # logging - two real, confirmed bugs were found
+                            # live in the block below (chunking_result['plan']
+                            # accessed as an object's .strategy_type
+                            # attribute when it's actually a plain dict on
+                            # this path; then, once that was fixed,
+                            # chunking_result['quality_assessment']
+                            # ['overall_quality'] - a key that was never
+                            # actually present in quality_validator.py's
+                            # real return shape, which nests per-chunk
+                            # scores under 'chunk_scores' instead). Each was
+                            # caught by this block's own except below and
+                            # misreported as "Async chunking failed",
+                            # discarding already-correctly-stored, correctly
+                            # tenant-scoped chunks and triggering a wasted,
+                            # duplicate sync-fallback write every single
+                            # time. async_chunking_succeeded is set
+                            # immediately, and the informational logging
+                            # below is now wrapped in its own try/except so
+                            # a THIRD such mismatch (there is no reason to
+                            # assume there isn't one) degrades to a log
+                            # warning instead of masking a real success as
+                            # a failure again.
+                            async_chunking_succeeded = True
+                            try:
+                                chunk_scores = chunking_result.get('quality_assessment', {}).get('chunk_scores', [])
+                                avg_quality = (
+                                    sum(s['scores']['overall'] for s in chunk_scores) / len(chunk_scores)
+                                    if chunk_scores else 0.0
+                                )
+                                logger.info(f"Enhanced chunking completed: {chunking_result['chunk_count']} chunks, "
+                                          f"strategy: {chunking_result['plan']['strategy_type']}, "
+                                          f"quality: {avg_quality:.2f}")
 
-                            # Log document analysis insights
-                            doc_analysis = chunking_result.get('document_analysis', {})
-                            if doc_analysis.get('is_legal_document'):
-                                logger.info(f"Legal document detected - sections: {doc_analysis.get('section_count', 0)}, "
-                                          f"clauses: {doc_analysis.get('clause_count', 0)}")
+                                doc_analysis = chunking_result.get('document_analysis', {})
+                                if doc_analysis.get('is_legal_document'):
+                                    logger.info(f"Legal document detected - sections: {doc_analysis.get('section_count', 0)}, "
+                                              f"clauses: {doc_analysis.get('clause_count', 0)}")
+                            except Exception as log_error:
+                                logger.warning(f"Enhanced chunking succeeded but summary logging failed: {log_error}")
                         else:
                             logger.warning("Enhanced chunking failed, falling back to sync method")
                             raise Exception("Enhanced chunking failed")
@@ -352,6 +392,19 @@ async def upload_pdf(
             contract_id = result.get("contract_id")
             if not contract_id and "SUCCESS: Contract stored with ID:" in result.get("final_result", ""):
                 contract_id = result["final_result"].split("SUCCESS: Contract stored with ID:")[-1].strip()
+
+            # Record the real Contract.file_id on the Document node written
+            # during Step 5.5 - chunking ran before this id existed, so it
+            # used a filename-derived placeholder (chunking_document_id).
+            # Best-effort: never let a failure here affect the real upload
+            # response, matching this route's established discipline for
+            # every other non-critical side effect.
+            if async_chunking_succeeded and contract_id:
+                try:
+                    from backend.infrastructure.chunking.storage_service import ChunkingStorageService
+                    await ChunkingStorageService().link_document_to_contract(chunking_document_id, contract_id)
+                except Exception as link_error:
+                    logger.warning(f"Failed to link document to contract {contract_id}: {link_error}")
 
             # Log successful upload
             audit_logger.log_event(

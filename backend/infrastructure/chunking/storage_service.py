@@ -19,9 +19,25 @@ class ChunkingStorageService:
         self.graph = graph
         self.chunk_embedding_service = ChunkEmbeddingService()
     
-    async def store_chunks(self, document_id: str, chunks: List[Dict[str, Any]], 
-                         metadata: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Store chunks in Neo4j database with enhanced metadata."""
+    async def store_chunks(self, document_id: str, chunks: List[Dict[str, Any]],
+                         metadata: Dict[str, Any] = None, tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        """Store chunks in Neo4j database with enhanced metadata.
+
+        tenant_id: real, confirmed bug found live - this Document node
+        never got a tenant_id property at all, but every real chunk-level
+        search (chunk_embedding_service.py's search_similar_chunks, and
+        the actually-reachable one, enhanced_contract_search_tool.py's
+        _search_chunks, both used by Contract Chat) filters on
+        `d.tenant_id = $tenant_id` - so chunk-level search was silently
+        dead for every tenant, always, on this primary/async chunking
+        path (backend/agents/chunking_agent.py's ChunkingAgent.
+        process_document, run on every real PDF upload). Required, not
+        optional, despite the default - a caller passing tenant_id=None
+        would just reproduce the same bug under a different name; the
+        default exists only so this doesn't hard-crash existing direct
+        callers (e.g. tests) that haven't been updated, not because
+        skipping it is ever correct for a real upload.
+        """
         try:
             # First, ensure document exists with enhanced metadata
             doc_query = """
@@ -31,13 +47,14 @@ class ChunkingStorageService:
                 d.last_chunked = datetime(),
                 d.chunking_strategy = $strategy,
                 d.avg_chunk_size = $avg_chunk_size,
-                d.total_chunks = $total_chunks
+                d.total_chunks = $total_chunks,
+                d.tenant_id = $tenant_id
             """
-            
+
             # Calculate average chunk size
             avg_chunk_size = sum(chunk.get('size', len(chunk['content'])) for chunk in chunks) / len(chunks)
             strategy_used = chunks[0].get('chunk_type', 'unknown') if chunks else 'unknown'
-            
+
             import json
             self.graph.query(doc_query, {
                 'document_id': document_id,
@@ -45,7 +62,8 @@ class ChunkingStorageService:
                 'metadata': json.dumps(metadata or {}),
                 'strategy': strategy_used,
                 'avg_chunk_size': avg_chunk_size,
-                'total_chunks': len(chunks)
+                'total_chunks': len(chunks),
+                'tenant_id': tenant_id
             })
                 
             # Store each chunk with enhanced properties
@@ -112,7 +130,26 @@ class ChunkingStorageService:
                 'error': str(e),
                 'message': f'Failed to store chunks for document {document_id}'
             }
-    
+
+    async def link_document_to_contract(self, document_id: str, contract_id: str) -> None:
+        """Record the real Contract.file_id on this Document node, once
+        known - chunking (Step 5.5 of document_upload.py) runs before the
+        real Contract node exists (Neo4jContractRepository.store_contract
+        generates its UUID-based file_id later, in Step 7), so document_id
+        here is a filename-derived placeholder, structurally unrelated to
+        the real file_id. No real caller queries chunks scoped to a
+        specific contract_id today (the only actually-reachable chunk
+        search, enhanced_contract_search_tool.py's _search_chunks, is
+        tenant-wide only) - this is forward-looking, cheap to add now
+        while the real id is available, rather than unrecoverable later."""
+        try:
+            self.graph.query(
+                "MATCH (d:Document {id: $document_id}) SET d.contract_id = $contract_id",
+                {"document_id": document_id, "contract_id": contract_id},
+            )
+        except Exception as e:
+            logger.warning(f"Failed to link document {document_id} to contract {contract_id}: {e}")
+
     async def get_chunks(self, document_id: str, include_embeddings: bool = False) -> List[Dict[str, Any]]:
         """Retrieve all chunks for a document with optional embeddings."""
         try:

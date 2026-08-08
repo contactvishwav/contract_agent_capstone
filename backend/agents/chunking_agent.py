@@ -44,27 +44,31 @@ class ChunkingAgent:
         self.chunk_embedding_service.add_observer(self.embedding_logger)
         self.chunk_embedding_service.add_observer(self.embedding_metrics)
     
-    async def process_document(self, document_id: str, content: str, 
-                             metadata: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Process document using orchestrator for comprehensive chunking."""
+    async def process_document(self, document_id: str, content: str,
+                             metadata: Dict[str, Any] = None, tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        """Process document using orchestrator for comprehensive chunking.
+
+        tenant_id: threaded through to ChunkingStorageService.store_chunks -
+        see its docstring for the real bug this fixes (chunk-level search
+        was silently dead for every tenant without it)."""
         from backend.infrastructure.chunking.chunking_orchestrator import ChunkingOrchestrator, ChunkingCommandFactory
-        
+
         try:
             # Use orchestrator for comprehensive processing
             orchestrator = ChunkingOrchestrator()
-            
+
             # Create command
             command = ChunkingCommandFactory.create_document_upload_command(
                 document_id, content, metadata.get('filename', 'unknown') if metadata else 'unknown'
             )
-            
+
             # Execute chunking
             result = await orchestrator.execute_chunking(command)
-            
+
             if result.success:
                 # Store chunks using existing storage service
                 storage_result = await self.storage_service.store_chunks(
-                    document_id, result.chunks, metadata
+                    document_id, result.chunks, metadata, tenant_id=tenant_id
                 )
                 
                 return {

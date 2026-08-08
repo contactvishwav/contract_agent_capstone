@@ -190,7 +190,20 @@ class TenantScopedChunkGraph:
     query shape - unlike CountingFakeGraph (a fixed response regardless of
     params), this actually enforces tenant_id the way a real Neo4j graph
     would, so a cross-tenant test against it is a genuine isolation proof,
-    not just a query-string inspection."""
+    not just a query-string inspection.
+
+    This tests the READ side only, by design - add_chunk hand-seeds
+    tenant_id directly rather than deriving it from a real write. That
+    used to make this a false positive: the real write path
+    (ChunkingStorageService.store_chunks) never actually set Document.
+    tenant_id at all, so this suite stayed green while chunk-level search
+    was silently dead for every tenant in production. Fixed on the write
+    side (storage_service.py), not by changing this fake's shape - the
+    thing that now actually guards against that regression recurring is
+    test_chunk_tenant_scoping.py's ChunkingStorageServiceTenantScopingTests,
+    which calls the real store_chunks and asserts tenant_id lands in the
+    real Cypher params. This class remains a deliberately simplified
+    stand-in for exercising the READ-side query/cache logic in isolation."""
 
     def __init__(self):
         self.chunks = []
