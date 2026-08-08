@@ -58,7 +58,10 @@ services:
         - action: rebuild
           path: ./backend
     ports:
-      - 8000:8000
+      # Keep the documented 8000 default, but permit a non-destructive
+      # local override when another project already owns that host port:
+      # BACKEND_PORT=8001 docker compose up -d --build
+      - "${BACKEND_PORT:-8000}:8000"
   worker:
     # Same image/build as `backend` (not a separate codebase) - just a
     # different entrypoint command, running Celery's own worker process
