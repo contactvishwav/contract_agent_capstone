@@ -15,6 +15,7 @@ import os
 import uuid
 import json
 import logging
+import hashlib
 from typing import Optional
 
 from backend.shared.utils.logger import get_logger
@@ -44,6 +45,7 @@ async def list_uploaded_contracts(
     rows = Neo4jContractRepository().graph.query(
         """
         MATCH (c:Contract {tenant_id: $tenant_id})
+        WHERE coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE'
         RETURN c.file_id AS contract_id,
                coalesce(c.filename, c.file_id) AS filename,
                c.upload_date AS upload_date,
@@ -123,6 +125,7 @@ async def upload_pdf(
             # Check file size (50MB limit)
             logger.info("Step 2: Reading file content")
             file_content = await file.read()
+            source_hash = hashlib.sha256(file_content).hexdigest()
             logger.info(f"File size: {len(file_content)} bytes")
             
             # Validate file metadata
@@ -147,10 +150,9 @@ async def upload_pdf(
                     detail=f"Validation failed: {validation_result['summary']}"
                 )
 
-            # Check for duplicate by filename
+            # Check for an active byte-identical upload.
             logger.info("Step 3: Checking for duplicates")
             try:
-                duplicate_check = llm_mgr.agents["gemini-2.5-flash"]._llm if hasattr(llm_mgr.agents["gemini-2.5-flash"], '_llm') else llm_mgr.agents["gemini-2.5-flash"]
                 from backend.infrastructure.contract_repository import Neo4jContractRepository
                 repo = Neo4jContractRepository()
                 logger.info("Repository initialized successfully")
@@ -158,26 +160,18 @@ async def upload_pdf(
                 logger.error(f"Repository initialization failed: {repo_error}")
                 raise
 
-            # Duplicate check by filename, scoped to this tenant.
+            # Duplicate check by content, scoped to this tenant's active set.
             #
-            # Real, confirmed bug found live while verifying the
-            # duplicate-response-shape fix below: this used to match
-            # `WHERE c.file_id CONTAINS $filename` - but Contract.file_id
-            # is a random UUID-based id (contract_repository.py's
-            # f"UPLOADED_{uuid4().hex[:8]}_{date}"), never derived from
-            # the filename, so this could structurally never match any
-            # real Contract. Live-reproduced: uploading the exact same
-            # file twice in a row silently created two unrelated
-            # contracts both times, no duplicate ever detected. Fixed by
-            # matching on the real filename property (now stored on the
-            # Contract node - see contract_repository.py/value_objects.py's
-            # ContractData.filename), and scoped to tenant_id - the old
-            # query also had no tenant filter at all, so two different
-            # tenants uploading a same-named file would have cross-tenant
-            # "duplicate" hits pointing one tenant at another's contract.
+            # Filename is metadata, not identity: corrected documents often
+            # retain it. Archived hashes are intentionally ignored so the
+            # same bytes can be restored to normal use by uploading again.
             try:
-                existing_query = "MATCH (c:Contract {filename: $filename, tenant_id: $tenant_id}) RETURN c.file_id as file_id LIMIT 1"
-                existing = repo.graph.query(existing_query, {"filename": file.filename, "tenant_id": tenant_id})
+                existing_query = (
+                    "MATCH (c:Contract {source_hash: $source_hash, tenant_id: $tenant_id}) "
+                    "WHERE coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE' "
+                    "RETURN c.file_id as file_id LIMIT 1"
+                )
+                existing = repo.graph.query(existing_query, {"source_hash": source_hash, "tenant_id": tenant_id})
                 logger.info(f"Duplicate check completed. Found: {len(existing) if existing else 0} matches")
             except Exception as query_error:
                 logger.error(f"Duplicate check query failed: {query_error}")
@@ -486,6 +480,20 @@ async def upload_pdf(
                 except Exception as link_error:
                     logger.warning(f"Failed to link document to contract {contract_id}: {link_error}")
 
+            if contract_id:
+                metadata_rows = repo.graph.query(
+                    "MATCH (c:Contract {file_id: $contract_id, tenant_id: $tenant_id}) "
+                    "SET c.source_hash = $source_hash, c.lifecycle_status = 'ACTIVE' "
+                    "RETURN c.file_id AS contract_id",
+                    {
+                        "contract_id": contract_id,
+                        "tenant_id": tenant_id,
+                        "source_hash": source_hash,
+                    },
+                )
+                if not metadata_rows:
+                    raise RuntimeError("Uploaded contract metadata could not be finalized")
+
             # Log successful upload
             audit_logger.log_event(
                 event_type=AuditEventType.DOCUMENT_UPLOAD,
@@ -532,6 +540,70 @@ async def upload_pdf(
                 except Exception as cleanup_error:
                     logger.error(f"Failed to cleanup temp file: {cleanup_error}")
             logger.info(f"=== UPLOAD END: {file.filename if file else 'unknown'} ===")
+
+
+@router.delete("/{contract_id}")
+async def archive_contract(
+    contract_id: str,
+    identity: TokenIdentity = Depends(requires_permission(Permission.DELETE)),
+):
+    """Archive one active contract and retain its audit/evidence graph."""
+    from backend.infrastructure.contract_repository import Neo4jContractRepository
+    from backend.shared.cache.redis_cache import cache
+
+    repo = Neo4jContractRepository()
+    existing = repo.graph.query(
+        "MATCH (c:Contract {file_id: $contract_id, tenant_id: $tenant_id}) "
+        "WHERE coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE' "
+        "RETURN coalesce(c.filename, c.file_id) AS filename, "
+        "c.intelligence_status AS intelligence_status, c.analysis_task_state AS task_state",
+        {"contract_id": contract_id, "tenant_id": identity.tenant_id},
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Contract not found")
+    row = existing[0]
+    if row.get("intelligence_status") == "processing" or row.get("task_state") in {"PENDING", "STARTED"}:
+        raise HTTPException(status_code=409, detail="Contract cannot be archived while analysis is running")
+
+    archived = repo.graph.query(
+        """
+        MATCH (c:Contract {file_id: $contract_id, tenant_id: $tenant_id})
+        WHERE coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE'
+        OPTIONAL MATCH (d:Document {contract_id: $contract_id, tenant_id: $tenant_id})
+        OPTIONAL MATCH (s:ChatSession {contract_id: $contract_id, tenant_id: $tenant_id})
+        WITH c, collect(DISTINCT d) AS documents, collect(DISTINCT s) AS sessions
+        SET c.lifecycle_status = 'ARCHIVED', c.archived_at = datetime(), c.archived_by = $actor
+        FOREACH (document IN documents |
+            SET document.lifecycle_status = 'ARCHIVED', document.archived_at = datetime())
+        FOREACH (session IN sessions |
+            SET session.archived_at = datetime(), session.archived_reason = 'contract_archived')
+        RETURN c.file_id AS contract_id
+        """,
+        {
+            "contract_id": contract_id,
+            "tenant_id": identity.tenant_id,
+            "actor": identity.username or "authenticated_user",
+        },
+    )
+    if not archived:
+        raise HTTPException(status_code=404, detail="Contract not found")
+
+    invalidated = cache.invalidate_tenant_search(identity.tenant_id)
+    AuditLogger().log_event(
+        event_type=AuditEventType.DOCUMENT_DELETE,
+        resource_id=contract_id,
+        action="contract_archived",
+        user_id=identity.username or "authenticated_user",
+        tenant_id=identity.tenant_id,
+        metadata={"filename": row.get("filename"), "search_cache_entries_invalidated": invalidated},
+    )
+    return {
+        "contract_id": contract_id,
+        "filename": row.get("filename") or contract_id,
+        "lifecycle_status": "ARCHIVED",
+        "sessions": "archived_and_hidden",
+        "physical_data_deleted": False,
+    }
 
 @router.post("/upload-stream")
 async def upload_pdf_stream(

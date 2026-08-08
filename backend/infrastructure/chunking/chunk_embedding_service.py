@@ -216,8 +216,8 @@ class ChunkEmbeddingService:
         back for another tenant's identical-looking query, a confidentiality
         bug in the cache layer even with the query itself now tenant-scoped.
         """
-        cache_key_raw = f"vector_search:chunk:{json.dumps({'tenant_id': tenant_id, 'query_text': query_text, 'document_id': document_id, 'limit': limit, 'similarity_threshold': similarity_threshold}, sort_keys=True)}"
-        cache_key = hashlib.sha256(cache_key_raw.encode()).hexdigest()
+        cache_key_raw = json.dumps({'tenant_id': tenant_id, 'query_text': query_text, 'document_id': document_id, 'limit': limit, 'similarity_threshold': similarity_threshold}, sort_keys=True)
+        cache_key = f"vector_search:{tenant_id}:chunk:{hashlib.sha256(cache_key_raw.encode()).hexdigest()}"
         if Phase3Config.CACHE_ENABLED:
             cached = cache.get(cache_key)
             if cached is not None:

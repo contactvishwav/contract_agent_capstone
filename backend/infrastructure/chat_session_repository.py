@@ -93,6 +93,7 @@ class Neo4jChatSessionRepository:
         if contract_id is None:
             cypher = """
             MATCH (s:ChatSession {tenant_id: $tenant_id})
+            WHERE s.archived_at IS NULL
             RETURN s.session_id AS session_id, s.contract_id AS contract_id, s.title AS title,
                    s.created_at AS created_at, s.updated_at AS updated_at, s.message_count AS message_count
             ORDER BY s.updated_at DESC
@@ -101,6 +102,7 @@ class Neo4jChatSessionRepository:
         else:
             cypher = """
             MATCH (s:ChatSession {tenant_id: $tenant_id, contract_id: $contract_id})
+            WHERE s.archived_at IS NULL
             RETURN s.session_id AS session_id, s.contract_id AS contract_id, s.title AS title,
                    s.created_at AS created_at, s.updated_at AS updated_at, s.message_count AS message_count
             ORDER BY s.updated_at DESC
@@ -116,6 +118,7 @@ class Neo4jChatSessionRepository:
         all."""
         cypher = """
         MATCH (s:ChatSession {session_id: $session_id, tenant_id: $tenant_id})
+        WHERE s.archived_at IS NULL
         RETURN s.session_id AS session_id, s.tenant_id AS tenant_id, s.contract_id AS contract_id,
                s.title AS title, s.created_at AS created_at, s.updated_at AS updated_at,
                s.message_count AS message_count
@@ -130,6 +133,7 @@ class Neo4jChatSessionRepository:
         read in this codebase."""
         cypher = """
         MATCH (s:ChatSession {session_id: $session_id, tenant_id: $tenant_id})-[r:HAS_MESSAGE]->(m:ChatMessage)
+        WHERE s.archived_at IS NULL
         RETURN m.message_id AS message_id, m.role AS role, m.content AS content, m.model AS model,
                m.tool_name AS tool_name, m.tool_call_id AS tool_call_id, m.created_at AS created_at,
                r.sequence AS sequence
@@ -163,6 +167,7 @@ class Neo4jChatSessionRepository:
         message_id = generate_message_id()
         cypher = """
         MATCH (s:ChatSession {session_id: $session_id, tenant_id: $tenant_id})
+        WHERE s.archived_at IS NULL
         SET s.message_count = coalesce(s.message_count, 0) + 1,
             s.updated_at = datetime()
         WITH s, s.message_count AS seq

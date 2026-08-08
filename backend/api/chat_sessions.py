@@ -34,6 +34,7 @@ def contract_exists_for_tenant(contract_id: str, tenant_id: str) -> bool:
     """Verify ownership inside the Neo4j predicate, never after retrieval."""
     rows = contract_repository.graph.query(
         "MATCH (c:Contract {file_id: $contract_id, tenant_id: $tenant_id}) "
+        "WHERE coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE' "
         "RETURN c.file_id AS file_id",
         {"contract_id": contract_id, "tenant_id": tenant_id},
     )

@@ -92,7 +92,10 @@ def get_contracts(
     governing_law: Optional[Location] = None
 ):  
     params: dict[str, Any] = {"tenant_id": tenant_id}
-    filters: list[str] = ["c.tenant_id = $tenant_id"]
+    filters: list[str] = [
+        "c.tenant_id = $tenant_id",
+        "coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE'",
+    ]
 
     if governing_law:
         if governing_law.country:

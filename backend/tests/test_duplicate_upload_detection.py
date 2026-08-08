@@ -14,10 +14,10 @@ node. There was also no tenant_id in the old query at all, which would
 have been a cross-tenant duplicate-detection leak once the filename match
 was fixed on its own.
 
-Fix: the original filename is now threaded through PDFProcessingState ->
-ContractData -> the repository's store_contract data_dict -> the actual
-Contract node (a new `filename` property), and the duplicate check now
-matches on {filename, tenant_id} instead of the file_id/CONTAINS pattern.
+The filename still survives for display, while duplicate identity is now the
+uploaded byte-content SHA-256 scoped by tenant and active lifecycle. This lets
+a corrected document reuse a filename and lets an archived document be
+uploaded again.
 """
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -113,7 +113,10 @@ class DocumentUploadDuplicateQueryTests(unittest.IsolatedAsyncioTestCase):
     async def _upload(self, existing_matches, tenant_id="tenant_a", filename="Salesforce_MSA.pdf"):
         import io
         from fastapi import BackgroundTasks, UploadFile
-        from backend.api.document_upload import upload_pdf
+        with patch("langchain_neo4j.Neo4jGraph"), patch(
+            "backend.shared.utils.gemini_embedding_service.embedding"
+        ):
+            from backend.api.document_upload import upload_pdf
         from backend.governance.auth import TokenIdentity
 
         fake_identity = TokenIdentity(tenant_id=tenant_id, role="ADMIN", username="tester")
@@ -149,7 +152,7 @@ class DocumentUploadDuplicateQueryTests(unittest.IsolatedAsyncioTestCase):
                 result = None
         return result, captured_calls
 
-    async def test_duplicate_check_queries_by_filename_and_tenant_not_file_id_contains(self):
+    async def test_duplicate_check_queries_by_content_hash_tenant_and_active_lifecycle(self):
         # existing_matches=[] means the route proceeds past the duplicate
         # check into a real (failing, on this fake PDF) extraction step,
         # whose own error handling makes further, unrelated graph.query
@@ -159,8 +162,9 @@ class DocumentUploadDuplicateQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(len(calls), 1)
         cypher, params = calls[0]
         self.assertNotIn("CONTAINS", cypher)
-        self.assertIn("filename", cypher)
-        self.assertEqual(params["filename"], "Salesforce_MSA.pdf")
+        self.assertIn("source_hash", cypher)
+        self.assertIn("lifecycle_status", cypher)
+        self.assertEqual(len(params["source_hash"]), 64)
         self.assertEqual(params["tenant_id"], "tenant_a")
 
     async def test_a_real_match_is_reported_as_duplicate_with_the_existing_contract_id(self):

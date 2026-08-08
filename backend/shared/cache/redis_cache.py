@@ -51,6 +51,18 @@ class RedisCache:
         key_data = f"{prefix}:{':'.join(str(arg) for arg in args)}"
         return hashlib.md5(key_data.encode()).hexdigest()
 
+    def invalidate_tenant_search(self, tenant_id: str) -> int:
+        """Delete only vector/search entries owned by one authenticated tenant."""
+        pattern = f"vector_search:{tenant_id}:*"
+        try:
+            keys = list(self.redis_client.scan_iter(match=pattern))
+            if not keys:
+                return 0
+            return int(self.redis_client.delete(*keys))
+        except Exception as e:
+            logger.error(f"Tenant search-cache invalidation failed for tenant {tenant_id}: {e}")
+            return 0
+
 class InMemoryCache:
     """
     Fallback in-memory cache. Also backs LLMUsageTracker's counters
@@ -82,6 +94,19 @@ class InMemoryCache:
     def setex(self, key: str, ttl: int, value: str) -> bool:
         self._cache[key] = value
         return True
+
+    def scan_iter(self, match: str = "*"):
+        from fnmatch import fnmatch
+        return iter([key for key in list(self._cache) if fnmatch(key, match)])
+
+    def delete(self, *keys) -> int:
+        with self._lock:
+            deleted = 0
+            for key in keys:
+                if key in self._cache:
+                    del self._cache[key]
+                    deleted += 1
+            return deleted
 
     def ping(self):
         return True

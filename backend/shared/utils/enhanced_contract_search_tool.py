@@ -128,7 +128,7 @@ def _multi_level_search_cache_key(
         "reranking_enabled": Phase3Config.RERANKING_ENABLED,
     }
     raw = f"vector_search:{json.dumps(key_data, sort_keys=True, default=str)}"
-    return hashlib.sha256(raw.encode()).hexdigest()
+    return f"vector_search:{tenant_id}:tool:{hashlib.sha256(raw.encode()).hexdigest()}"
 
 
 def get_contracts_multi_level(
@@ -184,7 +184,10 @@ def get_contracts_multi_level(
             return cached
 
     params: dict[str, Any] = {"tenant_id": tenant_id}
-    filters: list[str] = ["c.tenant_id = $tenant_id"]
+    filters: list[str] = [
+        "c.tenant_id = $tenant_id",
+        "coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE'",
+    ]
     if contract_id:
         filters.append("c.file_id = $contract_id")
         params["contract_id"] = contract_id
@@ -505,7 +508,9 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params, contr
             CALL db.index.vector.queryNodes('{CHUNK_EMBEDDING_INDEX}', $k, $chunk_embedding)
             YIELD node AS c, score AS chunk_score
             MATCH (d:Document)-[:HAS_CHUNK]->(c)
-            WHERE d.tenant_id = $tenant_id AND chunk_score > 0.7
+            MATCH (source_contract:Contract {{file_id: d.contract_id, tenant_id: $tenant_id}})
+            WHERE coalesce(source_contract.lifecycle_status, 'ACTIVE') = 'ACTIVE'
+              AND d.tenant_id = $tenant_id AND chunk_score > 0.7
             {"AND d.contract_id = $contract_id" if contract_id else ""}
             RETURN d.id AS document_id, c.chunk_type AS chunk_type, c.content AS content,
                    c.chunk_index AS chunk_index, c.quality_score AS quality_score,
@@ -550,7 +555,9 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params, contr
 
     new_chunk_query = f"""
     MATCH (d:Document)-[:HAS_CHUNK]->(c:Chunk)
-    WHERE d.tenant_id = $tenant_id
+    MATCH (source_contract:Contract {{file_id: d.contract_id, tenant_id: $tenant_id}})
+    WHERE coalesce(source_contract.lifecycle_status, 'ACTIVE') = 'ACTIVE'
+      AND d.tenant_id = $tenant_id
     {"AND d.contract_id = $contract_id" if contract_id else ""}
     RETURN d.id AS document_id, c.chunk_type AS chunk_type, c.content AS content,
            c.chunk_index AS chunk_index, c.quality_score AS quality_score
@@ -584,6 +591,7 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params, contr
         legacy_chunk_query = f"""
         MATCH (c:Contract)-[:CONTAINS_CHUNK]->(dc:DocumentChunk)
         WHERE c.tenant_id = $tenant_id
+          AND coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE'
         {"AND c.file_id = $contract_id" if contract_id else ""}
         RETURN c.file_id AS contract_id, dc.chunk_type AS chunk_type, dc.content AS content,
                dc.chunk_order AS chunk_order, dc.confidence AS confidence
@@ -622,8 +630,14 @@ def _search_all_levels(embeddings, tenant_id, summary_search, clause_types, sect
     selected - each sub-call builds its own filters/params rather than
     reusing this function's own (pre-existing, unrelated to this fix -
     each level needs its own base filter list regardless)."""
-    base_filters = lambda: (["c.tenant_id = $tenant_id", "c.file_id = $contract_id"] if contract_id
-                             else ["c.tenant_id = $tenant_id"])
+    base_filters = lambda: ([
+        "c.tenant_id = $tenant_id",
+        "coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE'",
+        "c.file_id = $contract_id",
+    ] if contract_id else [
+        "c.tenant_id = $tenant_id",
+        "coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE'",
+    ])
     base_params = lambda: ({"tenant_id": tenant_id, "contract_id": contract_id} if contract_id
                             else {"tenant_id": tenant_id})
     results = {

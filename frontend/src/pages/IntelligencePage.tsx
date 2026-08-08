@@ -5,6 +5,9 @@ import { AgentWorkflowTracker } from '../components/features/agents/AgentWorkflo
 import { Card } from '../components/shared/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/shared/ui/select';
 import { useContractHistory } from '../contexts/ContractHistoryContext';
+import { useAuth } from '../contexts/AuthContext';
+import { archiveContract } from '../services/contractApi';
+import { Archive as ArchiveIcon } from 'lucide-react';
 
 interface UploadResult {
   filename: string;
@@ -20,11 +23,16 @@ export const IntelligencePage: React.FC = () => {
   const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
   const [workflowStatus, setWorkflowStatus] = useState<any>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [archiveTarget, setArchiveTarget] = useState<{ contract_id: string; filename: string } | null>(null);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
+  const [isArchiving, setIsArchiving] = useState(false);
+  const { session } = useAuth();
   const {
     contracts,
     addContract,
     updateContract,
     getContract,
+    removeContract,
     selectedContractId,
     setSelectedContract,
   } = useContractHistory();
@@ -79,6 +87,22 @@ export const IntelligencePage: React.FC = () => {
     });
   };
 
+  const handleArchive = async () => {
+    if (!archiveTarget) return;
+    setIsArchiving(true);
+    setArchiveError(null);
+    try {
+      await archiveContract(archiveTarget.contract_id);
+      removeContract(archiveTarget.contract_id);
+      if (uploadResult?.contract_id === archiveTarget.contract_id) setUploadResult(null);
+      setArchiveTarget(null);
+    } catch (error) {
+      setArchiveError(error instanceof Error ? error.message : 'Could not archive contract');
+    } finally {
+      setIsArchiving(false);
+    }
+  };
+
   return (
     <div className="space-y-8">
       {/* Header Section */}
@@ -128,38 +152,52 @@ export const IntelligencePage: React.FC = () => {
           <h2 className="text-xl font-semibold text-slate-800 mb-4">Recent Contracts</h2>
           <div className="space-y-2">
             {contracts.slice(0, 5).map((contract) => (
-              <button
-                type="button"
+              <div
                 key={contract.contract_id} 
-                aria-pressed={contract.contract_id === selectedContractId}
-                className={`flex w-full items-center justify-between rounded-lg border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
+                className={`flex w-full items-center gap-2 rounded-lg border p-1 transition-colors ${
                   contract.contract_id === selectedContractId
                     ? 'border-blue-400 bg-blue-50'
                     : 'border-transparent bg-slate-50 hover:bg-slate-100'
                 }`}
-                onClick={() => setSelectedContract(contract.contract_id)}
               >
-                <div>
-                  <p className="font-medium text-slate-800">{contract.filename}</p>
-                  <p className="text-sm text-slate-500">
-                    {new Date(contract.upload_date).toLocaleDateString()} • {contract.model_used}
-                    {contract.analysis_completed && contract.risk_level && (
-                      <span className={`ml-2 px-2 py-1 rounded text-xs ${
-                        contract.risk_level === 'HIGH' || contract.risk_level === 'CRITICAL' 
-                          ? 'bg-red-100 text-red-700'
-                          : contract.risk_level === 'MEDIUM'
-                          ? 'bg-yellow-100 text-yellow-700' 
-                          : 'bg-green-100 text-green-700'
-                      }`}>
-                        {contract.risk_level} Risk
-                      </span>
-                    )}
-                  </p>
-                </div>
-                <div className="text-sm text-slate-500">
-                  {contract.contract_id === selectedContractId ? 'Selected' : 'Open analysis'}
-                </div>
-              </button>
+                <button
+                  type="button"
+                  aria-pressed={contract.contract_id === selectedContractId}
+                  className="flex min-w-0 flex-1 items-center justify-between rounded-md p-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                  onClick={() => setSelectedContract(contract.contract_id)}
+                >
+                  <div className="min-w-0">
+                    <p className="truncate font-medium text-slate-800">{contract.filename}</p>
+                    <p className="text-sm text-slate-500">
+                      {new Date(contract.upload_date).toLocaleDateString()} • {contract.model_used}
+                      {contract.analysis_completed && contract.risk_level && (
+                        <span className={`ml-2 rounded px-2 py-1 text-xs ${
+                          contract.risk_level === 'HIGH' || contract.risk_level === 'CRITICAL'
+                            ? 'bg-red-100 text-red-700'
+                            : contract.risk_level === 'MEDIUM'
+                            ? 'bg-yellow-100 text-yellow-700'
+                            : 'bg-green-100 text-green-700'
+                        }`}>
+                          {contract.risk_level} Risk
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                  <span className="ml-3 text-sm text-slate-500">
+                    {contract.contract_id === selectedContractId ? 'Selected' : 'Open analysis'}
+                  </span>
+                </button>
+                {session?.role === 'ADMIN' && (
+                  <button
+                    type="button"
+                    className="rounded-md p-2 text-slate-500 hover:bg-red-50 hover:text-red-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
+                    aria-label={`Archive ${contract.filename}`}
+                    onClick={() => { setArchiveError(null); setArchiveTarget(contract); }}
+                  >
+                    <ArchiveIcon className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
             ))}
           </div>
         </div>
@@ -242,6 +280,41 @@ export const IntelligencePage: React.FC = () => {
           </div>
         </Card>
       </div>
+
+      {archiveTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="presentation">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="archive-contract-title"
+            className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl"
+          >
+            <h2 id="archive-contract-title" className="text-lg font-semibold text-slate-900">Archive {archiveTarget.filename}?</h2>
+            <p className="mt-3 text-sm text-slate-600">
+              This removes the contract from Recent Contracts, Chat, search, and new analysis. Its audit evidence and existing conversation records are retained but hidden. This is not permanent deletion.
+            </p>
+            {archiveError && <p className="mt-3 text-sm text-red-700" role="alert">{archiveError}</p>}
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                className="rounded-md border px-4 py-2 text-sm"
+                disabled={isArchiving}
+                onClick={() => setArchiveTarget(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="rounded-md bg-red-700 px-4 py-2 text-sm text-white disabled:opacity-50"
+                disabled={isArchiving}
+                onClick={handleArchive}
+              >
+                {isArchiving ? 'Archiving…' : 'Archive contract'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

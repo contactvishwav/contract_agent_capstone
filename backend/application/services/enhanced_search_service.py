@@ -39,7 +39,7 @@ def _search_cache_key(params: SearchParams) -> str:
         "reranking_enabled": Phase3Config.RERANKING_ENABLED,
     }
     raw = f"vector_search:enhanced_search:{json.dumps(key_data, sort_keys=True, default=str)}"
-    return hashlib.sha256(raw.encode()).hexdigest()
+    return f"vector_search:{params.tenant_id}:rest:{hashlib.sha256(raw.encode()).hexdigest()}"
 
 
 class EnhancedSearchService:

@@ -38,3 +38,18 @@ export async function getLatestContractAnalysis(contractId: string): Promise<Per
   }
   return response.json();
 }
+
+export async function archiveContract(contractId: string): Promise<{
+  contract_id: string;
+  filename: string;
+  lifecycle_status: 'ARCHIVED';
+  sessions: 'archived_and_hidden';
+  physical_data_deleted: false;
+}> {
+  const response = await apiFetch(`/api/documents/${encodeURIComponent(contractId)}`, { method: 'DELETE' });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.detail || `Failed to archive contract: ${response.statusText}`);
+  }
+  return response.json();
+}

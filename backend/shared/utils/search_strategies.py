@@ -90,7 +90,7 @@ class DocumentSearchStrategy(SearchStrategy):
             # since reranking cannot honestly claim to preserve tenant
             # isolation "as strictly as existing search" when existing
             # search had none.
-            filters = ["c.tenant_id = $tenant_id"]
+            filters = ["c.tenant_id = $tenant_id", "coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE'"]
 
             # Apply all filters
             if params.active is not None:
@@ -184,7 +184,7 @@ class ClauseSearchStrategy(SearchStrategy):
             # See DocumentSearchStrategy's identical comment - same fix,
             # same real leak, same root cause (SearchParams had no
             # tenant_id field at all).
-            filters = ["c.tenant_id = $tenant_id"]
+            filters = ["c.tenant_id = $tenant_id", "coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE'"]
 
             if params.clause_types:
                 filters.append("cl.clause_type IN $clause_types")
@@ -258,7 +258,7 @@ class SectionSearchStrategy(SearchStrategy):
             cypher_params = {"tenant_id": params.tenant_id}
             # See DocumentSearchStrategy's identical comment - same fix,
             # same real leak, same root cause.
-            filters = ["c.tenant_id = $tenant_id"]
+            filters = ["c.tenant_id = $tenant_id", "coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE'"]
 
             if params.section_types:
                 filters.append("s.section_type IN $section_types")
@@ -322,7 +322,7 @@ class RelationshipSearchStrategy(SearchStrategy):
             cypher_params = {"tenant_id": params.tenant_id}
             # See DocumentSearchStrategy's identical comment - same fix,
             # same real leak, same root cause.
-            filters = ["c.tenant_id = $tenant_id"]
+            filters = ["c.tenant_id = $tenant_id", "coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE'"]
 
             cypher_statement = "MATCH (c:Contract)<-[r:PARTY_TO]-(p:Party) "
 

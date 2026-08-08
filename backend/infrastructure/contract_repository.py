@@ -42,6 +42,7 @@ class Neo4jContractRepository(IContractRepository):
         try:
             query = """
             MATCH (c:Contract {file_id: $contract_id, tenant_id: $tenant_id})
+            WHERE coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE'
             OPTIONAL MATCH (c)<-[r:PARTY_TO]-(p:Party)
             RETURN c.file_id as file_id,
                    c.contract_type as contract_type,
@@ -149,7 +150,8 @@ class Neo4jContractRepository(IContractRepository):
                 embedding: $embedding,
                 tenant_id: $tenant_id,
                 upload_date: datetime(),
-                source: 'PDF_UPLOAD'
+                source: 'PDF_UPLOAD',
+                lifecycle_status: 'ACTIVE'
             })
             RETURN c.file_id as contract_id
             """
