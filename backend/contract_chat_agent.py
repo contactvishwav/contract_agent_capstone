@@ -24,9 +24,16 @@ def get_agent(llm):
     tools = [ContractSearchTool(), EnhancedContractSearchTool(), *MCP_CHAT_TOOLS]
     llm_with_tools = llm.bind_tools(tools)
 
-    # System message
-    sys_msg = SystemMessage(
-        content="You are a helpful assistant tasked with finding and explaining relevant information about internal contracts. "
+    # Base system message - identical regardless of contract_id, so the
+    # assistant node can extend it per-invocation with contract-selection
+    # state (real, confirmed bug found live: contract_id was correctly
+    # threaded all the way into the tool-execution path, but the model
+    # itself was never told a contract was already selected - it only
+    # sees the conversation, not config["configurable"] - so "Analyze
+    # this contract" kept asking the user for a contract ID they had no
+    # way to provide, even with a real one already resolved server-side).
+    BASE_SYSTEM_PROMPT = (
+        "You are a helpful assistant tasked with finding and explaining relevant information about internal contracts. "
         "Always explain results you get from the tools in a concise manner to not overwhelm the user but also don't be too technical. "
         "Answer questions as if you are answering to non-technical management level. "
         "Important: Be confident and accurate in your tool choice! Avoid asking follow-up questions if possible. "
@@ -34,7 +41,25 @@ def get_agent(llm):
     )
 
     # Node
-    def assistant(state: MessagesState):
+    def assistant(state: MessagesState, config: RunnableConfig):
+        # Same server-side-only trust boundary as tenant_id/contract_id in
+        # execute_tools below - this only ever reads what main.py's
+        # runner() put there from the authenticated request, never
+        # anything the model itself could have supplied.
+        contract_id = (config.get("configurable") or {}).get("contract_id") if config else None
+        if contract_id:
+            sys_msg = SystemMessage(content=(
+                BASE_SYSTEM_PROMPT
+                + " The user currently has a specific contract selected in the UI (already resolved "
+                "server-side - you do not have and do not need its id or filename yourself). When they "
+                "refer to 'this contract', 'the contract', or ask you to analyze, summarize, or explain "
+                "it with no other contract identified, call EnhancedContractSearch immediately using a "
+                "relevant search term for their question - do not ask them for a contract ID or which "
+                "contract they mean, the selection already scopes the search for you."
+            ))
+        else:
+            sys_msg = SystemMessage(content=BASE_SYSTEM_PROMPT)
+
         response = llm_with_tools.invoke([sys_msg] + state["messages"])
         
         # Log model decision

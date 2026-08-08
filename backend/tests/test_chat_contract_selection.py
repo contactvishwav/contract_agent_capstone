@@ -15,6 +15,17 @@ never a field the LLM can see, guess, or override) -> get_contracts_
 multi_level, which now threads it into every search level's Cypher
 filter, including 'all' (the new default from item 1's fix, which
 previously silently ignored contract-scoping filters passed to it).
+
+A second, real gap in the same fix was found live during final
+verification: contract_id reached the tool-execution path correctly,
+but the model itself was never told a contract was already selected -
+it only sees the conversation, not config["configurable"] - so "Analyze
+this contract" kept asking the user for a contract ID even with a real
+one already resolved server-side (confirmed live: zero tool calls made,
+model asked "do you have a specific contract ID?"). Fixed by having the
+assistant node build its system prompt per-invocation, telling the model
+explicitly when a contract is already selected and that it should call
+the search tool directly rather than ask for an id.
 """
 
 import unittest
@@ -161,6 +172,46 @@ class ExecuteToolsInjectsContractIdServerSideTests(unittest.TestCase):
         self.assertTrue(fake_run.called)
         _, kwargs = fake_run.call_args
         self.assertEqual(kwargs.get("contract_id"), "REAL_SELECTED_CONTRACT")
+
+
+class AssistantTellsTheModelAContractIsSelectedTests(unittest.TestCase):
+    """The real gap found live: contract_id reaching the tool-execution
+    path is not enough by itself - the model has to be told a contract
+    is already selected, or it has no reason to ever call the search
+    tool for "this contract" instead of asking the user for an id."""
+
+    def _invoke_and_capture_system_prompt(self, config):
+        with patch("langchain_neo4j.Neo4jGraph"), \
+             patch("backend.shared.utils.gemini_embedding_service.embedding"):
+            from backend.contract_chat_agent import get_agent
+        from langchain_core.messages import AIMessage
+
+        fake_llm = MagicMock()
+        fake_llm.bind_tools.return_value = fake_llm
+        fake_llm.invoke.return_value = AIMessage(content="ok")
+
+        graph = get_agent(fake_llm)
+        graph.invoke({"messages": [("human", "Analyze this contract")]}, config=config)
+
+        messages_arg = fake_llm.invoke.call_args.args[0]
+        system_messages = [m for m in messages_arg if m.__class__.__name__ == "SystemMessage"]
+        self.assertEqual(len(system_messages), 1)
+        return system_messages[0].content
+
+    def test_system_prompt_names_the_selection_when_contract_id_present(self):
+        content = self._invoke_and_capture_system_prompt(
+            {"configurable": {"tenant_id": "tenant_a", "contract_id": "UPLOADED_REAL"}}
+        )
+        self.assertIn("already", content.lower())
+        self.assertIn("selected", content.lower())
+        self.assertIn("do not ask", content.lower())
+
+    def test_system_prompt_unchanged_when_no_contract_selected(self):
+        """Must not claim a selection exists when there isn't one - that
+        would be actively misleading the model."""
+        content = self._invoke_and_capture_system_prompt({"configurable": {"tenant_id": "tenant_a"}})
+        self.assertNotIn("already", content.lower())
+        self.assertNotIn("selected", content.lower())
 
 
 if __name__ == "__main__":
