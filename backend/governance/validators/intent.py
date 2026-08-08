@@ -33,9 +33,22 @@ class IntentValidator(IGuardValidator):
         )
         
         try:
-            model = self.llm_mgr.get_model_by_name("gemini-2.5-flash")
+            # Real, confirmed bug found live: get_model_by_name("gemini-2.5-
+            # flash") returns LLMManager.agents[...], the compiled Contract
+            # Chat LangGraph agent (get_agent(llm) -> builder.compile()) -
+            # not a raw chat model. Its .invoke() expects a state dict
+            # ({"messages": [...]}), not a plain string, so this has always
+            # thrown - the outer except swallowed it into "Intent
+            # classification failed: Expected dict, got System: ..." on
+            # every single real call, confirmed live throughout tonight's
+            # audit. raw_llms (see llm_manager.py / contract_intelligence_
+            # service.py's identical fix) holds the actual chat model
+            # instance this needs.
+            model = self.llm_mgr.raw_llms.get("gemini-2.5-flash")
+            if model is None:
+                return GuardResult(is_safe=True)
             response = model.invoke(f"System: {system_instruction}\nPrompt: {input_text}")
-            
+
             content = response.content.strip()
             if "```json" in content:
                 content = content.split("```json")[-1].split("```")[0].strip()
