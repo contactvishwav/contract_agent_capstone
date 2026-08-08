@@ -27,7 +27,13 @@ export function groupStoredMessagesIntoUiMessages(stored: ChatSessionMessage[]):
             current = { id: row.message_id, type: "ai", parts: [], generating: false };
             messages.push(current);
         }
-        current.parts.push({ type: row.role, content: row.content });
+        current.parts.push({
+            type: row.role === "ai_message" && row.terminal_status && row.terminal_status !== "passed"
+                ? "error"
+                : row.role,
+            content: row.content,
+            ...(row.terminal_status ? { status: row.terminal_status } : {}),
+        });
         if (row.role === "ai_message" && row.citations?.length) {
             current.parts.push({ type: "citations", content: JSON.stringify(row.citations) });
         }

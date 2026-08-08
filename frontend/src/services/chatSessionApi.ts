@@ -22,6 +22,7 @@ export interface ChatSessionMessage {
   tool_name: string | null;
   tool_call_id: string | null;
   citations: ChatCitation[];
+  terminal_status?: 'passed' | 'rejected' | 'validation_failed' | 'timed_out' | 'cancelled' | 'empty' | 'generation_failed' | 'persistence_failed' | null;
   sequence: number;
   created_at: string | null;
 }

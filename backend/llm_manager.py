@@ -91,3 +91,16 @@ class LLMManager:
             return self.agents[name]
         except KeyError:
             raise ValueError(f"The model {name} wasn't initiated")
+
+    def get_raw_model_by_name(self, name: str):
+        """Return the provider chat model, never the compiled chat graph.
+
+        Output validators and structured-output analysis operate at the raw
+        provider boundary.  Contract Chat itself uses `get_model_by_name()`'s
+        compiled `MessagesState` graph.  Keeping both lookups explicit prevents
+        callers from invoking a graph with a provider-style string payload.
+        """
+        try:
+            return self.raw_llms[name]
+        except KeyError:
+            raise ValueError(f"The raw model {name} wasn't initiated")

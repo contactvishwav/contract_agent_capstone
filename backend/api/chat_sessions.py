@@ -5,7 +5,7 @@ tenant-isolation reasoning this backs; backend/main.py's /api/run/ route
 is where messages actually get appended to a session as a conversation
 happens.
 """
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
@@ -90,6 +90,16 @@ class MessageResponse(BaseModel):
     tool_name: Optional[str] = None
     tool_call_id: Optional[str] = None
     citations: List[dict] = Field(default_factory=list)
+    terminal_status: Optional[Literal[
+        "passed",
+        "rejected",
+        "validation_failed",
+        "timed_out",
+        "cancelled",
+        "empty",
+        "generation_failed",
+        "persistence_failed",
+    ]] = None
     sequence: int
     created_at: Optional[str] = None
 
@@ -158,6 +168,7 @@ async def get_session_detail(
                 model=m.get("model"), tool_name=m.get("tool_name"),
                 tool_call_id=m.get("tool_call_id"),
                 citations=revalidate_stored_citations(m.get("citations"), identity.tenant_id),
+                terminal_status=m.get("terminal_status"),
                 sequence=m["sequence"],
                 created_at=serialize_neo4j_datetime(m.get("created_at")),
             )

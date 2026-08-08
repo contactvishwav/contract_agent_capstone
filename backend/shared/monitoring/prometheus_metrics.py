@@ -116,6 +116,23 @@ HALLUCINATION_FLAGGED = Gauge(
     ["category"],
 )
 
+# Output Guard runs in the backend process that serves this metric, so a
+# native process-local counter is the correct shape (unlike worker-produced
+# analysis metrics, which need Redis aggregation).  Labels are bounded enums,
+# never prompts, tenant identifiers, model payloads, or exception messages.
+OUTPUT_GUARD_OUTCOMES = Counter(
+    "output_guard_outcomes_total",
+    "Contract Chat Output Guard terminal outcomes",
+    ["status", "reason_category"],
+)
+
+
+def record_output_guard_outcome(status: str, reason_category: str = "none") -> None:
+    OUTPUT_GUARD_OUTCOMES.labels(
+        status=status,
+        reason_category=reason_category or "none",
+    ).inc()
+
 
 def _refresh_llm_usage_gauges() -> None:
     summary = llm_usage_tracker.get_summary()

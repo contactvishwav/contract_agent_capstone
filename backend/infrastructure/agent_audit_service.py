@@ -69,7 +69,17 @@ class AgentAuditService:
             }
         )
 
-    def log_guard_check(self, guard_name: str, is_safe: bool, violation_type: Optional[str], session_id: str):
+    def log_guard_check(
+        self,
+        guard_name: str,
+        is_safe: bool,
+        violation_type: Optional[str],
+        session_id: str,
+        validation_status: Optional[str] = None,
+        model: Optional[str] = None,
+        chat_session_id: Optional[str] = None,
+        reason_category: Optional[str] = None,
+    ):
         """Log a governance guard check (Prompt/Output Guard)"""
         self.audit_logger.log_event(
             event_type=AuditEventType.MODEL_GUARD_CHECK,
@@ -77,11 +87,15 @@ class AgentAuditService:
             action=f"check_{guard_name.lower().replace(' ', '_')}",
             user_id=self.user_id,
             tenant_id=self.tenant_id,
-            status="success" if is_safe else "violation",
+            status=validation_status or ("success" if is_safe else "violation"),
             metadata={
                 "guard": guard_name,
                 "is_safe": is_safe,
                 "violation_type": violation_type,
+                "validation_status": validation_status,
+                "model": model,
+                "chat_session_id": chat_session_id,
+                "reason_category": reason_category,
                 "correlation_id": self.correlation_id,
             }
         )

@@ -36,9 +36,12 @@ class ChatStreamTerminalStateTests(unittest.IsolatedAsyncioTestCase):
             role="ai_message",
             content="Response failed before completion. Please retry.",
             model="gemini-2.5-flash",
+            terminal_status="generation_failed",
         )
         self.assertIn('"type": "error"', events[0])
+        self.assertIn('"status": "generation_failed"', events[0])
         self.assertIn('"type": "end"', events[1])
+        self.assertIn('"status": "generation_failed"', events[1])
         self.assertNotIn(SENSITIVE_FAILURE, "\n".join(logs.output))
 
 

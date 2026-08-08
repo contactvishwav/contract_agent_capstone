@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from backend.governance.validators.hallucination import HallucinationValidator
 from backend.governance.validators.safety import LlamaGuardValidator
+from backend.governance.base import GuardStatus
 
 
 SENSITIVE_MARKER = "CONFIDENTIAL-CONTRACT-TEXT-DO-NOT-LOG"
@@ -14,7 +15,7 @@ class _ExplodingModel:
 
 
 def _manager():
-    return SimpleNamespace(get_model_by_name=lambda _name: _ExplodingModel())
+    return SimpleNamespace(get_raw_model_by_name=lambda _name: _ExplodingModel())
 
 
 class GuardSensitiveLoggingTests(unittest.TestCase):
@@ -25,7 +26,8 @@ class GuardSensitiveLoggingTests(unittest.TestCase):
         with self.assertLogs("backend.governance.validators.safety", level="ERROR") as logs:
             result = validator.validate(SENSITIVE_MARKER)
 
-        self.assertTrue(result.is_safe)
+        self.assertFalse(result.is_safe)
+        self.assertEqual(result.status, GuardStatus.VALIDATION_FAILED)
         rendered = "\n".join(logs.output)
         self.assertIn("RuntimeError", rendered)
         self.assertNotIn(SENSITIVE_MARKER, rendered)
@@ -37,7 +39,8 @@ class GuardSensitiveLoggingTests(unittest.TestCase):
         with self.assertLogs("backend.governance.validators.hallucination", level="ERROR") as logs:
             result = validator.validate("answer", {"source_text": SENSITIVE_MARKER})
 
-        self.assertTrue(result.is_safe)
+        self.assertFalse(result.is_safe)
+        self.assertEqual(result.status, GuardStatus.VALIDATION_FAILED)
         rendered = "\n".join(logs.output)
         self.assertIn("RuntimeError", rendered)
         self.assertNotIn(SENSITIVE_MARKER, rendered)

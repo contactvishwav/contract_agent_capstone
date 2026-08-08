@@ -1,6 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { ChatMessage } from './message';
+import { groupStoredMessagesIntoUiMessages } from './sessionMessages';
 
 describe('ChatMessage', () => {
   it('combines streamed chunks before rendering sanitized GFM', () => {
@@ -43,5 +44,20 @@ describe('ChatMessage', () => {
       parts: [{ type: 'ai_message', content: 'I could not find supporting records.' }],
     }} />);
     expect(screen.getByText('No verified source citations were produced for this answer.')).toBeInTheDocument();
+  });
+
+  it('restores a failed terminal turn as an error rather than a normal answer', () => {
+    const restored = groupStoredMessagesIntoUiMessages([{
+      message_id: 'm1', role: 'ai_message',
+      content: 'Response validation failed. Please retry.',
+      model: 'gemini-2.5-flash', tool_name: null, tool_call_id: null,
+      citations: [], terminal_status: 'validation_failed', sequence: 2,
+      created_at: '2026-08-08T00:00:00Z',
+    }]);
+
+    render(<ChatMessage message={restored[0]} />);
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Response validation failed');
+    expect(screen.queryByText('No verified source citations were produced for this answer.')).not.toBeInTheDocument();
   });
 });

@@ -21,7 +21,7 @@ def test_hallucination_detection():
     # We'll mock the LLM call to return no hallucination
     validator._llm_mgr = MagicMock()
     mock_model = MagicMock()
-    validator._llm_mgr.get_model_by_name.return_value = mock_model
+    validator._llm_mgr.get_raw_model_by_name.return_value = mock_model
     
     mock_model.invoke.return_value.content = '{"is_hallucination": false, "reason": "Consistent with source", "confidence": 0.95}'
     

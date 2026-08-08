@@ -61,4 +61,29 @@ describe('Contract Chat suggestions', () => {
       session_id: 'SESSION_NEW',
     });
   });
+
+  it('shows an explicit validator failure and restores the composer after end', async () => {
+    mocks.fetchEventSource.mockImplementationOnce(async (_url, options) => {
+      await options.onopen?.(new Response(null, { status: 200 }));
+      options.onmessage?.({ data: JSON.stringify({
+        type: 'error', status: 'validation_failed',
+        content: 'Response validation failed. Please retry.',
+      }) });
+      options.onmessage?.({ data: JSON.stringify({
+        type: 'end', status: 'validation_failed', content: '',
+      }) });
+      options.onclose?.();
+    });
+    render(
+      <ChatProvider>
+        <ChatOutput />
+        <ChatInput />
+      </ChatProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'How many SOW contracts?' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Response validation failed');
+    await waitFor(() => expect(screen.getByRole('button', { name: /Send your prompt now/i })).toBeEnabled());
+  });
 });

@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import json
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -30,13 +31,19 @@ from slowapi.middleware import SlowAPIMiddleware
 from backend.shared.utils.logger import get_logger, correlation_id_var
 from backend.governance.prompt_guard import PromptGuard
 from backend.governance.output_guard import OutputGuard
+from backend.governance.base import GuardResult, GuardStatus
 from backend.governance.rbac import Permission, requires_permission
 from backend.governance.auth import TokenIdentity
 from backend.infrastructure.audit_logger import AuditLogger, AuditEventType
 from backend.infrastructure.chat_session_repository import Neo4jChatSessionRepository
 from backend.application.services.chat_citation_service import build_validated_citations
+from backend.shared.monitoring.prometheus_metrics import record_output_guard_outcome
 
 logger = get_logger(__name__)
+
+
+class ChatPersistenceError(RuntimeError):
+    """A safe, content-free marker for terminal-message persistence failure."""
 
 import os
 from openinference.instrumentation.langchain import LangChainInstrumentor
@@ -327,6 +334,88 @@ def _normalize_ai_message_content(content):
     return str(content) if content else ""
 
 
+def _guard_status(result: GuardResult) -> GuardStatus:
+    """Normalize real and legacy/mock GuardResult shapes."""
+    status = getattr(result, "status", None)
+    if isinstance(status, GuardStatus):
+        return status
+    if isinstance(status, str):
+        try:
+            return GuardStatus(status)
+        except ValueError:
+            pass
+    return GuardStatus.PASSED if result.is_safe else GuardStatus.REJECTED
+
+
+async def _validate_output_guard(
+    output_guard: OutputGuard,
+    content: str,
+    context_metadata: dict,
+) -> GuardResult:
+    """Run blocking provider validators off-loop with a bounded wait."""
+    try:
+        timeout_seconds = float(os.getenv("OUTPUT_GUARD_TIMEOUT_SECONDS", "60"))
+    except ValueError:
+        timeout_seconds = 60.0
+    timeout_seconds = max(0.1, timeout_seconds)
+
+    try:
+        async_validator = getattr(output_guard, "avalidate", None)
+        if async_validator and inspect.iscoroutinefunction(async_validator):
+            validation = async_validator(
+                content,
+                context_metadata=context_metadata,
+            )
+        else:
+            # Compatibility for deterministic legacy/custom validators and
+            # existing mocks. Production OutputGuard uses its true async path,
+            # so timeout/cancellation cancels provider awaitables instead of
+            # leaving a background validation thread running.
+            validation = asyncio.to_thread(
+                output_guard.validate,
+                content,
+                context_metadata=context_metadata,
+            )
+        return await asyncio.wait_for(validation, timeout=timeout_seconds)
+    except asyncio.TimeoutError:
+        logger.error("Output Guard timed out; content omitted")
+        return GuardResult(
+            is_safe=False,
+            status=GuardStatus.TIMED_OUT,
+            violation_type="VALIDATION_TIMEOUT",
+            message="Output validation timed out.",
+            metadata={"failure_category": "timeout"},
+        )
+    except Exception as exc:
+        # Defense in depth: validators normally convert their own failures to
+        # validation_failed.  No unexpected guard exception may become a pass.
+        logger.error(
+            f"Output Guard infrastructure failure ({type(exc).__name__}); content omitted"
+        )
+        return GuardResult(
+            is_safe=False,
+            status=GuardStatus.VALIDATION_FAILED,
+            violation_type="VALIDATOR_INFRASTRUCTURE_FAILURE",
+            message="Output validation could not be completed.",
+            metadata={
+                "failure_category": "infrastructure",
+                "exception_type": type(exc).__name__,
+            },
+        )
+
+
+def _safe_terminal_message(status: GuardStatus, violation_type: Optional[str]) -> str:
+    if status == GuardStatus.REJECTED and violation_type == "UNGROUNDED_OUTPUT":
+        return "Response withheld because it could not be verified against contract evidence. Please refine your question or retry."
+    if status == GuardStatus.REJECTED:
+        return "Response withheld by the safety policy. Please revise your request or retry."
+    if status == GuardStatus.TIMED_OUT:
+        return "Response validation timed out. Please retry."
+    if status == GuardStatus.EMPTY:
+        return "The assistant returned no response. Please retry."
+    return "Response validation failed. Please retry."
+
+
 async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, tenant_id: str, user_role: str = "unknown", user_id: str = "authenticated_user", contract_id: Optional[str] = None, chat_session_id: Optional[str] = None):
     logger.info(f"Processing LLM request for model '{model}' for user_role '{user_role}'")
 
@@ -360,13 +449,18 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
     # 1. Prompt Guard Pre-Check
     guard = PromptGuard(audit_logger=audit_logger)
     guard_result = guard.validate(prompt, context_metadata=context_metadata)
+    prompt_guard_status = _guard_status(guard_result)
     
     # Log Prompt Guard Check
     agent_audit.log_guard_check(
         guard_name="Prompt Guard",
         is_safe=guard_result.is_safe,
         violation_type=guard_result.violation_type,
-        session_id=session_id
+        session_id=session_id,
+        validation_status=prompt_guard_status.value,
+        model=model,
+        chat_session_id=chat_session_id,
+        reason_category=(getattr(guard_result, "metadata", {}) or {}).get("failure_category"),
     )
 
     if not guard_result.is_safe:
@@ -375,9 +469,16 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
             # Still visible on reopen - a declined prompt shouldn't vanish
             # from a restored session just because it never reached the LLM.
             chat_session_repo.append_message(chat_session_id, tenant_id, role="user_message", content=prompt)
-            chat_session_repo.append_message(chat_session_id, tenant_id, role="ai_message", content=guard_result.message)
-        yield f"data: {json.dumps({'content': guard_result.message, 'type': 'error'})}\n\n"
-        yield f"data: {json.dumps({'content': '', 'type': 'end'})}\n\n"
+            chat_session_repo.append_message(
+                chat_session_id,
+                tenant_id,
+                role="ai_message",
+                content=guard_result.message,
+                model=model,
+                terminal_status=prompt_guard_status.value,
+            )
+        yield f"data: {json.dumps({'content': guard_result.message, 'type': 'error', 'status': prompt_guard_status.value})}\n\n"
+        yield f"data: {json.dumps({'content': '', 'type': 'end', 'status': prompt_guard_status.value})}\n\n"
         return
 
     if chat_session_repo:
@@ -444,8 +545,9 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
 
             if isinstance(chunk[0], ToolMessage):
                 yield f"data: {json.dumps({'content': _normalize_ai_message_content(chunk[0].content), 'type': 'tool_message'})}\n\n"
-            if isinstance(chunk[0], AIMessageChunk):
-                yield f"data: {json.dumps({'content': _normalize_ai_message_content(chunk[0].content), 'type': 'ai_message'})}\n\n"
+            # Assistant content is intentionally buffered until Output Guard
+            # passes. Streaming it here would disclose content before the
+            # post-check could reject or redact it.
             if isinstance(chunk[0], HumanMessage):
                 yield f"data: {json.dumps({'content': chunk[0].content, 'type': 'user_message'})}\n\n"
 
@@ -522,20 +624,35 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
         context_metadata["source_text"] = "\n---\n".join(tool_contents)
 
     output_guard = OutputGuard(audit_logger=audit_logger)
-    post_check_result = output_guard.validate(ai_full_content, context_metadata=context_metadata)
+    post_check_result = await _validate_output_guard(
+        output_guard,
+        ai_full_content,
+        context_metadata,
+    )
+    output_status = _guard_status(post_check_result)
+    reason_category = (post_check_result.metadata or {}).get("failure_category") or (
+        post_check_result.violation_type or "none"
+    ).lower()
+    record_output_guard_outcome(output_status.value, reason_category)
     
     # Log Output Guard Check
     agent_audit.log_guard_check(
         guard_name="Output Guard",
         is_safe=post_check_result.is_safe,
         violation_type=post_check_result.violation_type,
-        session_id=session_id
+        session_id=session_id,
+        validation_status=output_status.value,
+        model=model,
+        chat_session_id=chat_session_id,
+        reason_category=reason_category,
     )
 
-    if not post_check_result.is_safe:
+    if output_status != GuardStatus.PASSED:
         logger.error(f"Output blocked by Llama Guard: {post_check_result.violation_type}")
-        # Notify user about the violation even if part of the content was streamed
-        yield f"data: {json.dumps({'content': ' [CONTENT REMOVED DUE TO SAFETY POLICY] ' + post_check_result.message, 'type': 'error'})}\n\n"
+        final_ai_content = _safe_terminal_message(
+            output_status,
+            post_check_result.violation_type,
+        )
     else:
         # If PII was redacted, we should update the context
         redacted_content = post_check_result.metadata.get("redacted_content")
@@ -557,9 +674,15 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
                     msg_data["content"] = redacted_content
                     context[i] = json.dumps(msg_data)
                     break
+        redacted_content = post_check_result.metadata.get("redacted_content")
+        final_ai_content = (
+            redacted_content
+            if redacted_content and redacted_content != ai_full_content
+            else ai_full_content
+        )
 
     citations = []
-    if post_check_result.is_safe and tool_evidence:
+    if output_status == GuardStatus.PASSED and tool_evidence:
         try:
             citations = build_validated_citations(tool_evidence, tenant_id)
         except Exception as exc:
@@ -570,22 +693,25 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
         # the same content the user actually saw - safety-blocked or
         # PII-redacted, not the raw ai_full_content - so a restored
         # session never shows something the live response didn't.
-        if not post_check_result.is_safe:
-            final_ai_content = ' [CONTENT REMOVED DUE TO SAFETY POLICY] ' + post_check_result.message
-        else:
-            redacted_content = post_check_result.metadata.get("redacted_content")
-            final_ai_content = redacted_content if (redacted_content and redacted_content != ai_full_content) else ai_full_content
         citation_kwargs = {"citations": citations} if citations else {}
-        chat_session_repo.append_message(
+        persisted = chat_session_repo.append_message(
             chat_session_id, tenant_id, role="ai_message", content=final_ai_content,
-            model=model, **citation_kwargs,
+            model=model, terminal_status=output_status.value, **citation_kwargs,
         )
+        if not persisted:
+            raise ChatPersistenceError("chat terminal persistence failed")
+
+    if output_status == GuardStatus.PASSED:
+        yield f"data: {json.dumps({'content': final_ai_content, 'type': 'ai_message', 'status': output_status.value})}\n\n"
+    else:
+        yield f"data: {json.dumps({'content': final_ai_content, 'type': 'error', 'status': output_status.value})}\n\n"
 
     if citations:
         yield f"data: {json.dumps({'content': json.dumps(citations), 'type': 'citations'})}\n\n"
 
-    yield f"data: {json.dumps({'content': context, 'type': 'history'})}\n\n"
-    yield f"data: {json.dumps({'content': '', 'type': 'end'})}\n\n"
+    if output_status == GuardStatus.PASSED:
+        yield f"data: {json.dumps({'content': context, 'type': 'history'})}\n\n"
+    yield f"data: {json.dumps({'content': '', 'type': 'end', 'status': output_status.value})}\n\n"
 
 
 def _persist_chat_terminal_state(
@@ -593,21 +719,52 @@ def _persist_chat_terminal_state(
     tenant_id: str,
     model: str,
     message: str,
+    terminal_status: str,
 ) -> None:
     """Close an interrupted persisted turn with an explicit safe state."""
     if not chat_session_id:
         return
-    repository = Neo4jChatSessionRepository()
-    existing = repository.list_messages(chat_session_id, tenant_id)
-    if not existing or existing[-1].get("role") == "ai_message":
-        return
-    repository.append_message(
-        chat_session_id,
-        tenant_id,
-        role="ai_message",
-        content=message,
-        model=model,
-    )
+    try:
+        repository = Neo4jChatSessionRepository()
+        existing = repository.list_messages(chat_session_id, tenant_id)
+        if not existing or existing[-1].get("role") == "ai_message":
+            return
+        repository.append_message(
+            chat_session_id,
+            tenant_id,
+            role="ai_message",
+            content=message,
+            model=model,
+            terminal_status=terminal_status,
+        )
+    except Exception as exc:
+        logger.error(
+            f"Failed to persist Contract Chat terminal state ({type(exc).__name__}); content omitted"
+        )
+
+
+def _audit_chat_terminal_outcome(kwargs: dict, terminal_status: str) -> None:
+    """Persist bounded terminal metadata without prompt/output/error payloads."""
+    try:
+        correlation_id = correlation_id_var.get() or "unknown_session"
+        AuditLogger().log_event(
+            event_type=AuditEventType.PROCESSING_ERROR,
+            resource_id=correlation_id,
+            action=f"contract_chat_{terminal_status}",
+            tenant_id=kwargs["tenant_id"],
+            user_id=kwargs.get("user_id") or "authenticated_user",
+            status=terminal_status,
+            metadata={
+                "correlation_id": correlation_id,
+                "chat_session_id": kwargs.get("chat_session_id"),
+                "model": kwargs.get("model"),
+                "terminal_status": terminal_status,
+            },
+        )
+    except Exception as exc:
+        logger.error(
+            f"Failed to audit Contract Chat terminal state ({type(exc).__name__}); content omitted"
+        )
 
 
 async def resilient_runner(**kwargs):
@@ -621,21 +778,31 @@ async def resilient_runner(**kwargs):
             kwargs["tenant_id"],
             kwargs["model"],
             "Response cancelled before completion.",
+            GuardStatus.CANCELLED.value,
         )
+        record_output_guard_outcome(GuardStatus.CANCELLED.value, "client_cancellation")
+        _audit_chat_terminal_outcome(kwargs, GuardStatus.CANCELLED.value)
         raise
     except Exception as exc:
         logger.error(
             f"Contract Chat stream failed ({type(exc).__name__}); prompt and content omitted"
         )
         message = "Response failed before completion. Please retry."
+        terminal_status = (
+            "persistence_failed"
+            if isinstance(exc, ChatPersistenceError)
+            else "generation_failed"
+        )
         _persist_chat_terminal_state(
             kwargs.get("chat_session_id"),
             kwargs["tenant_id"],
             kwargs["model"],
             message,
+            terminal_status,
         )
-        yield f"data: {json.dumps({'content': message, 'type': 'error'})}\n\n"
-        yield f"data: {json.dumps({'content': '', 'type': 'end'})}\n\n"
+        _audit_chat_terminal_outcome(kwargs, terminal_status)
+        yield f"data: {json.dumps({'content': message, 'type': 'error', 'status': terminal_status})}\n\n"
+        yield f"data: {json.dumps({'content': '', 'type': 'end', 'status': terminal_status})}\n\n"
 
 
 @app.post("/api/run/")

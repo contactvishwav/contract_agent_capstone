@@ -5,6 +5,7 @@ export type MessagePartType = "user_message" | "ai_message" | "tool_call" | "too
 export type MessagePart = {
     type: MessagePartType;
     content: string;
+    status?: 'passed' | 'rejected' | 'validation_failed' | 'timed_out' | 'cancelled' | 'empty' | 'generation_failed' | 'persistence_failed';
 };
 
 export type Message = {

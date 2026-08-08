@@ -24,6 +24,10 @@ services:
       - RERANKING_ENABLED=${RERANKING_ENABLED-false}
       - OPENAI_API_KEY=${OPENAI_API_KEY-}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY-}
+      # Output validation is fail-closed and bounded. Override only for
+      # deliberate local failure-path verification or deployment tuning;
+      # backend/main.py also defaults to 60 seconds when this is absent.
+      - OUTPUT_GUARD_TIMEOUT_SECONDS=${OUTPUT_GUARD_TIMEOUT_SECONDS-60}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY-}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY-}
       - PHOENIX_COLLECTOR_ENDPOINT=http://phoenix:6006/v1/traces
