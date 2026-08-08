@@ -91,6 +91,18 @@ class ChunkingOrchestrator:
             )
             chunks = optimization_result['optimized_chunks']
 
+            # Assign the final, unique chunk_index now that ordering is
+            # settled - real bug found live: this path never set
+            # chunk_index at all (only a separate, legacy method elsewhere
+            # in ChunkingAgent did, which this orchestrator-based pipeline
+            # never calls), so storage_service.py's downstream
+            # chunk.get('chunk_index', 0) silently defaulted to 0 for
+            # every chunk of every document, colliding every chunk_id onto
+            # "{document_id}_chunk_0" - confirmed live via Neo4j: 14
+            # accumulated Chunk nodes on one Document, all chunk_index: 0.
+            for i, chunk in enumerate(chunks):
+                chunk['chunk_index'] = i
+
             # Step 8: Quality Validation
             quality_metrics = await self.quality_validator.validate_chunks(chunks, legal_context)
 

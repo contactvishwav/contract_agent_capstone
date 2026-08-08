@@ -1,17 +1,17 @@
 """
-A real, confirmed bug found live in the primary/async chunking pipeline
-(ChunkingAgent.process_document -> ChunkingOrchestrator.execute_chunking
--> ChunkingStorageService.store_chunks), on top of item 3's earlier
-tenant_id/linking fix (test_chunk_tenant_scoping.py). Found while
-investigating why Contract Chat's chunk-level search returned
-total_count: 0 for a freshly uploaded, correctly tenant-scoped, correctly
-linked contract.
+Two real, confirmed bugs found live in the primary/async chunking
+pipeline (ChunkingAgent.process_document -> ChunkingOrchestrator.
+execute_chunking -> ChunkingStorageService.store_chunks), on top of
+item 3's earlier tenant_id/linking fix (test_chunk_tenant_scoping.py).
+Both were found while investigating why Contract Chat's chunk-level
+search returned total_count: 0 for a freshly uploaded, correctly
+tenant-scoped, correctly linked contract.
 
-Embeddings never persisted: ChunkEmbeddingService.store_chunk_embeddings()
-used to MATCH (d:Document {id: $document_id}) and CREATE a brand-new
-Chunk node with the embedding attached - but this ran *inside*
-ChunkingOrchestrator.execute_chunking()'s old Step 9, before
-ChunkingStorageService.store_chunks() (which actually MERGEs the
+Bug 1 - embeddings never persisted: ChunkEmbeddingService.
+store_chunk_embeddings() used to MATCH (d:Document {id: $document_id})
+and CREATE a brand-new Chunk node with the embedding attached - but this
+ran *inside* ChunkingOrchestrator.execute_chunking()'s old Step 9,
+before ChunkingStorageService.store_chunks() (which actually MERGEs the
 Document and CREATEs the real Chunk nodes) had ever run - store_chunks
 only runs afterward, back in ChunkingAgent.process_document, once
 execute_chunking() already returned. On a document being chunked for
@@ -31,6 +31,24 @@ and ChunkEmbeddingService.store_chunk_embeddings() now MATCHes the
 already-existing Chunk by id and SETs its embedding, rather than
 creating a second, duplicate, minimally-populated Chunk node that
 depended on Document existing first.
+
+Bug 2 - chunk_index always 0: the real orchestrator path
+(ChunkingOrchestrator._execute_chunking_with_fallback) never set
+chunk_index on chunk dicts at all - only a separate, legacy
+ChunkingAgent._execute_chunking method does (used by the rarely-hit
+_fallback_to_original_processing path, not this one). storage_service.
+py's chunk.get('chunk_index', 0) therefore always defaulted to 0 for
+every chunk of every document, colliding every chunk_id onto
+"{document_id}_chunk_0". Confirmed live: 14 accumulated Chunk nodes on
+one Document, every single one chunk_index: 0. Fixed by assigning
+chunk_index inside ChunkingOrchestrator.execute_chunking itself, once
+chunk ordering is final (after overlap analysis and performance
+optimization, immediately before quality validation) - this is also
+what makes bug 1's fix reliable: ChunkingStorageService.store_chunks and
+ChunkEmbeddingService.generate_chunk_embeddings both derive chunk_id
+from chunk_index using the identical f"{document_id}_chunk_{index}"
+formula, so a correct, unique index is required for the two writes to
+land on the same Chunk node at all.
 """
 
 import unittest
@@ -50,7 +68,7 @@ class FakeGraph:
 
 
 # ---------------------------------------------------------------------------
-# store_chunk_embeddings no longer depends on a Document node
+# Bug 1a: store_chunk_embeddings no longer depends on a Document node
 # ---------------------------------------------------------------------------
 
 def _chunk_embedding_service():
@@ -107,7 +125,7 @@ class StoreChunkEmbeddingsMatchesExistingChunkTests(unittest.IsolatedAsyncioTest
 
 
 # ---------------------------------------------------------------------------
-# ChunkingAgent.process_document persists embeddings AFTER storage
+# Bug 1b: ChunkingAgent.process_document persists embeddings AFTER storage
 # ---------------------------------------------------------------------------
 
 class ProcessDocumentEmbeddingOrderingTests(unittest.IsolatedAsyncioTestCase):
@@ -167,6 +185,74 @@ class ProcessDocumentEmbeddingOrderingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call_order, ["store_chunks", "generate_chunk_embeddings", "store_chunk_embeddings"])
         self.assertTrue(result["embedding_storage_result"])
         self.assertEqual(result["embedding_metrics"], 2)
+
+
+# ---------------------------------------------------------------------------
+# Bug 2: chunk_index is set uniquely by the real orchestrator path
+# ---------------------------------------------------------------------------
+
+class OrchestratorChunkIndexAssignmentTests(unittest.IsolatedAsyncioTestCase):
+    """Exercises the real ChunkingOrchestrator.execute_chunking end to
+    end (real strategy selection, real chunking, no mocks needed - this
+    step never touches Neo4j or an LLM anymore after bug 1's fix), on
+    content long enough to force multiple chunks."""
+
+    MULTI_SECTION_CONTRACT = "\n\n".join([
+        "1. TERM. This Agreement shall commence on the Effective Date and continue "
+        "for a period of thirty-six (36) months unless earlier terminated in "
+        "accordance with the provisions set forth herein.",
+        "2. PAYMENT TERMS. Client shall pay Provider a monthly fee of $10,000, due "
+        "net thirty (30) days from the date of invoice. Late payments shall accrue "
+        "interest at a rate of 1.5% per month.",
+        "3. CONFIDENTIALITY. Each party agrees to hold in confidence all "
+        "proprietary information disclosed by the other party and shall not "
+        "disclose such information to any third party without prior written consent.",
+        "4. INDEMNIFICATION. Each party shall indemnify, defend, and hold harmless "
+        "the other party from and against any claims, damages, or liabilities "
+        "arising out of a breach of this Agreement.",
+        "5. TERMINATION. Either party may terminate this Agreement for convenience "
+        "upon sixty (60) days written notice to the other party.",
+    ] * 3)  # repeated to comfortably clear any minimum chunk-count/size thresholds
+
+    async def test_real_orchestrator_assigns_unique_sequential_chunk_index(self):
+        from backend.infrastructure.chunking.chunking_orchestrator import (
+            ChunkingOrchestrator, ChunkingCommandFactory,
+        )
+
+        orchestrator = ChunkingOrchestrator()
+        command = ChunkingCommandFactory.create_document_upload_command(
+            "doc1", self.MULTI_SECTION_CONTRACT, "multi_section.pdf"
+        )
+
+        result = await orchestrator.execute_chunking(command)
+
+        self.assertTrue(result.success)
+        self.assertGreaterEqual(len(result.chunks), 2, "test content must actually produce multiple chunks")
+
+        indices = [chunk.get("chunk_index") for chunk in result.chunks]
+        self.assertNotIn(None, indices, "every chunk must have chunk_index set")
+        self.assertEqual(len(indices), len(set(indices)), "chunk_index must be unique per chunk - regression for the always-0 bug")
+        self.assertEqual(indices, list(range(len(result.chunks))), "chunk_index must be sequential, matching real storage order")
+
+    async def test_chunk_ids_derived_from_index_are_therefore_unique(self):
+        """The real, user-visible consequence of bug 2: storage_service.py
+        and chunk_embedding_service.py both build
+        chunk_id = f"{document_id}_chunk_{chunk_index}" - with the old
+        always-0 bug, every chunk of every document collided onto the
+        same id."""
+        from backend.infrastructure.chunking.chunking_orchestrator import (
+            ChunkingOrchestrator, ChunkingCommandFactory,
+        )
+
+        orchestrator = ChunkingOrchestrator()
+        command = ChunkingCommandFactory.create_document_upload_command(
+            "doc1", self.MULTI_SECTION_CONTRACT, "multi_section.pdf"
+        )
+
+        result = await orchestrator.execute_chunking(command)
+
+        chunk_ids = [f"doc1_chunk_{chunk.get('chunk_index', 0)}" for chunk in result.chunks]
+        self.assertEqual(len(chunk_ids), len(set(chunk_ids)), "chunk ids must not collide")
 
 
 if __name__ == "__main__":
