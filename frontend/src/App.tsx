@@ -19,7 +19,20 @@ function AuthenticatedApp() {
   const renderPage = () => {
     switch (currentPage) {
       case 'chat':
-        return <ChatPage />;
+        // Real, confirmed bug found live: Contract Chat had no
+        // ErrorBoundary at all, unlike 'search' below - a render crash
+        // here (e.g. from an unexpected message content shape - see
+        // main.py's _normalize_ai_message_content for the root cause
+        // that produced it) took down the entire app with nothing to
+        // catch it, reproducing as a blank white page. This boundary is
+        // real defense-in-depth, independent of that root-cause fix -
+        // this class of shape-mismatch should never be able to do that
+        // again, regardless of what introduces the next one.
+        return (
+          <ErrorBoundary>
+            <ChatPage />
+          </ErrorBoundary>
+        );
       case 'intelligence':
         return <IntelligencePage />;
       case 'agents':

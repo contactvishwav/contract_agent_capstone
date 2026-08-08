@@ -242,6 +242,40 @@ def rebuild_history(history):
     return messages
 
 
+def _normalize_ai_message_content(content):
+    """LangChain's AIMessageChunk.content is not consistently shaped -
+    real, confirmed bug found live during a full Contract Chat functional
+    audit: it's usually a plain str (the normal token-by-token streaming
+    case), but for some responses (confirmed: any direct final-text turn
+    with no preceding tool call, at least with Gemini) it's a list of
+    content-block dicts instead, e.g. [{"type": "text", "text": "...",
+    "extras": {"signature": "..."}, "index": 0}] - Gemini's thought-
+    signature grounding metadata riding along as a structured block.
+
+    This used to be forwarded to the frontend completely unnormalized.
+    message.tsx's default render case does `<Fragment>{content}</Fragment>`
+    with no shape check - when content was that list of dicts, React threw
+    "Objects are not valid as a React child", and since ChatPage carried no
+    ErrorBoundary (also fixed in this pass - see App.tsx), that crash took
+    down the entire app with nothing to catch it: a blank white page,
+    confirmed live and reproduced.
+
+    Flattened here to plain text before it ever reaches the frontend -
+    the wire format Contract Chat's UI has always assumed content to be.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and isinstance(block.get("text"), str):
+                parts.append(block["text"])
+        return "".join(parts)
+    return str(content) if content else ""
+
+
 async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, tenant_id: str, user_role: str = "unknown", contract_id: Optional[str] = None):
     logger.info(f"Processing LLM request for model '{model}' for user_role '{user_role}'")
     
@@ -325,9 +359,9 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
                         yield f"data: {json.dumps({'content': tool_calls_content, 'type': 'tool_call'})}\n\n"
 
             if isinstance(chunk[0], ToolMessage):
-                yield f"data: {json.dumps({'content': chunk[0].content, 'type': 'tool_message'})}\n\n"
+                yield f"data: {json.dumps({'content': _normalize_ai_message_content(chunk[0].content), 'type': 'tool_message'})}\n\n"
             if isinstance(chunk[0], AIMessageChunk):
-                yield f"data: {json.dumps({'content': chunk[0].content, 'type': 'ai_message'})}\n\n"
+                yield f"data: {json.dumps({'content': _normalize_ai_message_content(chunk[0].content), 'type': 'ai_message'})}\n\n"
             if isinstance(chunk[0], HumanMessage):
                 yield f"data: {json.dumps({'content': chunk[0].content, 'type': 'user_message'})}\n\n"
 
@@ -347,7 +381,18 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
         if message[0] == "messages":
             chunk = message[1][0]
             if isinstance(chunk, AIMessageChunk):
-                ai_full_content += chunk.content
+                # Real, confirmed bug found live during final verification
+                # of this exact fix: a second, separate accumulation site
+                # for the same chunk[0].content - missed in the first pass
+                # (which only normalized the two `yield` sites) - crashed
+                # with the identical "can only concatenate str (not list)
+                # to str" TypeError whenever content was the list-of-
+                # content-blocks shape, killing the whole streaming
+                # response mid-generation with no 'end' event ever sent
+                # (reproduced live: HTTP request completed in ~6s, real
+                # answer text truncated mid-sentence, no server error
+                # surfaced to the client at all - a silent, hard failure).
+                ai_full_content += _normalize_ai_message_content(chunk.content)
 
     # 2. Llama Guard Post-Check
     # Extract source context from tool results for hallucination check
