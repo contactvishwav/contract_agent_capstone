@@ -36,4 +36,12 @@ describe('ChatMessage', () => {
     expect(screen.getByRole('complementary', { name: 'Sources' })).toHaveTextContent('Clean_MSA.pdf');
     expect(screen.getByRole('complementary', { name: 'Sources' })).not.toHaveTextContent('page');
   });
+
+  it('labels a completed answer that has no verified evidence', () => {
+    render(<ChatMessage message={{
+      id: 'c', type: 'ai', generating: false,
+      parts: [{ type: 'ai_message', content: 'I could not find supporting records.' }],
+    }} />);
+    expect(screen.getByText('No verified source citations were produced for this answer.')).toBeInTheDocument();
+  });
 });

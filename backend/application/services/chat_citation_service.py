@@ -19,6 +19,14 @@ from backend.shared.utils.contract_search_tool import graph
 MAX_EXCERPT_LENGTH = 500
 
 
+def _citation_source_identity(citation: Mapping[str, Any]) -> str:
+    source = {
+        key: value for key, value in citation.items()
+        if key not in {"citation_id", "tool_name", "tool_call_id", "validation_status"}
+    }
+    return json.dumps(source, sort_keys=True, default=str)
+
+
 def _parse_tool_content(content: Any) -> Any:
     if not isinstance(content, str):
         return content
@@ -122,7 +130,11 @@ def build_validated_citations(
             continue
         candidate["filename"] = filename
         candidate["validation_status"] = "tenant_active"
-        identity = json.dumps(candidate, sort_keys=True, default=str)
+        # The same retrieved source can appear in multiple tool calls during
+        # one answer.  Tool-call identity remains useful metadata on the
+        # retained citation, but it is not source identity and must not
+        # produce duplicate evidence cards.
+        identity = _citation_source_identity(candidate)
         citation_id = f"CIT_{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:16].upper()}"
         if citation_id in seen:
             continue
@@ -146,6 +158,7 @@ def revalidate_stored_citations(
         graph_client,
     )
     validated = []
+    seen: set[str] = set()
     for citation in citations:
         if not isinstance(citation, Mapping):
             continue
@@ -155,5 +168,9 @@ def revalidate_stored_citations(
         safe = dict(citation)
         safe["filename"] = active[contract_id]
         safe["validation_status"] = "tenant_active"
+        identity = _citation_source_identity(safe)
+        if identity in seen:
+            continue
+        seen.add(identity)
         validated.append(safe)
     return validated

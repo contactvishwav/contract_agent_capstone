@@ -219,7 +219,7 @@ export function ChatInput() {
                     value={promptValue}
                     onChange={(event) => setPromptValue(event.target.value)}
                 />
-                <div className="flex gap-2">
+                <div className="flex flex-col gap-2 md:flex-row">
                     <div className="flex flex-1 flex-col gap-1">
                         <span className="text-xs font-medium text-muted-foreground">Contract scope</span>
                         <Select
@@ -231,7 +231,7 @@ export function ChatInput() {
                             <SelectTrigger className="text-foreground" aria-label="Contract scope">
                                 <SelectValue placeholder="Which contract?" />
                             </SelectTrigger>
-                            <SelectContent position="popper" sideOffset={4} collisionPadding={12} className="max-h-[8rem]">
+                            <SelectContent position="popper" side="right" align="start" sideOffset={8} collisionPadding={12} className="max-h-[8rem] data-[side=left]:translate-y-2 data-[side=right]:translate-y-2">
                                 <SelectGroup>
                                     <SelectItem value={ALL_CONTRACTS_VALUE}>All contracts</SelectItem>
                                     {contracts.map((c) => (
@@ -246,17 +246,20 @@ export function ChatInput() {
                             <span className="text-xs text-muted-foreground">Scope is locked for this conversation. Start a new chat to change it.</span>
                         )}
                     </div>
-                    <Select name="model" defaultValue="gemini-2.5-flash">
-                        <SelectTrigger className=" flex-1 text-foreground" aria-label="Model">
-                            <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                            <SelectGroup>
-                                <SelectItem value="gemini-2.5-flash">gemini-2.5-flash</SelectItem>
-                                <SelectItem value="gpt-4o">gpt-4o</SelectItem>
-                            </SelectGroup>
-                        </SelectContent>
-                    </Select>
+                    <div className="flex min-w-0 flex-col gap-1">
+                        <span className="text-xs font-medium text-muted-foreground">Model</span>
+                        <Select name="model" defaultValue="gemini-2.5-flash">
+                            <SelectTrigger className="w-full text-foreground" aria-label="Model">
+                                <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent position="popper" side="left" align="start" sideOffset={8} collisionPadding={12} className="max-h-[8rem] data-[side=left]:translate-y-2 data-[side=right]:translate-y-2">
+                                <SelectGroup>
+                                    <SelectItem value="gemini-2.5-flash">gemini-2.5-flash</SelectItem>
+                                    <SelectItem value="gpt-4o">gpt-4o</SelectItem>
+                                </SelectGroup>
+                            </SelectContent>
+                        </Select>
+                    </div>
                     <Button variant="outline" className="flex-0" onClick={handleClear}>
                         Reset
                     </Button>

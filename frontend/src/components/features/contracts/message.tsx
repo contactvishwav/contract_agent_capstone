@@ -108,11 +108,16 @@ function renderPart(part: RenderGroup, index: number): ReactNode {
 
 export function ChatMessage({ message }: Props) {
     const { type, parts, generating } = message;
+    const hasAnswer = parts.some((part) => part.type === "ai_message");
+    const hasCitations = parts.some((part) => part.type === "citations" && parseCitations(part.content).length > 0);
     return (
         <div className={`py-3 gap-0 ${type === "ai" ? "opacity-100" : "opacity-60"}`}>
             <strong className="text-xs">{type === "ai" ? "AI" : "USER"}</strong>
             <div>
                 {groupParts(parts).map(renderPart)}
+                {type === "ai" && hasAnswer && !generating && !hasCitations && (
+                    <p className="mt-2 text-xs text-muted-foreground">No verified source citations were produced for this answer.</p>
+                )}
                 {generating && <Loader className="inline-flex" />}
             </div>
         </div>
