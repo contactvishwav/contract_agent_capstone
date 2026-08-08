@@ -110,6 +110,7 @@ class Neo4jContractRepository(IContractRepository):
             CREATE (c:Contract {
                 file_id: $file_id,
                 tenant_id: $tenant_id,
+                filename: $filename,
                 summary: $summary,
                 contract_type: $contract_type,
                 contract_scope: $contract_scope,
@@ -129,6 +130,7 @@ class Neo4jContractRepository(IContractRepository):
             contract_params = {
                 "file_id": contract_id,
                 "tenant_id": tenant_id,
+                "filename": contract_data.get("filename"),
                 "summary": contract_data.get("summary", ""),
                 "contract_type": contract_data.get("contract_type", "Unknown"),
                 "contract_scope": ", ".join(contract_data.get("key_terms", [])),

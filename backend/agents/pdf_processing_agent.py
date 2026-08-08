@@ -78,7 +78,8 @@ def get_pdf_processing_agent(llm):
                 total_amount=analysis.get("total_amount"),
                 governing_law=analysis.get("governing_law"),
                 key_terms=analysis.get("key_terms", []),
-                full_text=state["extracted_text"]
+                full_text=state["extracted_text"],
+                filename=state.get("filename")
             )
             logger.info(f"Analysis complete: confidence={contract_data.confidence_score}")
             return {**state, "contract_data": contract_data}
@@ -127,6 +128,7 @@ def get_pdf_processing_agent(llm):
                 "governing_law": contract_data.governing_law,
                 "key_terms": contract_data.key_terms,
                 "full_text": contract_data.full_text,
+                "filename": contract_data.filename,
                 "tenant_id": tenant_id
             }
             

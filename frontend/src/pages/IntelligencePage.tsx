@@ -10,6 +10,7 @@ interface UploadResult {
   filename: string;
   status: string;
   contract_id?: string;
+  existing_contract_id?: string;
   details: string;
   model_used: string;
 }
@@ -19,22 +20,38 @@ export const IntelligencePage: React.FC = () => {
   const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
   const [workflowStatus, setWorkflowStatus] = useState<any>(null);
   const [isUploading, setIsUploading] = useState(false);
-  const { contracts, addContract, updateContract, setSelectedContract } = useContractHistory();
+  const { contracts, addContract, updateContract, getContract, setSelectedContract } = useContractHistory();
 
   const handleUploadComplete = (result: UploadResult) => {
     setUploadResult(result);
     setIsUploading(false);
-    
-    // Add to contract history
-    if (result.contract_id) {
-      addContract({
-        contract_id: result.contract_id,
-        filename: result.filename,
-        upload_date: new Date().toISOString(),
-        model_used: result.model_used,
-        analysis_completed: false
-      });
+
+    if (!result.contract_id) return;
+
+    // A duplicate upload surfaces the pre-existing contract_id (see
+    // document_upload.py's duplicate branch) so the analysis panel below
+    // doesn't dead-end - but addContract() unconditionally overwrites
+    // analysis_completed/risk_score/analysis_results for that contract_id
+    // (ContractHistoryContext.tsx's addContract fully replaces any
+    // existing record with the same id). If this contract was already
+    // analyzed earlier in this session, blindly calling addContract here
+    // would silently wipe that real result back to "not analyzed yet" -
+    // a real regression this fix must not introduce. Only add a fresh
+    // blank record when the contract isn't already known locally;
+    // otherwise leave its existing history entry (and analysis state)
+    // untouched and just select it.
+    if (result.status === 'duplicate' && getContract(result.contract_id)) {
+      setSelectedContract(result.contract_id);
+      return;
     }
+
+    addContract({
+      contract_id: result.contract_id,
+      filename: result.filename,
+      upload_date: new Date().toISOString(),
+      model_used: result.model_used,
+      analysis_completed: false
+    });
   };
 
   const handleUploadStart = () => {

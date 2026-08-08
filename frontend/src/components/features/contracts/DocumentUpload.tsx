@@ -14,6 +14,7 @@ interface UploadResult {
   filename: string;
   status: string;
   contract_id?: string;
+  existing_contract_id?: string;
   details: string;
   model_used: string;
 }
@@ -152,6 +153,7 @@ export const DocumentUpload: React.FC<DocumentUploadProps> = ({
       case 'error': return 'text-red-600';
       case 'review_required': return 'text-yellow-600';
       case 'skipped': return 'text-gray-600';
+      case 'duplicate': return 'text-blue-600';
       default: return 'text-blue-600';
     }
   };
@@ -166,6 +168,8 @@ export const DocumentUpload: React.FC<DocumentUploadProps> = ({
         return `⚠️ Manual review required: ${result.details}`;
       case 'skipped':
         return `ℹ️ Document skipped: ${result.details}`;
+      case 'duplicate':
+        return `ℹ️ Already uploaded - showing the existing contract (ID: ${result.contract_id})`;
       default:
         return `📄 Processing completed: ${result.details}`;
     }

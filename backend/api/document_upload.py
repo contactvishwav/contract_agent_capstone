@@ -105,10 +105,26 @@ async def upload_pdf(
                 logger.error(f"Repository initialization failed: {repo_error}")
                 raise
 
-            # Simple duplicate check by filename
+            # Duplicate check by filename, scoped to this tenant.
+            #
+            # Real, confirmed bug found live while verifying the
+            # duplicate-response-shape fix below: this used to match
+            # `WHERE c.file_id CONTAINS $filename` - but Contract.file_id
+            # is a random UUID-based id (contract_repository.py's
+            # f"UPLOADED_{uuid4().hex[:8]}_{date}"), never derived from
+            # the filename, so this could structurally never match any
+            # real Contract. Live-reproduced: uploading the exact same
+            # file twice in a row silently created two unrelated
+            # contracts both times, no duplicate ever detected. Fixed by
+            # matching on the real filename property (now stored on the
+            # Contract node - see contract_repository.py/value_objects.py's
+            # ContractData.filename), and scoped to tenant_id - the old
+            # query also had no tenant filter at all, so two different
+            # tenants uploading a same-named file would have cross-tenant
+            # "duplicate" hits pointing one tenant at another's contract.
             try:
-                existing_query = "MATCH (c:Contract) WHERE c.file_id CONTAINS $filename RETURN c.file_id LIMIT 1"
-                existing = repo.graph.query(existing_query, {"filename": file.filename.replace(".pdf", "")})
+                existing_query = "MATCH (c:Contract {filename: $filename, tenant_id: $tenant_id}) RETURN c.file_id as file_id LIMIT 1"
+                existing = repo.graph.query(existing_query, {"filename": file.filename, "tenant_id": tenant_id})
                 logger.info(f"Duplicate check completed. Found: {len(existing) if existing else 0} matches")
             except Exception as query_error:
                 logger.error(f"Duplicate check query failed: {query_error}")
@@ -116,12 +132,31 @@ async def upload_pdf(
                 existing = []
             
             if existing:
+                # Real, confirmed bug: this used to omit contract_id/
+                # details/model_used - IntelligencePage.tsx only renders
+                # the analysis panel when uploadResult.contract_id is
+                # truthy, so a duplicate upload dead-ended on the
+                # placeholder "Upload a contract to begin analysis" panel
+                # while DocumentUpload.tsx's status message fell through to
+                # its generic default, "Processing completed: undefined"
+                # (details was also missing). Fixed by surfacing the
+                # existing contract as `contract_id` too (not just
+                # `existing_contract_id`, kept for compatibility) so the
+                # user lands on the existing contract's analysis panel
+                # instead of a dead end - re-uploading the same file is a
+                # very real thing to happen mid-demo, and "here's the
+                # contract you already have" is a better outcome than a
+                # block.
+                existing_contract_id = existing[0]["file_id"]
                 return {
-                    "message": "Duplicate file detected",
+                    "message": f'"{file.filename}" was already uploaded',
                     "filename": file.filename,
                     "status": "duplicate",
-                    "existing_contract_id": existing[0]["file_id"],
-                    "action": "skipped"
+                    "contract_id": existing_contract_id,
+                    "existing_contract_id": existing_contract_id,
+                    "action": "skipped",
+                    "details": f"This document already exists (contract ID: {existing_contract_id}). Showing the existing contract instead of re-processing.",
+                    "model_used": model
                 }
 
             # Save file temporarily
@@ -182,7 +217,7 @@ async def upload_pdf(
                     
                     chunking_agent = ChunkingAgent(embedding_service)
                     contract_id = file.filename.replace('.pdf', '')
-                    
+
                     # Try async enhanced chunking first
                     try:
                         chunking_result = await chunking_agent.process_document(
@@ -194,12 +229,12 @@ async def upload_pdf(
                                 "file_size": len(full_text)
                             }
                         )
-                        
+
                         if chunking_result["success"]:
                             logger.info(f"Enhanced chunking completed: {chunking_result['chunk_count']} chunks, "
                                       f"strategy: {chunking_result['plan'].strategy_type}, "
                                       f"quality: {chunking_result['quality_assessment']['overall_quality']:.2f}")
-                            
+
                             # Log document analysis insights
                             doc_analysis = chunking_result.get('document_analysis', {})
                             if doc_analysis.get('is_legal_document'):
@@ -317,7 +352,7 @@ async def upload_pdf(
             contract_id = result.get("contract_id")
             if not contract_id and "SUCCESS: Contract stored with ID:" in result.get("final_result", ""):
                 contract_id = result["final_result"].split("SUCCESS: Contract stored with ID:")[-1].strip()
-            
+
             # Log successful upload
             audit_logger.log_event(
                 event_type=AuditEventType.DOCUMENT_UPLOAD,

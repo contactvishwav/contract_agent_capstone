@@ -32,3 +32,15 @@ class ContractData:
         if self.key_terms is None:
             self.key_terms = []
     full_text: str = ""
+    # Original uploaded filename - threaded through so the repository can
+    # store it on the Contract node and duplicate-detection can actually
+    # match against it (see contract_repository.py's store_contract). A
+    # real, confirmed bug found live: Contract.file_id is a random
+    # UUID-based id (contract_repository.py's
+    # f"UPLOADED_{uuid4().hex[:8]}_{date}"), never derived from the
+    # filename, so document_upload.py's duplicate check ("WHERE c.file_id
+    # CONTAINS $filename") could structurally never match any real
+    # Contract - uploading the exact same file twice silently created two
+    # unrelated contracts every time, live-reproduced during verification
+    # of the duplicate-response-shape fix in the same file.
+    filename: Optional[str] = None

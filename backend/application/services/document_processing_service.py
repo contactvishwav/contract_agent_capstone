@@ -112,7 +112,11 @@ class DocumentProcessingService:
             "extracted_text": (request.processing_options or {}).get("full_text"),
             "contract_data": None,
             "processing_result": None,
-            "messages": []
+            "messages": [],
+            # Threaded through to ContractData -> the stored Contract node,
+            # so duplicate-detection can actually match on it - see
+            # value_objects.py's ContractData.filename docstring.
+            "filename": request.filename,
         }
         
         logger.info("Starting PDF agent processing with structured state")
