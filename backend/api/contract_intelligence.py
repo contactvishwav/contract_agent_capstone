@@ -5,6 +5,7 @@ from fastapi.responses import StreamingResponse
 from backend.application.services.contract_intelligence_service import ContractIntelligenceServiceFactory
 from backend.llm_manager import LLMManager
 from backend.infrastructure.contract_repository import Neo4jContractRepository
+from backend.infrastructure.encryption import field_encryptor
 from backend.infrastructure.task_ownership import TaskOwnershipUnavailable, task_ownership_store
 import json
 import logging
@@ -47,6 +48,18 @@ async def analyze_contract_intelligence(
     """
     from backend.tasks import analyze_contract_task
 
+    contract_rows = repository.graph.query(
+        "MATCH (c:Contract {file_id: $contract_id, tenant_id: $tenant_id}) "
+        "WHERE coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE' "
+        "RETURN c.analysis_task_state AS task_state, c.analysis_task_id AS task_id",
+        {"contract_id": contract_id, "tenant_id": identity.tenant_id},
+    )
+    if not contract_rows:
+        raise HTTPException(status_code=404, detail="Contract not found")
+    current_state = contract_rows[0].get("task_state")
+    if current_state in {"PENDING", "STARTED"}:
+        raise HTTPException(status_code=409, detail="An analysis is already running for this contract")
+
     try:
         task = task_ownership_store.enqueue(
             analyze_contract_task,
@@ -55,6 +68,19 @@ async def analyze_contract_intelligence(
         )
     except TaskOwnershipUnavailable:
         raise HTTPException(status_code=503, detail="Analysis queue authorization is unavailable")
+    repository.graph.query(
+        "MATCH (c:Contract {file_id: $contract_id, tenant_id: $tenant_id}) "
+        "WHERE coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE' "
+        "SET c.intelligence_status = 'processing', c.analysis_task_id = $task_id, "
+        "c.analysis_task_state = 'PENDING', "
+        "c.analysis_requested_at = datetime(), c.model_used = $model",
+        {
+            "contract_id": contract_id,
+            "tenant_id": identity.tenant_id,
+            "task_id": task.id,
+            "model": model,
+        },
+    )
     logger.info(f"Enqueued analysis task {task.id} for contract {contract_id} (tenant {identity.tenant_id})")
 
     return {
@@ -117,6 +143,7 @@ async def get_intelligence_status(
         # Query contract intelligence status
         query = """
         MATCH (c:Contract {file_id: $contract_id, tenant_id: $tenant_id})
+        WHERE coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE'
         RETURN c.intelligence_status as status,
                c.risk_score as risk_score,
                c.risk_level as risk_level,
@@ -159,6 +186,128 @@ async def get_intelligence_status(
     except Exception as e:
         logger.error(f"Failed to get intelligence status for {contract_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Status check failed: {str(e)}")
+
+
+@router.get("/contracts/{contract_id}/analysis")
+async def get_latest_contract_analysis(
+    contract_id: str,
+    identity: TokenIdentity = Depends(get_current_identity),
+):
+    """Return the latest persisted analysis without invoking a model.
+
+    Older contracts predate AnalysisRun persistence. They return an honest
+    aggregate-only legacy summary rather than being presented as a complete
+    replay or silently causing another paid analysis.
+    """
+    rows = repository.graph.query(
+        """
+        MATCH (c:Contract {file_id: $contract_id, tenant_id: $tenant_id})
+        WHERE coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE'
+        OPTIONAL MATCH (c)-[:HAS_ANALYSIS]->(a:AnalysisRun {tenant_id: $tenant_id})
+        WITH c, a ORDER BY a.created_at DESC
+        WITH c, head(collect(a)) AS latest
+        RETURN c.filename AS filename,
+               c.intelligence_status AS intelligence_status,
+               c.risk_score AS risk_score,
+               c.risk_level AS risk_level,
+               c.violations_count AS violations_count,
+               c.clauses_count AS clauses_count,
+               c.redlines_count AS redlines_count,
+               c.processing_time AS processing_time,
+               c.analysis_execution_path AS execution_path,
+               c.analysis_planned_execution AS planned_execution,
+               c.analysis_method AS analysis_method,
+               c.model_used AS model_used,
+               c.intelligence_updated AS intelligence_updated,
+               c.analysis_task_id AS task_id,
+               c.analysis_task_state AS task_state,
+               latest.analysis_id AS analysis_id,
+               latest.status AS analysis_status,
+               latest.result_payload AS result_payload,
+               latest.created_at AS analysis_created_at
+        """,
+        {"contract_id": contract_id, "tenant_id": identity.tenant_id},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Contract not found")
+
+    row = rows[0]
+    if row.get("result_payload"):
+        try:
+            payload = json.loads(field_encryptor.decrypt(row["result_payload"]))
+        except Exception:
+            logger.exception("Persisted analysis payload could not be decoded for %s", contract_id)
+            raise HTTPException(status_code=500, detail="Persisted analysis is unavailable")
+        return {
+            "state": row.get("analysis_status") or row.get("intelligence_status"),
+            "source": "persisted_analysis",
+            "legacy_summary": False,
+            "analysis_id": row.get("analysis_id"),
+            "created_at": serialize_neo4j_datetime(row.get("analysis_created_at")),
+            "filename": row.get("filename") or contract_id,
+            "analysis": payload,
+        }
+
+    status = row.get("intelligence_status") or "not_analyzed"
+    if status == "processing":
+        return {
+            "state": "processing",
+            "source": "task_state",
+            "legacy_summary": False,
+            "filename": row.get("filename") or contract_id,
+            "task_id": row.get("task_id"),
+            "task_state": row.get("task_state") or "PENDING",
+            "status_url": (
+                f"/api/intelligence/tasks/{row['task_id']}/status"
+                if row.get("task_id") else None
+            ),
+        }
+
+    if status in {"completed", "completed_with_errors"}:
+        legacy_payload = {
+            "contract_id": contract_id,
+            "analysis_complete": status == "completed",
+            "node_status": {},
+            "processing_time": row.get("processing_time"),
+            "model_used": row.get("model_used") or "unknown",
+            "phase_used": row.get("execution_path") or "unknown",
+            "execution_path": row.get("execution_path"),
+            "planned_execution": row.get("planned_execution"),
+            "analysis_method": row.get("analysis_method"),
+            "results": {
+                "clauses": [],
+                "violations": [],
+                "redlines": [],
+                "risk_assessment": {
+                    "overall_risk_score": row.get("risk_score") or 0,
+                    "risk_level": row.get("risk_level") or "UNKNOWN",
+                    "critical_issues": [],
+                    "critical_issue_details": [],
+                    "recommendations": [],
+                },
+            },
+            "summary_counts": {
+                "clauses": row.get("clauses_count") or 0,
+                "violations": row.get("violations_count") or 0,
+                "redlines": row.get("redlines_count") or 0,
+            },
+        }
+        return {
+            "state": status,
+            "source": "legacy_contract_summary",
+            "legacy_summary": True,
+            "created_at": serialize_neo4j_datetime(row.get("intelligence_updated")),
+            "filename": row.get("filename") or contract_id,
+            "analysis": legacy_payload,
+        }
+
+    return {
+        "state": "not_analyzed",
+        "source": "contract",
+        "legacy_summary": False,
+        "filename": row.get("filename") or contract_id,
+        "analysis": None,
+    }
 
 @router.post("/contracts/batch-analyze")
 async def batch_analyze_contracts(
@@ -218,7 +367,8 @@ async def get_intelligence_dashboard(
         # Query aggregate intelligence statistics
         query = """
         MATCH (c:Contract {tenant_id: $tenant_id})
-        WHERE c.intelligence_status = 'completed'
+        WHERE coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE'
+          AND c.intelligence_status = 'completed'
         RETURN
             count(c) as total_analyzed,
             avg(c.risk_score) as avg_risk_score,

@@ -90,6 +90,11 @@ def _run_chat_session_schema():
     ChatSessionSchemaMigration().migrate()
 
 
+def _run_analysis_run_schema():
+    from backend.migrations.analysis_run_schema_migration import AnalysisRunSchemaMigration
+    AnalysisRunSchemaMigration().migrate()
+
+
 # Ordered: the new Contract constraint first (safe to run anytime, no
 # dependencies), then the base schema pieces, then fix_enterprise_
 # relationships (depends on enterprise_schema's sample data existing
@@ -117,6 +122,7 @@ MIGRATIONS = [
     ("embedding_range_index_fix", _run_embedding_range_index_fix),
     ("user_schema", _run_user_schema),
     ("chat_session_schema", _run_chat_session_schema),
+    ("analysis_run_schema", _run_analysis_run_schema),
 ]
 
 

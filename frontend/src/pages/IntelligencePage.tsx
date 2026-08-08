@@ -20,7 +20,15 @@ export const IntelligencePage: React.FC = () => {
   const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
   const [workflowStatus, setWorkflowStatus] = useState<any>(null);
   const [isUploading, setIsUploading] = useState(false);
-  const { contracts, addContract, updateContract, getContract, setSelectedContract } = useContractHistory();
+  const {
+    contracts,
+    addContract,
+    updateContract,
+    getContract,
+    selectedContractId,
+    setSelectedContract,
+  } = useContractHistory();
+  const selectedContract = selectedContractId ? getContract(selectedContractId) : undefined;
 
   const handleUploadComplete = (result: UploadResult) => {
     setUploadResult(result);
@@ -120,19 +128,16 @@ export const IntelligencePage: React.FC = () => {
           <h2 className="text-xl font-semibold text-slate-800 mb-4">Recent Contracts</h2>
           <div className="space-y-2">
             {contracts.slice(0, 5).map((contract) => (
-              <div 
+              <button
+                type="button"
                 key={contract.contract_id} 
-                className="flex items-center justify-between p-3 bg-slate-50 rounded-lg cursor-pointer hover:bg-slate-100"
-                onClick={() => {
-                  setSelectedContract(contract.contract_id);
-                  setUploadResult({
-                    filename: contract.filename,
-                    status: 'success',
-                    contract_id: contract.contract_id,
-                    details: 'Contract loaded from history',
-                    model_used: contract.model_used
-                  });
-                }}
+                aria-pressed={contract.contract_id === selectedContractId}
+                className={`flex w-full items-center justify-between rounded-lg border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
+                  contract.contract_id === selectedContractId
+                    ? 'border-blue-400 bg-blue-50'
+                    : 'border-transparent bg-slate-50 hover:bg-slate-100'
+                }`}
+                onClick={() => setSelectedContract(contract.contract_id)}
               >
                 <div>
                   <p className="font-medium text-slate-800">{contract.filename}</p>
@@ -151,8 +156,10 @@ export const IntelligencePage: React.FC = () => {
                     )}
                   </p>
                 </div>
-                <div className="text-sm text-slate-400">Click to analyze</div>
-              </div>
+                <div className="text-sm text-slate-500">
+                  {contract.contract_id === selectedContractId ? 'Selected' : 'Open analysis'}
+                </div>
+              </button>
             ))}
           </div>
         </div>
@@ -201,7 +208,7 @@ export const IntelligencePage: React.FC = () => {
             <p className="text-slate-600 text-sm mb-6">
               Comprehensive AI analysis including risk assessment, clause extraction, and compliance review.
             </p>
-            {uploadResult?.contract_id ? (
+            {selectedContract ? (
               <>
                 {/* Intelligence Analysis Workflow */}
                 {workflowStatus && workflowStatus.agent_executions?.length > 0 && (
@@ -215,7 +222,9 @@ export const IntelligencePage: React.FC = () => {
                   </div>
                 )}
                 <ContractIntelligence 
-                  contractId={uploadResult.contract_id}
+                  key={selectedContract.contract_id}
+                  contractId={selectedContract.contract_id}
+                  filename={selectedContract.filename}
                   model={selectedModel}
                   onWorkflowUpdate={handleWorkflowUpdate}
                   onAnalysisComplete={handleAnalysisComplete}

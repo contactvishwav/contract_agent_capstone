@@ -17,6 +17,7 @@ interface ContractHistoryContextType {
   contracts: ContractRecord[];
   addContract: (contract: ContractRecord) => void;
   updateContract: (contract_id: string, updates: Partial<ContractRecord>) => void;
+  removeContract: (contract_id: string) => void;
   getContract: (contract_id: string) => ContractRecord | undefined;
   clearHistory: () => void;
   selectedContractId: string | null;
@@ -44,6 +45,10 @@ export const ContractHistoryProvider: React.FC<{ children: React.ReactNode }> = 
     () => (tenantId ? `contract_history:${tenantId}` : null),
     [tenantId]
   );
+  const selectionStorageKey = useMemo(
+    () => (tenantId ? `contract_selection:${tenantId}` : null),
+    [tenantId]
+  );
   const [contracts, setContracts] = useState<ContractRecord[]>([]);
   const [selectedContractId, setSelectedContractId] = useState<string | null>(null);
   const [storageReadyKey, setStorageReadyKey] = useState<string | null>(null);
@@ -64,24 +69,33 @@ export const ContractHistoryProvider: React.FC<{ children: React.ReactNode }> = 
       localStorage.removeItem(storageKey);
     }
     setContracts(cached);
+    const cachedSelection = selectionStorageKey ? localStorage.getItem(selectionStorageKey) : null;
+    setSelectedContractId(cachedSelection);
     setStorageReadyKey(storageKey);
 
     listContracts()
       .then((serverContracts) => {
         if (cancelled) return;
-        setContracts((current) => serverContracts.map((server) => {
-          const local = current.find((item) => item.contract_id === server.contract_id);
-          return {
-            contract_id: server.contract_id,
-            filename: server.filename,
-            upload_date: server.upload_date || new Date(0).toISOString(),
-            model_used: server.model_used,
-            analysis_completed: server.analysis_completed,
-            risk_score: server.risk_score ?? undefined,
-            risk_level: server.risk_level ?? undefined,
-            analysis_results: local?.analysis_results,
-          };
-        }));
+        setContracts((current) => {
+          const merged = serverContracts.map((server) => {
+            const local = current.find((item) => item.contract_id === server.contract_id);
+            return {
+              contract_id: server.contract_id,
+              filename: server.filename,
+              upload_date: server.upload_date || new Date(0).toISOString(),
+              model_used: server.model_used,
+              analysis_completed: server.analysis_completed,
+              risk_score: server.risk_score ?? undefined,
+              risk_level: server.risk_level ?? undefined,
+              analysis_results: local?.analysis_results,
+            };
+          });
+          setSelectedContractId((selected) => {
+            if (selected && merged.some((item) => item.contract_id === selected)) return selected;
+            return merged[0]?.contract_id ?? null;
+          });
+          return merged;
+        });
       })
       .catch(() => {
         // The authenticated server list is authoritative when available;
@@ -90,7 +104,7 @@ export const ContractHistoryProvider: React.FC<{ children: React.ReactNode }> = 
       });
 
     return () => { cancelled = true; };
-  }, [storageKey]);
+  }, [selectionStorageKey, storageKey]);
 
   useEffect(() => {
     if (!storageKey || storageReadyKey !== storageKey) return;
@@ -101,8 +115,15 @@ export const ContractHistoryProvider: React.FC<{ children: React.ReactNode }> = 
     }
   }, [contracts, storageKey, storageReadyKey]);
 
+  useEffect(() => {
+    if (!selectionStorageKey) return;
+    if (selectedContractId) localStorage.setItem(selectionStorageKey, selectedContractId);
+    else localStorage.removeItem(selectionStorageKey);
+  }, [selectedContractId, selectionStorageKey]);
+
   const addContract = useCallback((contract: ContractRecord) => {
     setContracts((current) => [contract, ...current.filter((item) => item.contract_id !== contract.contract_id)]);
+    setSelectedContractId(contract.contract_id);
   }, []);
 
   const updateContract = useCallback((contractId: string, updates: Partial<ContractRecord>) => {
@@ -116,17 +137,27 @@ export const ContractHistoryProvider: React.FC<{ children: React.ReactNode }> = 
     [contracts]
   );
 
+  const removeContract = useCallback((contractId: string) => {
+    setContracts((current) => {
+      const remaining = current.filter((contract) => contract.contract_id !== contractId);
+      setSelectedContractId((selected) => selected === contractId ? (remaining[0]?.contract_id ?? null) : selected);
+      return remaining;
+    });
+  }, []);
+
   const clearHistory = useCallback(() => {
     setContracts([]);
     setSelectedContractId(null);
     if (storageKey) localStorage.removeItem(storageKey);
-  }, [storageKey]);
+    if (selectionStorageKey) localStorage.removeItem(selectionStorageKey);
+  }, [selectionStorageKey, storageKey]);
 
   return (
     <ContractHistoryContext.Provider value={{
       contracts,
       addContract,
       updateContract,
+      removeContract,
       getContract,
       clearHistory,
       selectedContractId,

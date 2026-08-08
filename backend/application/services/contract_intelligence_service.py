@@ -1,10 +1,13 @@
 from backend.agents.contract_intelligence_agents import ContractIntelligenceAgentFactory
 from backend.domain.entities import ContractIntelligence, ContractClause, PolicyViolation, RiskAssessment, RedlineRecommendation
 from backend.infrastructure.contract_repository import Neo4jContractRepository
+from backend.infrastructure.encryption import field_encryptor
+from backend.application.services.intelligence_result_serializer import intelligence_to_response_dict
 from backend.llm_manager import LLMManager
 import json
 import logging
 import time
+import uuid
 from typing import Dict, Any, Optional
 
 from backend.shared.utils.logger import get_logger
@@ -96,7 +99,7 @@ class ContractIntelligenceService:
             intelligence = self.analyze_contract_intelligence(contract_text, model, use_planning, contract_id=contract_id, tenant_id=tenant_id, contract_type=contract_type)
             
             # Store intelligence results back to database
-            self._store_intelligence_results(contract_id, tenant_id, intelligence)
+            self._store_intelligence_results(contract_id, tenant_id, model, intelligence)
             
             return intelligence
             
@@ -218,8 +221,8 @@ class ContractIntelligenceService:
         
         return intelligence
     
-    def _store_intelligence_results(self, contract_id: str, tenant_id: str, intelligence: ContractIntelligence):
-        """Store intelligence analysis results in the database"""
+    def _store_intelligence_results(self, contract_id: str, tenant_id: str, model: str, intelligence: ContractIntelligence):
+        """Atomically store summary fields and the complete replayable result."""
         
         try:
             # Update contract with intelligence data including CUAD fields
@@ -248,11 +251,32 @@ class ContractIntelligenceService:
                 "performance_optimized": True,
                 "execution_path": intelligence.execution_path,
                 "planned_execution": intelligence.planned_execution,
+                "analysis_method": intelligence.analysis_method,
+                "model_used": model,
             }
-            
-            # Store in Neo4j with CUAD fields
+
+            payload = intelligence_to_response_dict(contract_id, model, intelligence)
+            analysis_id = f"ANALYSIS_{uuid.uuid4().hex[:12].upper()}"
+
+            # The Contract summary and immutable AnalysisRun are one write.
+            # If the contract was archived while a task was running, the
+            # ACTIVE predicate prevents a late result from reviving it.
             query = """
             MATCH (c:Contract {file_id: $contract_id, tenant_id: $tenant_id})
+            WHERE coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE'
+            CREATE (a:AnalysisRun {
+                analysis_id: $analysis_id,
+                contract_id: $contract_id,
+                tenant_id: $tenant_id,
+                status: $intelligence_status,
+                model_used: $model_used,
+                execution_path: $execution_path,
+                planned_execution: $planned_execution,
+                analysis_method: $analysis_method,
+                result_payload: $result_payload,
+                created_at: datetime()
+            })
+            CREATE (c)-[:HAS_ANALYSIS]->(a)
             SET c.risk_score = $risk_score,
                 c.risk_level = $risk_level,
                 c.violations_count = $violations_count,
@@ -270,23 +294,32 @@ class ContractIntelligenceService:
                 c.performance_optimized = $performance_optimized,
                 c.analysis_execution_path = $execution_path,
                 c.analysis_planned_execution = $planned_execution,
+                c.analysis_method = $analysis_method,
+                c.model_used = $model_used,
+                c.latest_analysis_id = $analysis_id,
+                c.analysis_task_state = 'SUCCESS',
                 c.intelligence_updated = datetime()
-            RETURN c
+            RETURN c.file_id AS contract_id, a.analysis_id AS analysis_id
             """
-            
-            self.repository.graph.query(query, {
+
+            result = self.repository.graph.query(query, {
                 "contract_id": contract_id,
                 "tenant_id": tenant_id,
+                "analysis_id": analysis_id,
+                "result_payload": field_encryptor.encrypt(json.dumps(payload, default=str)),
                 **intelligence_data
             })
+            if not result:
+                raise RuntimeError("Contract is missing or no longer active; analysis was not persisted")
             
             # Store performance metrics
             self._store_performance_metrics(contract_id, tenant_id, intelligence)
             
-            logger.info(f"Stored intelligence results for contract: {contract_id}")
+            logger.info(f"Stored intelligence result {analysis_id} for contract: {contract_id}")
             
         except Exception as e:
             logger.error(f"Failed to store intelligence results for {contract_id}: {e}")
+            raise
     
     def _store_performance_metrics(self, contract_id: str, tenant_id: str, intelligence: ContractIntelligence):
         """Store performance metrics in database"""

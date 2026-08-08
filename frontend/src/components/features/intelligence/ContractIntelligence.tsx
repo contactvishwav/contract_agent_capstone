@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Button } from '../../shared/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../../shared/ui/card';
 import { Badge } from '../../shared/ui/badge';
@@ -9,6 +9,7 @@ import { ViolationsDetail } from './ViolationsDetail';
 import { RiskDetail } from './RiskDetail';
 import { useModal } from '../../../lib/useModal';
 import { apiFetch } from '../../../lib/apiClient';
+import { getLatestContractAnalysis } from '../../../services/contractApi';
 
 interface ContractClause {
   clause_type: string;
@@ -42,6 +43,7 @@ interface IntelligenceResults {
 
 interface ContractIntelligenceProps {
   contractId: string;
+  filename: string;
   model?: string;
   onWorkflowUpdate?: (status: any) => void;
   onAnalysisComplete?: (contractId: string, riskScore?: number, riskLevel?: string, results?: IntelligenceResults) => void;
@@ -56,11 +58,11 @@ interface ExecutionIdentity {
 const TASK_POLL_INTERVAL_MS = 1500;
 const TASK_POLL_TIMEOUT_MS = 5 * 60 * 1000;
 
-async function pollTaskStatus(statusUrl: string): Promise<any> {
+async function pollTaskStatus(statusUrl: string, signal?: AbortSignal): Promise<any> {
   const deadline = Date.now() + TASK_POLL_TIMEOUT_MS;
 
   while (Date.now() < deadline) {
-    const response = await apiFetch(statusUrl);
+    const response = await apiFetch(statusUrl, { signal });
     if (!response.ok) {
       throw new Error(`Failed to check analysis status: ${response.statusText}`);
     }
@@ -73,14 +75,21 @@ async function pollTaskStatus(statusUrl: string): Promise<any> {
       throw new Error(body.error || 'Analysis task failed');
     }
     // PENDING / STARTED - keep polling.
-    await new Promise((resolve) => setTimeout(resolve, TASK_POLL_INTERVAL_MS));
+    await new Promise((resolve, reject) => {
+      const timeout = window.setTimeout(resolve, TASK_POLL_INTERVAL_MS);
+      signal?.addEventListener('abort', () => {
+        window.clearTimeout(timeout);
+        reject(new DOMException('Aborted', 'AbortError'));
+      }, { once: true });
+    });
   }
 
   throw new Error('Analysis is taking longer than expected. Please check back shortly.');
 }
 
 export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
-  contractId, 
+  contractId,
+  filename,
   model = 'gemini-2.5-flash',
   onWorkflowUpdate,
   onAnalysisComplete
@@ -90,10 +99,85 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [networkError, setNetworkError] = useState(false);
   const [executionIdentity, setExecutionIdentity] = useState<ExecutionIdentity | null>(null);
+  const [persistedState, setPersistedState] = useState<'loading' | 'not_analyzed' | 'processing' | 'completed' | 'completed_with_errors'>('loading');
+  const [legacySummary, setLegacySummary] = useState(false);
+  const [summaryCounts, setSummaryCounts] = useState<{ clauses: number; violations: number; redlines: number } | null>(null);
+  const requestVersion = useRef(0);
+  const activeController = useRef<AbortController | null>(null);
   const { openModal, closeModal, isOpen } = useModal();
 
+  const applyAnalysis = (data: any, version: number) => {
+    if (requestVersion.current !== version || !data?.results) return;
+    setResults(data.results);
+    setExecutionIdentity({
+      executionPath: data.execution_path || 'unknown',
+      plannedExecution: data.planned_execution ?? null,
+      modelUsed: data.model_used || model,
+    });
+    setPersistedState(data.analysis_complete === false ? 'completed_with_errors' : 'completed');
+    setSummaryCounts(data.summary_counts || null);
+    if (data.results?.risk_assessment) {
+      onAnalysisComplete?.(
+        contractId,
+        data.results.risk_assessment.overall_risk_score,
+        data.results.risk_assessment.risk_level,
+        data.results,
+      );
+    }
+  };
+
+  useEffect(() => {
+    requestVersion.current += 1;
+    const version = requestVersion.current;
+    activeController.current?.abort();
+    const controller = new AbortController();
+    activeController.current = controller;
+    setResults(null);
+    setError(null);
+    setNetworkError(false);
+    setExecutionIdentity(null);
+    setLegacySummary(false);
+    setSummaryCounts(null);
+    setPersistedState('loading');
+    setLoading(false);
+
+    getLatestContractAnalysis(contractId)
+      .then(async (response) => {
+        if (controller.signal.aborted || requestVersion.current !== version) return;
+        setLegacySummary(response.legacy_summary);
+        if (response.analysis) {
+          applyAnalysis(response.analysis, version);
+          setPersistedState(response.state === 'completed_with_errors' ? 'completed_with_errors' : 'completed');
+          return;
+        }
+        if (response.state === 'processing' && response.status_url) {
+          setPersistedState('processing');
+          setLoading(true);
+          const result = await pollTaskStatus(response.status_url, controller.signal);
+          applyAnalysis(result, version);
+          setLoading(false);
+          return;
+        }
+        setPersistedState('not_analyzed');
+      })
+      .catch((err) => {
+        if (controller.signal.aborted || requestVersion.current !== version) return;
+        setError(err instanceof Error ? err.message : 'Could not load persisted analysis');
+        setPersistedState('not_analyzed');
+        setLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [contractId]);
+
   const analyzeContract = async () => {
+    requestVersion.current += 1;
+    const version = requestVersion.current;
+    activeController.current?.abort();
+    const controller = new AbortController();
+    activeController.current = controller;
     setLoading(true);
+    setPersistedState('processing');
     setError(null);
     setNetworkError(false);
     setExecutionIdentity(null);
@@ -114,6 +198,7 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
     try {
       const response = await apiFetch(`/api/intelligence/contracts/${contractId}/analyze?model=${model}`, {
         method: 'POST',
+        signal: controller.signal,
       });
 
       if (!response.ok) {
@@ -131,23 +216,14 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
       // until it reaches a terminal state (SUCCESS/FAILURE) instead of
       // expecting the results inline in this response.
       const { status_url } = await response.json();
-      const data = await pollTaskStatus(status_url);
+      const data = await pollTaskStatus(status_url, controller.signal);
 
       if (!data.results) {
         throw new Error('No analysis results returned. The contract may be invalid or corrupted.');
       }
 
-      setResults(data.results);
-      setExecutionIdentity({
-        executionPath: data.execution_path || 'unknown',
-        plannedExecution: data.planned_execution ?? null,
-        modelUsed: data.model_used || model,
-      });
-
-      // Report analysis completion with full results
-      if (data.results?.risk_assessment) {
-        onAnalysisComplete?.(contractId, data.results.risk_assessment.overall_risk_score, data.results.risk_assessment.risk_level, data.results);
-      }
+      applyAnalysis(data, version);
+      setLegacySummary(false);
       
       // Final workflow status update
       setTimeout(async () => {
@@ -162,6 +238,8 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
         }
       }, 1000);
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      if (requestVersion.current !== version) return;
       if (err instanceof TypeError && err.message.includes('fetch')) {
         setNetworkError(true);
         setError('Network connection failed. Please check your internet connection.');
@@ -170,7 +248,7 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
       }
     } finally {
       clearInterval(pollWorkflow);
-      setLoading(false);
+      if (requestVersion.current === version) setLoading(false);
     }
   };
 
@@ -241,7 +319,8 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-lg font-semibold text-slate-800">AI Analysis</h3>
-          <p className="text-sm text-slate-600">Contract {contractId}</p>
+          <p className="font-medium text-slate-700">{filename}</p>
+          <p className="text-xs text-slate-500">Contract {contractId}</p>
           {executionIdentity && (
             <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-600">
               <Badge variant="secondary">
@@ -258,11 +337,11 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
         </div>
         <Button 
           onClick={analyzeContract} 
-          disabled={loading}
+          disabled={loading || persistedState === 'loading'}
           className="flex items-center gap-2"
         >
           <Brain className="h-4 w-4" />
-          {loading ? 'Analyzing...' : 'Analyze'}
+          {loading ? 'Analyzing...' : results ? 'Analyze again' : 'Analyze'}
         </Button>
       </div>
 
@@ -286,13 +365,34 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
       )}
 
       {/* Loading State */}
-      {loading && (
+      {(loading || persistedState === 'loading') && (
         <Card className="border-slate-200">
           <CardContent className="pt-6">
             <div className="flex items-center gap-2 text-blue-600">
               <Clock className="h-4 w-4 animate-spin" />
-              <span>Multi-agent analysis in progress...</span>
+              <span>{persistedState === 'loading' ? 'Loading saved analysis…' : 'Multi-agent analysis in progress…'}</span>
             </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {!loading && persistedState === 'not_analyzed' && !error && (
+        <Card className="border-slate-200 bg-slate-50">
+          <CardContent className="py-10 text-center">
+            <FileText className="mx-auto mb-3 h-10 w-10 text-slate-400" />
+            <h3 className="font-medium text-slate-700">Not analyzed yet</h3>
+            <p className="mt-1 text-sm text-slate-500">Run analysis when you are ready. Uploading alone does not call the analysis model.</p>
+          </CardContent>
+        </Card>
+      )}
+
+      {legacySummary && results && (
+        <Card className="border-blue-200 bg-blue-50">
+          <CardContent className="pt-6 text-sm text-blue-800">
+            This saved analysis predates detailed result persistence. Its risk and counts were restored without a model call; detailed clauses and violations require a new analysis.
+            {summaryCounts && (
+              <div className="mt-2">Saved counts: {summaryCounts.clauses} clauses, {summaryCounts.violations} violations, {summaryCounts.redlines} redlines.</div>
+            )}
           </CardContent>
         </Card>
       )}
@@ -304,7 +404,7 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
        !results.risk_assessment && renderEmptyResults()}
 
       {/* Partial Results Warning */}
-      {results && hasPartialResults(results) && (
+      {results && !legacySummary && hasPartialResults(results) && (
         <Card className="border-yellow-200 bg-yellow-50">
           <CardContent className="pt-6">
             <div className="flex items-center gap-2 text-yellow-700">

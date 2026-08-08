@@ -130,7 +130,7 @@ class MigrationRunnerVersioningTests(unittest.TestCase):
         self.assertEqual(result["applied"], ["second"])
         self.assertEqual(result["skipped_already_applied"], ["first"])
 
-    def test_all_11_real_migrations_registered_in_correct_order(self):
+    def test_all_real_migrations_registered_in_correct_order(self):
         from backend.migrations.run_all_migrations import MIGRATIONS
         names = [name for name, _ in MIGRATIONS]
 
@@ -151,8 +151,9 @@ class MigrationRunnerVersioningTests(unittest.TestCase):
             "chat_session_schema", names,
             "persistent Contract Chat sessions (backend/infrastructure/chat_session_repository.py)",
         )
-        self.assertEqual(len(names), 12)
-        self.assertEqual(len(set(names)), 12, "No duplicate migration names")
+        self.assertIn("analysis_run_schema", names)
+        self.assertEqual(len(names), 13)
+        self.assertEqual(len(set(names)), 13, "No duplicate migration names")
 
 
 if __name__ == "__main__":
