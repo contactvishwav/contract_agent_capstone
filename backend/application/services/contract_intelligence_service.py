@@ -105,16 +105,31 @@ class ContractIntelligenceService:
             return None
     
     def _get_llm_for_model(self, model: str):
-        """Get LLM instance for the specified model"""
+        """Get a real, structured-output-capable LLM instance for the
+        specified model.
+
+        Real, confirmed bug found live: this used to try
+        self.llm_manager.agents[model]._llm, hoping to unwrap a raw chat
+        model out of what LLMManager.agents actually stores - the compiled
+        Contract Chat LangGraph agent (get_agent(llm) -> builder.compile()),
+        which never had a `._llm` attribute. hasattr(...) was always False,
+        for every model, so this always fell through to returning the
+        compiled graph itself - invisible until intelligence_tools.py's
+        tools were actually wired to use the resolved value (a separate,
+        since-fixed bug), at which point every real analysis started
+        failing with "'CompiledStateGraph' object has no attribute
+        'with_structured_output'", for every model, not just non-default
+        ones. Fixed by using LLMManager.raw_llms, which keeps the actual
+        chat model instance each agent was built from.
+        """
         try:
-            return self.llm_manager.agents[model]._llm if hasattr(self.llm_manager.agents[model], '_llm') else self.llm_manager.agents[model]
+            return self.llm_manager.raw_llms[model]
         except KeyError:
             logger.warning(f"Model {model} not found, using default")
             # Use first available model as fallback
-            available_models = list(self.llm_manager.agents.keys())
+            available_models = list(self.llm_manager.raw_llms.keys())
             if available_models:
-                fallback_model = available_models[0]
-                return self.llm_manager.agents[fallback_model]._llm if hasattr(self.llm_manager.agents[fallback_model], '_llm') else self.llm_manager.agents[fallback_model]
+                return self.llm_manager.raw_llms[available_models[0]]
             else:
                 raise ValueError("No LLM models available")
     

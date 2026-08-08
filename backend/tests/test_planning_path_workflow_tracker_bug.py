@@ -62,6 +62,7 @@ class PlanningPathWorkflowTrackerBugTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_analyze_with_planning_does_not_crash_on_a_never_started_tracker(self):
         orchestrator = IntelligenceOrchestrator.__new__(IntelligenceOrchestrator)
+        orchestrator.llm = None  # bypassing __init__, which normally sets this
         orchestrator.planning_agent = PlanningAgentFactory.create_planning_agent()
         orchestrator.execution_engine = PlanExecutionEngine()
 
@@ -86,6 +87,7 @@ class PlanningPathWorkflowTrackerBugTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_workflow_start_time_is_actually_set_before_execute_plan_runs(self):
         orchestrator = IntelligenceOrchestrator.__new__(IntelligenceOrchestrator)
+        orchestrator.llm = None  # bypassing __init__, which normally sets this
         orchestrator.planning_agent = PlanningAgentFactory.create_planning_agent()
         orchestrator.execution_engine = PlanExecutionEngine()
 

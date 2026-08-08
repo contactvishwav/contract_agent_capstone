@@ -176,6 +176,7 @@ class CheckPoliciesNodeStatusTests(unittest.TestCase):
 
     def test_partial_tool_status_becomes_partial_node_status(self):
         orchestrator = IntelligenceOrchestrator.__new__(IntelligenceOrchestrator)
+        orchestrator.llm = None  # bypassing __init__, which normally sets this
         clauses = [
             {"clause_id": "c1_non_compete_0", "clause_type": "Non-Compete", "content": "GOOD_CLAUSE: fine."},
             {"clause_id": "c1_non_compete_1", "clause_type": "Non-Compete", "content": "BAD_CLAUSE: fails."},
@@ -194,6 +195,7 @@ class CheckPoliciesNodeStatusTests(unittest.TestCase):
 
     def test_failure_tool_status_becomes_error_node_status(self):
         orchestrator = IntelligenceOrchestrator.__new__(IntelligenceOrchestrator)
+        orchestrator.llm = None  # bypassing __init__, which normally sets this
         clauses = [{"clause_id": "c1_non_compete_0", "clause_type": "Non-Compete", "content": "BAD_CLAUSE."}]
 
         with patch("backend.agents.contract_intelligence_agents.PolicyCheckerTool") as MockTool:

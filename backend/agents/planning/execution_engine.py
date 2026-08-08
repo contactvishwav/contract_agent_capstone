@@ -49,11 +49,20 @@ class ExecutionResult:
 
 class StepExecutor:
     """Execute individual analysis steps"""
-    
-    def __init__(self):
+
+    def __init__(self, llm=None):
+        # Real, confirmed bug found live: this used to construct
+        # ClauseDetectorTool()/PolicyCheckerTool() with no llm at all, on
+        # the planning path - the actual production default
+        # (use_planning=True in the /analyze route). Both tools fall back
+        # to the Gemini->OpenAI->Anthropic chain when constructed without
+        # an explicit llm, so the user's real "AI Model" selection never
+        # reached the model that actually ran, on this path either.
+        # RiskCalculatorTool/RedlineGeneratorTool are deterministic - no
+        # LLM call, nothing to thread through.
         self.tools = {
-            StepType.EXTRACT_CLAUSES: ClauseDetectorTool(),
-            StepType.CHECK_POLICIES: PolicyCheckerTool(),
+            StepType.EXTRACT_CLAUSES: ClauseDetectorTool(llm),
+            StepType.CHECK_POLICIES: PolicyCheckerTool(llm),
             StepType.ASSESS_RISK: RiskCalculatorTool(),
             StepType.GENERATE_REDLINES: RedlineGeneratorTool()
         }
@@ -373,8 +382,8 @@ class StepExecutor:
 class PlanExecutionEngine:
     """Execute planned analysis workflows with dependency management"""
     
-    def __init__(self):
-        self.step_executor = StepExecutor()
+    def __init__(self, llm=None):
+        self.step_executor = StepExecutor(llm)
         self.execution_context: Dict[str, Any] = {}
     
     async def execute_plan(self, plan: ExecutionPlan, contract_text: str, contract_id: Optional[str] = None, tenant_id: Optional[str] = None, contract_type: Optional[str] = None) -> Dict[str, Any]:

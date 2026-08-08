@@ -25,6 +25,7 @@ with patch("langchain_neo4j.Neo4jGraph"), \
 class TestTraditionalPathReceivesContext(unittest.TestCase):
     def test_initial_state_carries_contract_and_tenant_id(self):
         orchestrator = IntelligenceOrchestrator.__new__(IntelligenceOrchestrator)
+        orchestrator.llm = None  # bypassing __init__, which normally sets this
         captured = {}
 
         class FakeWorkflow:

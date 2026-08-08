@@ -22,7 +22,17 @@ class IntelligenceOrchestrator:
         self.llm = llm
         self.workflow = self._build_workflow()
         self.planning_agent = PlanningAgentFactory.create_planning_agent()
-        self.execution_engine = PlanExecutionEngine()
+        # Real, confirmed bug found live: self.llm (the model the user
+        # actually selected, resolved from the "AI Model" dropdown all the
+        # way up in contract_intelligence_service.py's _get_llm_for_model)
+        # used to be resolved here and then never read again - every real
+        # analysis used ClauseDetectorTool()/PolicyCheckerTool() with no
+        # llm argument, which (per the LLM fallback build) falls back to
+        # the Gemini->OpenAI->Anthropic chain regardless of what the
+        # dropdown said. Threaded through to both real orchestration paths
+        # below (this one and the planning/PlanExecutionEngine one, which
+        # is the actual production default - use_planning=True).
+        self.execution_engine = PlanExecutionEngine(llm)
     
     def _build_workflow(self) -> StateGraph:
         """Build workflow with proper state management"""
@@ -59,7 +69,7 @@ class IntelligenceOrchestrator:
         )
 
         try:
-            tool = ClauseDetectorTool()
+            tool = ClauseDetectorTool(self.llm)
             clauses_json = tool._run(
                 state["contract_text"],
                 contract_id=state.get("contract_id"),
@@ -92,7 +102,7 @@ class IntelligenceOrchestrator:
         )
         
         try:
-            tool = PolicyCheckerTool()
+            tool = PolicyCheckerTool(self.llm)
             clauses_json = json.dumps(state["extracted_clauses"])
             result_json = tool._run(
                 clauses_json,

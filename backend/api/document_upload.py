@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Query, Depends, Request
+from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Query, Form, Depends, Request
 from backend.governance.rbac import Permission, requires_permission
 from backend.governance.auth import TokenIdentity
 from fastapi.responses import StreamingResponse
@@ -31,7 +31,13 @@ def get_llm_manager(request: Request):
 async def upload_pdf(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    model: str = Query(default="gemini-2.5-flash", description="LLM model to use for processing"),
+    # Real, confirmed bug found live: the frontend (DocumentUpload.tsx)
+    # sends `model` as a multipart form field (formData.append('model',
+    # modelSelection)), never as a URL query parameter - Query() only
+    # binds query-string params, so this always silently resolved to the
+    # "gemini-2.5-flash" default regardless of the dropdown's real
+    # selection. Form() binds the actual multipart field the UI sends.
+    model: str = Form(default="gemini-2.5-flash", description="LLM model to use for processing"),
     enable_enhanced: bool = Query(default=False, description="Enable enhanced processing with sections/clauses"),
     llm_mgr: LLMManager = Depends(get_llm_manager),
     identity: TokenIdentity = Depends(requires_permission(Permission.UPLOAD)),

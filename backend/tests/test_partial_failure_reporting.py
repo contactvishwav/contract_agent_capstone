@@ -45,6 +45,7 @@ class RiskCalculatorFailureTests(unittest.TestCase):
 class RedlineNodeFailureTests(unittest.TestCase):
     def test_generate_redlines_except_path_marks_incomplete(self):
         orchestrator = IntelligenceOrchestrator.__new__(IntelligenceOrchestrator)
+        orchestrator.llm = None  # bypassing __init__, which normally sets this
         state = {
             "contract_text": "text", "extracted_clauses": [], "policy_violations": [],
             "risk_data": {}, "contract_id": "c1", "tenant_id": "t1", "node_status": {},
