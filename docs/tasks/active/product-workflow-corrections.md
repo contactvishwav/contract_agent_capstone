@@ -1,11 +1,11 @@
 # Product workflow corrections: analysis, lifecycle, citations, and chat UX
 
-- Status: In progress
+- Status: Complete
 - Active owner/tool: Codex
 - Branch: `feat/persistent-chat-sessions`
 - Worktree: `/Users/vishwa/contract_agent_capstone_copy`
 - Base commit: `46bdf26`
-- Last known commit: `240c015`
+- Last known commit: `abce606`
 
 ## Goal
 
@@ -23,19 +23,19 @@ the connected selector/composer interactions with real browser verification.
 
 ## Acceptance criteria
 
-- [ ] Recent Contract controls select the intended contract and never display stale analysis.
-- [ ] Latest completed analysis restores from authenticated persistence without a model call.
-- [ ] Unanalyzed, running, partial, failed, fallback, and planned states remain distinct.
-- [ ] Authorized archive/removal hides a contract from normal use and permits corrected re-upload.
-- [ ] Cross-tenant/unauthorized lifecycle and analysis access fail without disclosure.
-- [ ] Cache, active selection, search/chat options, tasks, sessions, and audit retention follow a documented lifecycle rule.
-- [ ] Assistant citations originate from real retrieved evidence, validate, persist, restore, and render safely.
-- [ ] Markdown is rendered with a maintained safe renderer and unsafe HTML/URLs cannot execute.
-- [ ] Session rename is validated, tenant scoped, persistent, accessible, and model-free.
-- [ ] Selectors are bounded/scrollable and do not obscure the composer; suggestions are consistent.
-- [ ] Navigation, refresh, tenant changes, and request races preserve correctness.
-- [ ] Focused checks, frontend build, blocking Ruff, full backend suite, and browser acceptance pass or exact failures are recorded.
-- [ ] Protected grouped-extraction files remain untouched; nothing is pushed or deployed.
+- [x] Recent Contract controls select the intended contract and never display stale analysis.
+- [x] Latest completed analysis restores from authenticated persistence without a model call.
+- [x] Unanalyzed, running, partial, failed, fallback, and planned states remain distinct.
+- [x] Authorized archive/removal hides a contract from normal use and permits corrected re-upload.
+- [x] Cross-tenant/unauthorized lifecycle and analysis access fail without disclosure.
+- [x] Cache, active selection, search/chat options, tasks, sessions, and audit retention follow a documented lifecycle rule.
+- [x] Assistant citations originate from real retrieved evidence, validate, persist, restore, and render safely.
+- [x] Markdown is rendered with a maintained safe renderer and unsafe HTML/URLs cannot execute.
+- [x] Session rename is validated, tenant scoped, persistent, accessible, and model-free.
+- [x] Selectors are bounded/scrollable and do not obscure the composer; suggestions are consistent.
+- [x] Navigation, refresh, tenant changes, and request races preserve correctness.
+- [x] Focused checks, frontend build, blocking Ruff, full backend suite, and browser acceptance pass or exact failures are recorded.
+- [x] Protected grouped-extraction files remain untouched; nothing is pushed or deployed.
 
 ## Invariants affected
 
@@ -82,35 +82,39 @@ the connected selector/composer interactions with real browser verification.
 - Added ADR-003 and the ADMIN/DELETE-only soft archive lifecycle, active SHA-256 duplicate identity, active search/chat/list filtering, running-task refusal, tenant cache invalidation, and corrected re-upload behavior (`240c015`).
 - Implemented provider-neutral citations with tenant/active revalidation at creation and restore, encrypted persistence, SSE and Sources rendering, and richer retrieval provenance.
 - Implemented safe GFM Markdown, persistent validated inline session rename, bounded selectors/session list, accessible selector labels, dead Gemini 1.5 option removal, and consistent suggestion copy.
+- Browser acceptance archived the prior MSA/SOW records and re-uploaded the same bytes successfully as active contracts `UPLOADED_96CCBBB2_20260808` and `UPLOADED_21915AEF_20260808`. Both completed through `plan_execution_engine` with `planned_execution=true`; independent 7-clause and 5-clause results survived repeated switching and refresh.
+- Browser chat acceptance produced validated MSA-only, SOW-only, and multi-contract Sources panels from real excerpts; an unsupported answer had no trusted Sources. Persisted multi-tool evidence now deduplicates to four unique chunk sources on restore.
+- Browser Markdown showed real bold headings and list items. `MSA Payment Review` survived navigation, refresh, logout, and login. The session list measured 208px client height versus 252px scroll height; the contract menu was measured against the textarea and corrected from a 6px overlap to no 2D overlap. Escape returned focus and Arrow/Enter selected MSA.
+- Read-only Neo4j verification found one immutable AnalysisRun for each active fixture, the two predecessor contracts archived, contract-scoped predecessor sessions archived, three encrypted citation-bearing assistant messages, and tenant-scoped ChatMessage rows.
+- Final verification: full backend `786 passed, 1 skipped`; frontend `12 passed`; blocking Ruff passed; touched frontend lint had zero errors/two Fast Refresh warnings; production frontend build passed with the known CSS minifier and bundle-size warnings; `git diff --check` passed; Compose services were healthy; and the pending `analysis_run_schema` migration applied while the preceding 12 were skipped as already applied.
 
 ## Work remaining
 
-- Run full backend/frontend gates, rebuild and migrate the local stack, then complete browser acceptance with fresh MSA/SOW data and minimal live model calls.
-- Commit the citation/chat UX checkpoint and final documentation handoff.
+- Separate Output Guard graph-state repair and release-blocker verification.
+- Optional follow-ups: formal contract version lineage/purge policy, precise citation deep links or inline claim placement, and global frontend lint-baseline cleanup.
 
 ## Failing checks
 
-- None in focused verification. Local OpenTelemetry attempts to export to absent Phoenix and logs after pytest closes output; test results remain passing.
+- Global frontend lint remains a pre-existing report-only baseline: 27 errors and 8 warnings in unrelated and earlier files. Current task-final touched Chat files have zero lint errors and two Fast Refresh warnings.
 
 ## Checks not run
 
-- Full backend suite, global frontend lint/tests, local migrations after rebuild, and final browser acceptance remain pending.
+- Production build-platform/deployment/smoke/rollback checks were not run because deployment is explicitly out of scope.
+- No live provider matrix, destructive purge, Output Guard repair, citation deep-link navigation, or formal version-lineage test was run because each is deferred.
+- Browser automation could not drive the hidden native file input, so fresh fixture uploads used the same authenticated local upload API; archive, selection, analysis, Chat, rename, refresh, login, and selector behavior were exercised in the real browser. Cross-tenant lifecycle/retrieval was verified by focused automated tests rather than creating another live tenant.
 
 ## Changed/uncommitted files
 
-- Citation/chat UX implementation and tests listed by `git status`.
+- None. Only the two protected grouped-extraction research files remain untracked.
 - Protected and untouched: `research/benchmark/pilot_grouped_extraction.py` and
   `research/benchmark/pilot_grouped_extraction_sample.json`.
 
 ## Risks/questions
 
-- Archive semantics must account for duplicate detection, active tasks, sessions,
-  search/vector results, audit retention, and encrypted source-data retention.
-- Citation metadata may be lost at multiple tool/SSE/persistence boundaries; do not
-  infer provenance that the retrieval path cannot prove.
 - Output Guard remains a separate known release blocker and must not be repaired here.
+- Global frontend lint and npm audit (3 low, 1 moderate, 9 high, 1 critical) remain baselines requiring separate triage; no automatic dependency rewrite was attempted.
+- Citation UI provides truthful evidence panels, not precise inline claim-to-source placement or deep-link navigation. Page metadata is absent in the current fixture graph and is not invented.
 
 ## Recommended next action
 
-Run full automated gates, rebuild the local Compose stack, apply the registered migrations,
-and browser-verify the full corrected workflow with fresh data.
+Repair and verify the Contract Chat Output Guard graph-state failure as the next release-blocking task.
