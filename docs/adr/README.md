@@ -6,6 +6,8 @@ Accepted ADRs record real decisions prospectively. Do not retroactively manufact
 
 1. [`ADR-001`](001-server-authoritative-chat-session-scope.md): persisted chat-session scope is server-authoritative.
 2. [`ADR-002`](002-standalone-mcp-trust-boundary.md): standalone MCP is local-only until external authentication exists.
+3. [`ADR-003`](003-contract-archive-and-replacement-lifecycle.md): contract removal is tenant-scoped soft archive with active-content duplicate identity.
+4. [`ADR-004`](004-fail-closed-contract-chat-output-validation.md): Contract Chat output validation uses the raw model boundary and fails closed with explicit terminal outcomes.
 
 ## Decision candidates (not yet accepted ADRs)
 
