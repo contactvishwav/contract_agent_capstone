@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   replaceMessages: vi.fn(),
   reset: vi.fn(),
   setSelectedContract: vi.fn(),
+  renameSession: vi.fn(),
 }));
 
 const active = {
@@ -30,6 +31,7 @@ vi.mock('../../../contexts/ChatSessionContext', () => ({
     refreshSessions: mocks.refreshSessions,
     selectSession: mocks.selectSession,
     startNewSession: mocks.startNewSession,
+    renameSession: mocks.renameSession,
   }),
 }));
 vi.mock('../../../contexts/ContractHistoryContext', () => ({
@@ -86,5 +88,20 @@ describe('SessionSwitcher', () => {
     mocks.getSessionDetail.mockRejectedValue(new Error('offline'));
     render(<SessionSwitcher />);
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not load this conversation');
+  });
+
+  it('renames inline without selecting or submitting the conversation', async () => {
+    mocks.renameSession.mockResolvedValue({ ...active, title: 'Payment obligations' });
+    render(<SessionSwitcher />);
+    await waitFor(() => expect(mocks.getSessionDetail).toHaveBeenCalled());
+    vi.clearAllMocks();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rename Fee review' }));
+    const input = screen.getByRole('textbox', { name: 'Conversation name' });
+    fireEvent.change(input, { target: { value: '  Payment obligations  ' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => expect(mocks.renameSession).toHaveBeenCalledWith('SESSION_A', 'Payment obligations'));
+    expect(mocks.selectSession).not.toHaveBeenCalled();
   });
 });

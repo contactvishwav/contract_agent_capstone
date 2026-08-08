@@ -8,9 +8,10 @@ happens.
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from backend.governance.auth import TokenIdentity
+from backend.application.services.chat_citation_service import revalidate_stored_citations
 from backend.governance.rbac import Permission, requires_permission
 from backend.infrastructure.chat_session_repository import Neo4jChatSessionRepository
 from backend.infrastructure.contract_repository import Neo4jContractRepository
@@ -45,6 +46,32 @@ class CreateSessionRequest(BaseModel):
     contract_id: Optional[str] = None
     title: Optional[str] = None
 
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("title must not be blank")
+        if len(normalized) > 120:
+            raise ValueError("title must be 120 characters or fewer")
+        return normalized
+
+
+class RenameSessionRequest(BaseModel):
+    title: str
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("title must not be blank")
+        if len(normalized) > 120:
+            raise ValueError("title must be 120 characters or fewer")
+        return normalized
+
 
 class SessionResponse(BaseModel):
     session_id: str
@@ -61,6 +88,8 @@ class MessageResponse(BaseModel):
     content: str
     model: Optional[str] = None
     tool_name: Optional[str] = None
+    tool_call_id: Optional[str] = None
+    citations: List[dict] = Field(default_factory=list)
     sequence: int
     created_at: Optional[str] = None
 
@@ -126,9 +155,24 @@ async def get_session_detail(
         messages=[
             MessageResponse(
                 message_id=m["message_id"], role=m["role"], content=m["content"],
-                model=m.get("model"), tool_name=m.get("tool_name"), sequence=m["sequence"],
+                model=m.get("model"), tool_name=m.get("tool_name"),
+                tool_call_id=m.get("tool_call_id"),
+                citations=revalidate_stored_citations(m.get("citations"), identity.tenant_id),
+                sequence=m["sequence"],
                 created_at=serialize_neo4j_datetime(m.get("created_at")),
             )
             for m in messages
         ],
     )
+
+
+@router.patch("/sessions/{session_id}", response_model=SessionResponse)
+async def rename_session(
+    session_id: str,
+    payload: RenameSessionRequest,
+    identity: TokenIdentity = Depends(requires_permission(Permission.ANALYZE)),
+):
+    row = repository.rename_session(session_id, identity.tenant_id, payload.title)
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Chat session {session_id} not found")
+    return _serialize_session(row)

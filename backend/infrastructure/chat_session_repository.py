@@ -37,6 +37,7 @@ traversal alone.
 """
 
 from typing import Any, Dict, List, Optional
+import json
 import uuid
 
 from backend.infrastructure.encryption import field_encryptor
@@ -126,6 +127,18 @@ class Neo4jChatSessionRepository:
         result = self._query(cypher, {"session_id": session_id, "tenant_id": tenant_id})
         return result[0] if result else None
 
+    def rename_session(self, session_id: str, tenant_id: str, title: str) -> Optional[Dict[str, Any]]:
+        cypher = """
+        MATCH (s:ChatSession {session_id: $session_id, tenant_id: $tenant_id})
+        WHERE s.archived_at IS NULL
+        SET s.title = $title, s.updated_at = datetime()
+        RETURN s.session_id AS session_id, s.tenant_id AS tenant_id, s.contract_id AS contract_id,
+               s.title AS title, s.created_at AS created_at, s.updated_at AS updated_at,
+               s.message_count AS message_count
+        """
+        rows = self._query(cypher, {"session_id": session_id, "tenant_id": tenant_id, "title": title})
+        return rows[0] if rows else None
+
     def list_messages(self, session_id: str, tenant_id: str) -> List[Dict[str, Any]]:
         """Empty list for a missing/cross-tenant session - the MATCH's
         tenant_id filter makes a cross-tenant read naturally return
@@ -135,13 +148,23 @@ class Neo4jChatSessionRepository:
         MATCH (s:ChatSession {session_id: $session_id, tenant_id: $tenant_id})-[r:HAS_MESSAGE]->(m:ChatMessage)
         WHERE s.archived_at IS NULL
         RETURN m.message_id AS message_id, m.role AS role, m.content AS content, m.model AS model,
-               m.tool_name AS tool_name, m.tool_call_id AS tool_call_id, m.created_at AS created_at,
+               m.tool_name AS tool_name, m.tool_call_id AS tool_call_id, m.citations AS citations,
+               m.created_at AS created_at,
                r.sequence AS sequence
         ORDER BY r.sequence ASC
         """
         rows = self._query(cypher, {"session_id": session_id, "tenant_id": tenant_id})
         for row in rows:
             row["content"] = field_encryptor.decrypt(row["content"] or "")
+            encrypted_citations = row.get("citations")
+            if encrypted_citations:
+                try:
+                    row["citations"] = json.loads(field_encryptor.decrypt(encrypted_citations))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    logger.warning("Ignoring unreadable chat citation metadata")
+                    row["citations"] = []
+            else:
+                row["citations"] = []
         return rows
 
     def append_message(
@@ -153,6 +176,7 @@ class Neo4jChatSessionRepository:
         model: Optional[str] = None,
         tool_name: Optional[str] = None,
         tool_call_id: Optional[str] = None,
+        citations: Optional[List[Dict[str, Any]]] = None,
     ) -> Optional[Dict[str, Any]]:
         """MATCH is tenant_id-scoped, same as every other write path in this
         codebase - a caller can never append to another tenant's session
@@ -173,7 +197,8 @@ class Neo4jChatSessionRepository:
         WITH s, s.message_count AS seq
         CREATE (m:ChatMessage {
             message_id: $message_id, tenant_id: $tenant_id, role: $role, content: $content,
-            model: $model, tool_name: $tool_name, tool_call_id: $tool_call_id, created_at: datetime()
+            model: $model, tool_name: $tool_name, tool_call_id: $tool_call_id,
+            citations: $citations, created_at: datetime()
         })
         CREATE (s)-[:HAS_MESSAGE {sequence: seq}]->(m)
         RETURN m.message_id AS message_id, seq AS sequence, m.created_at AS created_at
@@ -182,5 +207,6 @@ class Neo4jChatSessionRepository:
             "session_id": session_id, "tenant_id": tenant_id, "message_id": message_id,
             "role": role, "content": field_encryptor.encrypt(content or ""),
             "model": model, "tool_name": tool_name, "tool_call_id": tool_call_id,
+            "citations": field_encryptor.encrypt(json.dumps(citations, default=str)) if citations else None,
         })
         return result[0] if result else None

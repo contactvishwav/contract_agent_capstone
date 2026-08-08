@@ -24,12 +24,12 @@ export function ChatOutput() {
                                 <p className="text-sm font-medium text-slate-700 mb-2">Try these sample queries:</p>
                                 <ul className="text-sm text-slate-600 space-y-1">
                                     {[
-                                        'how many SOW contracts?',
-                                        'how many total active contracts?',
-                                        'List all the contract types',
-                                        'Display the summary of all the contracts that have monetary value of 50k',
-                                        'who are the parties of SOW contracts?',
-                                        'Show me all relationships between parties in SOW contracts - who works with whom?',
+                                        'How many SOW contracts?',
+                                        'How many total active contracts?',
+                                        'List all contract types.',
+                                        'Display summaries of contracts with a monetary value of $50,000.',
+                                        'Who are the parties to SOW contracts?',
+                                        'Show relationships between parties in SOW contracts—who works with whom?',
                                     ].map((query) => (
                                         <li key={query}>
                                             <button

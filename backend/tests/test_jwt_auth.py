@@ -132,6 +132,7 @@ class RealCrossTenantIsolationViaTokenTests(unittest.TestCase):
         identity.tenant_id - confirms the enqueued task itself receives
         tenant B's tenant_id, not tenant A's, when tenant B's contract_id
         guess/collision happens to match a real contract_id."""
+        self.fake_graph.add_contract("CONTRACT_1", tenant_id="tenant_b", status="not_analyzed", risk_score=None)
         with patch("backend.api.contract_intelligence.task_ownership_store.enqueue") as mock_enqueue:
             mock_enqueue.return_value = MagicMock(id="task-123")
             response = self.client.post(

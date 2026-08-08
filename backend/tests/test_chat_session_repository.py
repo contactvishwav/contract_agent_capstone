@@ -71,7 +71,8 @@ class FakeChatSessionGraph:
             message = {
                 "message_id": params["message_id"], "role": params["role"], "content": params["content"],
                 "model": params.get("model"), "tool_name": params.get("tool_name"),
-                "tool_call_id": params.get("tool_call_id"), "created_at": _FakeNeo4jDateTime(self._clock), "sequence": seq,
+                "tool_call_id": params.get("tool_call_id"), "citations": params.get("citations"),
+                "created_at": _FakeNeo4jDateTime(self._clock), "sequence": seq,
             }
             self.messages[params["session_id"]].append(message)
             return [{"message_id": message["message_id"], "sequence": seq, "created_at": message["created_at"]}]
@@ -88,6 +89,15 @@ class FakeChatSessionGraph:
                 rows = [s for s in rows if s.get("contract_id") == params["contract_id"]]
             rows.sort(key=lambda s: s["updated_at"], reverse=True)
             return [dict(r) for r in rows]
+
+        if "SET s.title" in cypher:
+            session = self._lookup_session(params)
+            if not session:
+                return []
+            self._clock += 1
+            session["title"] = params["title"]
+            session["updated_at"] = _FakeNeo4jDateTime(self._clock)
+            return [dict(session)]
 
         if "RETURN s.session_id" in cypher:  # get_session (no ORDER BY)
             session = self._lookup_session(params)
@@ -167,6 +177,15 @@ class GetSessionTests(unittest.TestCase):
         self.assertIsNone(repo.get_session("SESSION_DOES_NOT_EXIST", "tenant_a"))
 
 
+class RenameSessionTests(unittest.TestCase):
+    def test_rename_is_tenant_scoped_and_updates_title(self):
+        repo, _ = make_repo()
+        created = repo.create_session("tenant_a", None, "Original")
+        self.assertIsNone(repo.rename_session(created["session_id"], "tenant_b", "Intruder"))
+        renamed = repo.rename_session(created["session_id"], "tenant_a", "Useful name")
+        self.assertEqual(renamed["title"], "Useful name")
+
+
 class AppendMessageAndListMessagesTests(unittest.TestCase):
     def test_sequential_messages_get_gapless_increasing_sequence(self):
         repo, graph = make_repo()
@@ -229,6 +248,16 @@ class AppendMessageAndListMessagesTests(unittest.TestCase):
 
         decrypted = repo.list_messages(sid, "tenant_a")[0]["content"]
         self.assertEqual(decrypted, plaintext)
+
+    def test_citations_are_encrypted_at_rest_and_restored(self):
+        repo, graph = make_repo()
+        session = repo.create_session("tenant_a", None, "Chat")
+        citations = [{"citation_id": "CIT_1", "contract_id": "CONTRACT_1"}]
+
+        repo.append_message(session["session_id"], "tenant_a", role="ai_message", content="Answer", citations=citations)
+
+        self.assertNotIn("CONTRACT_1", graph.messages[session["session_id"]][0]["citations"])
+        self.assertEqual(repo.list_messages(session["session_id"], "tenant_a")[0]["citations"], citations)
 
 
 if __name__ == "__main__":

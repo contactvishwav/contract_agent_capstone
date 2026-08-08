@@ -85,7 +85,9 @@ class UploadRouteModelFieldBindingTests(unittest.TestCase):
         app.state.llm_manager = fake_llm_mgr
 
         fake_repo = MagicMock()
-        fake_repo.graph.query.return_value = []  # no duplicate
+        fake_repo.graph.query.side_effect = lambda cypher, params=None: (
+            [{"contract_id": "UPLOADED_TEST_20260808"}] if "SET c.source_hash" in cypher else []
+        )
 
         captured = {}
 

@@ -5,7 +5,7 @@
 - Branch: `feat/persistent-chat-sessions`
 - Worktree: `/Users/vishwa/contract_agent_capstone_copy`
 - Base commit: `46bdf26`
-- Last known commit: `46bdf26`
+- Last known commit: `240c015`
 
 ## Goal
 
@@ -65,9 +65,11 @@ the connected selector/composer interactions with real browser verification.
 
 ## Decisions
 
-- Pending evidence. Prefer archive over unrestricted hard delete; preserve audit evidence.
+- Accepted ADR-003: product removal is tenant-scoped soft archive, not physical deletion; active byte hashes define duplicates, and corrected same-name content is permitted.
 - Do not let browser caches become the source of truth for analyses or citations.
 - Prefer a truthful Sources section before unsupported inline claim-level citation placement.
+- Citations are derived from current-turn structured tool results and revalidated against authenticated tenant plus active Contract state on creation and restoration; page is omitted when unavailable.
+- Assistant output uses maintained GFM rendering with sanitization. User messages and raw tool payloads remain plain/raw text.
 
 ## Work completed
 
@@ -75,23 +77,28 @@ the connected selector/composer interactions with real browser verification.
 - Verified the canonical local Compose stack is healthy with backend port override 8001.
 - Read repository governance, source-of-truth map, system map, working protocol,
   relevant accepted ADRs, and the completed local browser-verification handoff.
+- Reproduced the Recent Contracts behavior: pointer selection worked but lacked button semantics; analysis state was local-only and did not restore from persistence.
+- Added immutable encrypted AnalysisRun persistence, latest-analysis retrieval without a model call, explicit lifecycle/task/legacy states, stale-request suppression, one accessible selected-contract model, and tenant-keyed selection convenience state (`2eef523`).
+- Added ADR-003 and the ADMIN/DELETE-only soft archive lifecycle, active SHA-256 duplicate identity, active search/chat/list filtering, running-task refusal, tenant cache invalidation, and corrected re-upload behavior (`240c015`).
+- Implemented provider-neutral citations with tenant/active revalidation at creation and restore, encrypted persistence, SSE and Sources rendering, and richer retrieval provenance.
+- Implemented safe GFM Markdown, persistent validated inline session rename, bounded selectors/session list, accessible selector labels, dead Gemini 1.5 option removal, and consistent suggestion copy.
 
 ## Work remaining
 
-- Reproduce findings in the real browser and trace current code/data paths.
-- Record lifecycle/citation decisions, implement focused changes, verify, commit, and hand off.
+- Run full backend/frontend gates, rebuild and migrate the local stack, then complete browser acceptance with fresh MSA/SOW data and minimal live model calls.
+- Commit the citation/chat UX checkpoint and final documentation handoff.
 
 ## Failing checks
 
-- None run for this task yet.
+- None in focused verification. Local OpenTelemetry attempts to export to absent Phoenix and logs after pytest closes output; test results remain passing.
 
 ## Checks not run
 
-- Product browser reproduction and all task-focused automated checks are pending.
+- Full backend suite, global frontend lint/tests, local migrations after rebuild, and final browser acceptance remain pending.
 
 ## Changed/uncommitted files
 
-- This task record.
+- Citation/chat UX implementation and tests listed by `git status`.
 - Protected and untouched: `research/benchmark/pilot_grouped_extraction.py` and
   `research/benchmark/pilot_grouped_extraction_sample.json`.
 
@@ -105,5 +112,5 @@ the connected selector/composer interactions with real browser verification.
 
 ## Recommended next action
 
-Trace and browser-reproduce Recent Contracts selection and persisted-analysis behavior,
-then inspect lifecycle and citation provenance before choosing schemas or APIs.
+Run full automated gates, rebuild the local Compose stack, apply the registered migrations,
+and browser-verify the full corrected workflow with fresh data.

@@ -276,6 +276,7 @@ def _search_documents(embeddings, tenant_id, summary_search, filters, params,
         total_count: count(c),
         contracts: collect({
             file_id: c.file_id,
+            filename: c.filename,
             summary: c.summary,
             contract_type: c.contract_type,
             effective_date: c.effective_date,
@@ -329,6 +330,8 @@ def _search_sections(embeddings, tenant_id, summary_search, section_types, filte
         total_count: count(s),
         sections: collect({
             contract_id: c.file_id,
+            filename: c.filename,
+            section_id: s.section_id,
             section_type: s.section_type,
             content: s.content,
             order: s.order
@@ -380,6 +383,8 @@ def _search_clauses(embeddings, tenant_id, summary_search, clause_types, filters
         total_count: count(cl),
         clauses: collect({
             contract_id: c.file_id,
+            filename: c.filename,
+            clause_id: cl.clause_id,
             clause_type: cl.clause_type,
             content: cl.content,
             confidence: cl.confidence,
@@ -442,6 +447,7 @@ def _search_relationships(embeddings, tenant_id, summary_search, parties, filter
         total_count: count(r),
         relationships: collect({
             contract_id: c.file_id,
+            filename: c.filename,
             party_name: p.name,
             role: r.role,
             context: r.context
@@ -512,8 +518,11 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params, contr
             WHERE coalesce(source_contract.lifecycle_status, 'ACTIVE') = 'ACTIVE'
               AND d.tenant_id = $tenant_id AND chunk_score > 0.7
             {"AND d.contract_id = $contract_id" if contract_id else ""}
-            RETURN d.id AS document_id, c.chunk_type AS chunk_type, c.content AS content,
+            RETURN d.id AS document_id, d.contract_id AS contract_id,
+                   source_contract.filename AS filename, c.id AS chunk_id,
+                   c.chunk_type AS chunk_type, c.content AS content,
                    c.chunk_index AS chunk_index, c.quality_score AS quality_score,
+                   c.start_offset AS start_offset, c.end_offset AS end_offset,
                    chunk_score AS similarity_score
             ORDER BY chunk_score DESC
             """
@@ -528,9 +537,14 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params, contr
                 chunks = [
                     {
                         "document_id": r["document_id"],
+                        "contract_id": r.get("contract_id"),
+                        "filename": r.get("filename"),
+                        "chunk_id": r.get("chunk_id"),
                         "chunk_type": r["chunk_type"],
                         "content": _chunk_snippet(field_encryptor.decrypt(r["content"] or "")),
                         "chunk_index": r["chunk_index"],
+                        "start_offset": r.get("start_offset"),
+                        "end_offset": r.get("end_offset"),
                         "quality_score": r["quality_score"],
                         "similarity_score": r["similarity_score"],
                         "search_type": "semantic",
@@ -559,8 +573,11 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params, contr
     WHERE coalesce(source_contract.lifecycle_status, 'ACTIVE') = 'ACTIVE'
       AND d.tenant_id = $tenant_id
     {"AND d.contract_id = $contract_id" if contract_id else ""}
-    RETURN d.id AS document_id, c.chunk_type AS chunk_type, c.content AS content,
-           c.chunk_index AS chunk_index, c.quality_score AS quality_score
+    RETURN d.id AS document_id, d.contract_id AS contract_id,
+           source_contract.filename AS filename, c.id AS chunk_id,
+           c.chunk_type AS chunk_type, c.content AS content,
+           c.chunk_index AS chunk_index, c.quality_score AS quality_score,
+           c.start_offset AS start_offset, c.end_offset AS end_offset
     ORDER BY c.chunk_index DESC
     LIMIT $candidate_limit
     """
@@ -577,9 +594,14 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params, contr
             continue
         new_chunks.append({
             "document_id": r["document_id"],
+            "contract_id": r.get("contract_id"),
+            "filename": r.get("filename"),
+            "chunk_id": r.get("chunk_id"),
             "chunk_type": r["chunk_type"],
             "content": _chunk_snippet(decrypted),
             "chunk_index": r["chunk_index"],
+            "start_offset": r.get("start_offset"),
+            "end_offset": r.get("end_offset"),
             "quality_score": r["quality_score"],
             "search_type": "text_new" if search_text else "recent",
         })
@@ -593,8 +615,10 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params, contr
         WHERE c.tenant_id = $tenant_id
           AND coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE'
         {"AND c.file_id = $contract_id" if contract_id else ""}
-        RETURN c.file_id AS contract_id, dc.chunk_type AS chunk_type, dc.content AS content,
-               dc.chunk_order AS chunk_order, dc.confidence AS confidence
+        RETURN c.file_id AS contract_id, c.filename AS filename,
+               dc.id AS chunk_id, dc.chunk_type AS chunk_type, dc.content AS content,
+               dc.chunk_order AS chunk_order, dc.start_offset AS start_offset,
+               dc.end_offset AS end_offset, dc.confidence AS confidence
         LIMIT $candidate_limit
         """
         legacy_chunk_params = {"tenant_id": tenant_id, "candidate_limit": CHUNK_TEXT_SEARCH_CANDIDATE_LIMIT}
@@ -609,9 +633,13 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params, contr
                 continue
             legacy_chunks.append({
                 "contract_id": r["contract_id"],
+                "filename": r.get("filename"),
+                "chunk_id": r.get("chunk_id"),
                 "chunk_type": r["chunk_type"],
                 "content": _chunk_snippet(decrypted),
                 "chunk_order": r["chunk_order"],
+                "start_offset": r.get("start_offset"),
+                "end_offset": r.get("end_offset"),
                 "confidence": r["confidence"],
                 "search_type": "text_legacy",
             })

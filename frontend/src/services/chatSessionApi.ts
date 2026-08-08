@@ -20,8 +20,30 @@ export interface ChatSessionMessage {
   content: string;
   model: string | null;
   tool_name: string | null;
+  tool_call_id: string | null;
+  citations: ChatCitation[];
   sequence: number;
   created_at: string | null;
+}
+
+export interface ChatCitation {
+  citation_id: string;
+  contract_id: string;
+  filename: string;
+  source_type: 'document' | 'section' | 'clause' | 'relationship' | 'chunk';
+  page: number | null;
+  section_id: string | null;
+  section_title: string | null;
+  clause_id: string | null;
+  clause_type: string | null;
+  chunk_id: string | null;
+  chunk_index: number | null;
+  start_offset: number | null;
+  end_offset: number | null;
+  excerpt: string | null;
+  tool_name: string | null;
+  tool_call_id: string | null;
+  validation_status: 'tenant_active';
 }
 
 export interface ChatSessionDetail extends ChatSessionSummary {
@@ -54,6 +76,18 @@ class ChatSessionApi {
     const response = await apiFetch(`/api/chat/sessions/${encodeURIComponent(sessionId)}`);
     if (!response.ok) {
       throw new Error(`Failed to load chat session: ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  async renameSession(sessionId: string, title: string): Promise<ChatSessionSummary> {
+    const response = await apiFetch(`/api/chat/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title }),
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to rename chat session: ${response.statusText}`);
     }
     return response.json();
   }

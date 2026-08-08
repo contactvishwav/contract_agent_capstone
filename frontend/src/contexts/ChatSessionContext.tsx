@@ -17,6 +17,7 @@ interface ChatSessionContextType {
   // "New chat" click must never pollute the switcher with an empty thread.
   createSession: (contractId: string | null, title?: string) => Promise<ChatSessionSummary>;
   selectSession: (session: ChatSessionSummary) => void;
+  renameSession: (sessionId: string, title: string) => Promise<ChatSessionSummary>;
   // Clears the active session back to "not yet created" - the next send
   // will lazily create a fresh one.
   startNewSession: () => void;
@@ -91,6 +92,13 @@ export const ChatSessionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     if (lastActiveKey) localStorage.setItem(lastActiveKey, session.session_id);
   }, [lastActiveKey]);
 
+  const renameSession = useCallback(async (sessionId: string, title: string) => {
+    const updated = await chatSessionApi.renameSession(sessionId, title);
+    setSessions((previous) => previous.map((session) => session.session_id === sessionId ? updated : session));
+    setActiveSession((current) => current?.session_id === sessionId ? updated : current);
+    return updated;
+  }, []);
+
   const startNewSession = useCallback(() => {
     setActiveSession(null);
     if (lastActiveKey) localStorage.removeItem(lastActiveKey);
@@ -106,6 +114,7 @@ export const ChatSessionProvider: React.FC<{ children: React.ReactNode }> = ({ c
         refreshSessions,
         createSession,
         selectSession,
+        renameSession,
         startNewSession,
       }}
     >

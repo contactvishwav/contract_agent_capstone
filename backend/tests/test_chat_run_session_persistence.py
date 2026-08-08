@@ -135,6 +135,32 @@ class RunnerSessionPersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(messages[0]["role"], "user_message")
         self.assertEqual(messages[0]["content"], "This will fail")
 
+    async def test_validated_citations_are_streamed_and_persisted_with_final_answer(self):
+        session_repo, _ = _make_shared_repo()
+        session = session_repo.create_session("tenant_a", "UPLOADED_MSA_1", "Payment terms")
+        citation = {
+            "citation_id": "CIT_1", "contract_id": "UPLOADED_MSA_1", "filename": "Clean_MSA.pdf",
+            "source_type": "chunk", "validation_status": "tenant_active",
+        }
+
+        with patch("backend.main.Neo4jChatSessionRepository", return_value=session_repo), \
+             patch("backend.main.build_validated_citations", return_value=[citation]) as build_citations, \
+             patch("backend.main.PromptGuard") as MockGuard, \
+             patch("backend.main.OutputGuard") as MockOutputGuard, \
+             patch("backend.main.AuditLogger"), \
+             patch("backend.infrastructure.agent_audit_service.AgentAuditService"):
+            MockGuard.return_value.validate.return_value = MagicMock(is_safe=True, violation_type=None, message=None)
+            MockOutputGuard.return_value.validate.return_value = MagicMock(is_safe=True, violation_type=None, metadata={})
+            events = await self._collect(runner(
+                model="gemini-2.5-flash", prompt="What are the payment terms?", history="[]",
+                llm_mgr=self._fake_llm_mgr_with_full_turn(), tenant_id="tenant_a",
+                chat_session_id=session["session_id"],
+            ))
+
+        self.assertTrue(any('"type": "citations"' in event and "CIT_1" in event for event in events))
+        self.assertEqual(session_repo.list_messages(session["session_id"], "tenant_a")[-1]["citations"], [citation])
+        self.assertEqual(build_citations.call_args.args[1], "tenant_a")
+
     async def test_declined_prompt_is_still_persisted_as_a_visible_turn(self):
         session_repo, graph = _make_shared_repo()
         session = session_repo.create_session("tenant_a", None, "Blocked")

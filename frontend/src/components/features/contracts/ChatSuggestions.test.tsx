@@ -29,7 +29,7 @@ describe('Contract Chat suggestions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.createSession.mockResolvedValue({
-      session_id: 'SESSION_NEW', contract_id: null, title: 'how many SOW contracts?',
+      session_id: 'SESSION_NEW', contract_id: null, title: 'How many SOW contracts?',
       created_at: null, updated_at: null, message_count: 0,
     });
     mocks.fetchEventSource.mockImplementation(async (_url, options) => {
@@ -47,16 +47,16 @@ describe('Contract Chat suggestions', () => {
       </ChatProvider>
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'how many SOW contracts?' }));
+    fireEvent.click(screen.getByRole('button', { name: 'How many SOW contracts?' }));
 
     await waitFor(() => expect(mocks.createSession).toHaveBeenCalledWith(
       null,
-      'how many SOW contracts?'
+      'How many SOW contracts?'
     ));
     await waitFor(() => expect(mocks.fetchEventSource).toHaveBeenCalledTimes(1));
     const request = mocks.fetchEventSource.mock.calls[0][1];
     expect(JSON.parse(request.body)).toMatchObject({
-      prompt: 'how many SOW contracts?',
+      prompt: 'How many SOW contracts?',
       contract_id: null,
       session_id: 'SESSION_NEW',
     });

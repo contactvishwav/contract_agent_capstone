@@ -28,6 +28,9 @@ export function groupStoredMessagesIntoUiMessages(stored: ChatSessionMessage[]):
             messages.push(current);
         }
         current.parts.push({ type: row.role, content: row.content });
+        if (row.role === "ai_message" && row.citations?.length) {
+            current.parts.push({ type: "citations", content: JSON.stringify(row.citations) });
+        }
     }
 
     return messages;

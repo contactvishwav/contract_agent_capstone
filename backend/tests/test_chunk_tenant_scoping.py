@@ -146,7 +146,11 @@ class DocumentUploadChunkingWiringTests(unittest.IsolatedAsyncioTestCase):
         fake_llm_mgr.agents = {"gemini-2.5-flash": MagicMock()}
 
         fake_repo = MagicMock()
-        fake_repo.graph.query.return_value = []  # no duplicate
+        def fake_query(cypher, params=None):
+            if "SET c.source_hash" in cypher:
+                return [{"contract_id": upload_contract_id}]
+            return []  # no duplicate
+        fake_repo.graph.query.side_effect = fake_query
 
         chunking_result = {
             "success": chunking_success,

@@ -184,6 +184,7 @@ def get_contracts(
             total_count: count(c),
             contracts: collect({
                 file_id: c.file_id,
+                filename: c.filename,
                 summary: c.summary,
                 contract_type: c.contract_type,
                 effective_date: c.effective_date,

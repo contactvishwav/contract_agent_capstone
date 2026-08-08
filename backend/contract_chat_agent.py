@@ -8,6 +8,7 @@ from langgraph.graph import START, MessagesState, StateGraph
 # Note: ToolNode import disabled to fix compatibility issues
 # This file may need updates for newer LangGraph versions
 from datetime import date
+import json
 
 # Tools whose _run requires a real, authenticated tenant_id that must never
 # come from the LLM - see the "tenant_id is deliberately NOT a field here"
@@ -178,7 +179,7 @@ def get_agent(llm):
 
                             # Create proper ToolMessage
                             tool_message = ToolMessage(
-                                content=str(result),
+                                content=result if isinstance(result, str) else json.dumps(result, default=str),
                                 tool_call_id=tool_call['id']
                             )
                             tool_messages.append(tool_message)

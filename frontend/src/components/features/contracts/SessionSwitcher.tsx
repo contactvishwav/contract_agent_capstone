@@ -6,6 +6,7 @@ import { useContractHistory } from "../../../contexts/ContractHistoryContext";
 import { useChat } from "./provider";
 import { chatSessionApi, ChatSessionSummary } from "../../../services/chatSessionApi";
 import { groupStoredMessagesIntoUiMessages } from "./sessionMessages";
+import { Check, Pencil, X } from "lucide-react";
 
 // Flat list, sorted most-recently-updated-first (already the order /api/
 // chat/sessions returns), with the contract shown as a badge per row -
@@ -24,11 +25,15 @@ export function SessionSwitcher() {
         refreshSessions,
         selectSession,
         startNewSession,
+        renameSession,
     } = useChatSession();
     const { contracts, setSelectedContract } = useContractHistory();
     const { replaceMessages, reset } = useChat();
     const [loadingId, setLoadingId] = React.useState<string | null>(null);
     const [loadError, setLoadError] = React.useState<string | null>(null);
+    const [editingId, setEditingId] = React.useState<string | null>(null);
+    const [titleDraft, setTitleDraft] = React.useState("");
+    const [renameError, setRenameError] = React.useState<string | null>(null);
     const loadedSessionId = React.useRef<string | null>(null);
 
     const contractLabel = (contractId: string | null) => {
@@ -86,6 +91,32 @@ export function SessionSwitcher() {
         reset();
     };
 
+    const beginRename = (session: ChatSessionSummary) => {
+        setEditingId(session.session_id);
+        setTitleDraft(session.title);
+        setRenameError(null);
+    };
+
+    const cancelRename = () => {
+        setEditingId(null);
+        setTitleDraft("");
+        setRenameError(null);
+    };
+
+    const saveRename = async (sessionId: string) => {
+        const title = titleDraft.trim();
+        if (!title) {
+            setRenameError("Conversation name cannot be blank.");
+            return;
+        }
+        try {
+            await renameSession(sessionId, title);
+            cancelRename();
+        } catch {
+            setRenameError("Could not rename this conversation.");
+        }
+    };
+
     return (
         <div className="w-64 flex-none flex flex-col gap-2 border-r pr-4 overflow-y-auto">
             <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -101,21 +132,44 @@ export function SessionSwitcher() {
                 </div>
             )}
             {loadError && <p className="text-xs text-red-700" role="alert">{loadError}</p>}
-            <div className="flex flex-col gap-1">
+            <div className="flex max-h-[13rem] flex-col gap-1 overflow-y-auto pr-1">
                 {sessions.map((session) => (
-                    <button
-                        key={session.session_id}
-                        onClick={() => handleSelect(session)}
-                        disabled={loadingId === session.session_id}
-                        className={`text-left rounded-md p-2 text-sm hover:bg-muted transition-colors ${
-                            session.session_id === activeSession?.session_id ? "bg-muted" : ""
-                        }`}
-                    >
-                        <div className="truncate font-medium">{session.title}</div>
-                        <Badge variant="secondary" className="mt-1">
-                            {contractLabel(session.contract_id)}
-                        </Badge>
-                    </button>
+                    <div key={session.session_id} className={`rounded-md p-1 ${session.session_id === activeSession?.session_id ? "bg-muted" : ""}`}>
+                        {editingId === session.session_id ? (
+                            <div className="flex items-center gap-1">
+                                <input
+                                    aria-label="Conversation name"
+                                    className="min-w-0 flex-1 rounded border bg-background px-2 py-1 text-sm"
+                                    value={titleDraft}
+                                    maxLength={120}
+                                    autoFocus
+                                    onChange={(event) => setTitleDraft(event.target.value)}
+                                    onKeyDown={(event) => {
+                                        event.stopPropagation();
+                                        if (event.key === "Enter") { event.preventDefault(); void saveRename(session.session_id); }
+                                        if (event.key === "Escape") { event.preventDefault(); cancelRename(); }
+                                    }}
+                                />
+                                <button type="button" aria-label="Save conversation name" onClick={() => void saveRename(session.session_id)}><Check size={16} /></button>
+                                <button type="button" aria-label="Cancel rename" onClick={cancelRename}><X size={16} /></button>
+                            </div>
+                        ) : (
+                            <div className="flex items-start gap-1">
+                                <button
+                                    type="button"
+                                    onClick={() => handleSelect(session)}
+                                    disabled={loadingId === session.session_id}
+                                    className="min-w-0 flex-1 rounded p-1 text-left text-sm hover:bg-muted transition-colors"
+                                >
+                                    <div className="truncate font-medium">{session.title}</div>
+                                    <Badge variant="secondary" className="mt-1">{contractLabel(session.contract_id)}</Badge>
+                                </button>
+                                <button type="button" aria-label={`Rename ${session.title}`} className="rounded p-1 hover:bg-background" onClick={() => beginRename(session)}>
+                                    <Pencil size={14} />
+                                </button>
+                            </div>
+                        )}
+                    </div>
                 ))}
                 {sessions.length === 0 && (
                     <p className="text-xs text-muted-foreground p-2">
@@ -123,6 +177,7 @@ export function SessionSwitcher() {
                     </p>
                 )}
             </div>
+            {renameError && <p className="text-xs text-red-700" role="alert">{renameError}</p>}
         </div>
     );
 }

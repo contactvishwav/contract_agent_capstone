@@ -34,6 +34,7 @@ from backend.governance.rbac import Permission, requires_permission
 from backend.governance.auth import TokenIdentity
 from backend.infrastructure.audit_logger import AuditLogger, AuditEventType
 from backend.infrastructure.chat_session_repository import Neo4jChatSessionRepository
+from backend.application.services.chat_citation_service import build_validated_citations
 
 logger = get_logger(__name__)
 
@@ -427,6 +428,8 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
     
     # Buffer for post-check
     ai_full_content = ""
+    tool_call_names = {}
+    tool_evidence = []
 
     async for message in messages:
         if message[0] == "messages":
@@ -451,6 +454,9 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
             if "assistant" in message[1]:
                 for history_message in message[1]["assistant"]["messages"]:
                     context.append(history_message.model_dump_json())
+                    for tc in (getattr(history_message, "tool_calls", None) or []):
+                        if tc.get("id"):
+                            tool_call_names[tc["id"]] = tc.get("name")
                     if chat_session_repo:
                         # These are the real, final AIMessage.tool_calls -
                         # the authoritative source (not re-parsed SSE
@@ -470,6 +476,13 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
                         context.append(tool_message.model_dump_json())
                     else:
                         context.append(json.dumps(tool_message))
+                    if hasattr(tool_message, "content"):
+                        tool_call_id = getattr(tool_message, "tool_call_id", None)
+                        tool_evidence.append({
+                            "content": _normalize_ai_message_content(tool_message.content),
+                            "tool_call_id": tool_call_id,
+                            "tool_name": tool_call_names.get(tool_call_id),
+                        })
                     if chat_session_repo and hasattr(tool_message, "content"):
                         chat_session_repo.append_message(
                             chat_session_id, tenant_id, role="tool_message",
@@ -545,6 +558,13 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
                     context[i] = json.dumps(msg_data)
                     break
 
+    citations = []
+    if post_check_result.is_safe and tool_evidence:
+        try:
+            citations = build_validated_citations(tool_evidence, tenant_id)
+        except Exception as exc:
+            logger.error(f"Contract Chat citation validation failed ({type(exc).__name__})")
+
     if chat_session_repo:
         # Exactly one final "ai_message" row per request, persisted with
         # the same content the user actually saw - safety-blocked or
@@ -555,7 +575,14 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
         else:
             redacted_content = post_check_result.metadata.get("redacted_content")
             final_ai_content = redacted_content if (redacted_content and redacted_content != ai_full_content) else ai_full_content
-        chat_session_repo.append_message(chat_session_id, tenant_id, role="ai_message", content=final_ai_content, model=model)
+        citation_kwargs = {"citations": citations} if citations else {}
+        chat_session_repo.append_message(
+            chat_session_id, tenant_id, role="ai_message", content=final_ai_content,
+            model=model, **citation_kwargs,
+        )
+
+    if citations:
+        yield f"data: {json.dumps({'content': json.dumps(citations), 'type': 'citations'})}\n\n"
 
     yield f"data: {json.dumps({'content': context, 'type': 'history'})}\n\n"
     yield f"data: {json.dumps({'content': '', 'type': 'end'})}\n\n"

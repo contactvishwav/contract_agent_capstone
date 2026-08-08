@@ -1,4 +1,4 @@
-import React, { KeyboardEvent, useRef } from "react";
+import React, { FormEvent, KeyboardEvent, useRef } from "react";
 import { Textarea } from "../../shared/ui/textarea";
 import {
     Select,
@@ -55,10 +55,10 @@ export function ChatInput() {
         ? (activeSession.contract_id ?? ALL_CONTRACTS_VALUE)
         : (selectedContractId || contracts[0]?.contract_id || ALL_CONTRACTS_VALUE);
 
-    const handleSubmit = async (event: any) => {
+    const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
         event.preventDefault();
         if (submiting) return;
-        const formData = new FormData(event.target);
+        const formData = new FormData(event.currentTarget);
         const model = formData.get("model") as string;
         const prompt = formData.get("prompt") as string;
         const contractIdField = formData.get("contract_id") as string;
@@ -228,10 +228,10 @@ export function ChatInput() {
                             onValueChange={handleContractChange}
                             disabled={Boolean(activeSession)}
                         >
-                            <SelectTrigger className="text-foreground">
+                            <SelectTrigger className="text-foreground" aria-label="Contract scope">
                                 <SelectValue placeholder="Which contract?" />
                             </SelectTrigger>
-                            <SelectContent>
+                            <SelectContent position="popper" sideOffset={4} collisionPadding={12} className="max-h-[8rem]">
                                 <SelectGroup>
                                     <SelectItem value={ALL_CONTRACTS_VALUE}>All contracts</SelectItem>
                                     {contracts.map((c) => (
@@ -247,12 +247,11 @@ export function ChatInput() {
                         )}
                     </div>
                     <Select name="model" defaultValue="gemini-2.5-flash">
-                        <SelectTrigger className=" flex-1 text-foreground">
+                        <SelectTrigger className=" flex-1 text-foreground" aria-label="Model">
                             <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
                             <SelectGroup>
-                                <SelectItem value="gemini-1.5-pro">gemini-1.5-pro</SelectItem>
                                 <SelectItem value="gemini-2.5-flash">gemini-2.5-flash</SelectItem>
                                 <SelectItem value="gpt-4o">gpt-4o</SelectItem>
                             </SelectGroup>
