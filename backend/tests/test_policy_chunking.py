@@ -129,8 +129,8 @@ class ChunkingFactoryPolicyStrategyTests(unittest.TestCase):
         self.assertIn("policy", available)
 
 
-class PolicyChunkingAgentTests(unittest.TestCase):
-    def test_execute_chunks_and_stores_a_real_policy_document(self):
+class PolicyChunkingAgentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_execute_chunks_and_stores_a_real_policy_document(self):
         agent = PolicyChunkingAgent()
         agent.storage_service.store_chunks = AsyncMock(return_value={"chunks_stored": 3})
 
@@ -143,23 +143,79 @@ class PolicyChunkingAgentTests(unittest.TestCase):
             workflow_context=None,
         )
 
-        result = agent.execute(context)
+        result = await agent.execute(context)
 
         self.assertEqual(result.status, "success")
         self.assertGreater(result.data["chunks_created"], 0)
         self.assertTrue(result.data["document_id"].startswith("policy_tenant_a_"))
         agent.storage_service.store_chunks.assert_awaited_once()
 
-    def test_execute_reports_error_status_on_missing_required_field(self):
+    async def test_execute_reports_error_status_on_missing_required_field(self):
         agent = PolicyChunkingAgent()
 
         # No tenant_id in input_data.
         context = AgentContext(input_data={"policy_text": SAMPLE_POLICY}, workflow_context=None)
 
-        result = agent.execute(context)
+        result = await agent.execute(context)
 
         self.assertEqual(result.status, "error")
         self.assertIn("error", result.data)
+
+
+class PolicyChunkingAgentRunningEventLoopRegressionTests(unittest.IsolatedAsyncioTestCase):
+    """Regression test for a real production bug, confirmed live: POST
+    /api/policies/upload failed 100% of the time. PolicyChunkingAgent.execute
+    used to be a sync `def` that called asyncio.run(self.storage_service.
+    store_chunks(...)) internally - but its only real caller,
+    PolicyWorkflowOrchestrator.process_policy_document, is itself async
+    and already has a running event loop by the time it calls execute(),
+    so asyncio.run() raised RuntimeError every time, silently swallowed
+    into a generic "Policy processing failed" response. The tests above
+    never caught this because IsolatedAsyncioTestCase's setup previously
+    ran execute() synchronously with no event loop running - this test
+    specifically drives execute() through PolicyWorkflowOrchestrator's
+    real, already-running event loop, the actual failure mode."""
+
+    async def test_orchestrator_runs_policy_chunking_agent_without_raising(self):
+        from backend.agents.policy_workflow_orchestrator import PolicyWorkflowOrchestrator
+
+        with patch("langchain_neo4j.Neo4jGraph"), \
+             patch("backend.shared.utils.gemini_embedding_service.embedding"):
+            orchestrator = PolicyWorkflowOrchestrator()
+
+        chunking_agent = orchestrator.registry.get_agent("policy_chunking")
+        chunking_agent.storage_service.store_chunks = AsyncMock(
+            return_value={"chunks_stored": 3}
+        )
+
+        # PolicyExtractionAgent.execute constructs its own local
+        # ChunkingStorageService() rather than storing one on self, so it
+        # must be patched at the class level, not via the instance.
+        get_chunks_patch = patch(
+            "backend.infrastructure.chunking.storage_service.ChunkingStorageService.get_chunks",
+            AsyncMock(return_value=[]),
+        )
+        get_chunks_mock = get_chunks_patch.start()
+        self.addCleanup(get_chunks_patch.stop)
+
+        # This call is already inside this test's running event loop
+        # (IsolatedAsyncioTestCase) - exactly like the real FastAPI route -
+        # so it reproduces the RuntimeError pre-fix, and must succeed post-fix.
+        result = await orchestrator.process_policy_document(
+            {
+                "policy_text": SAMPLE_POLICY,
+                "tenant_id": "tenant_a",
+                "policy_name": "Test Liability Policy",
+            }
+        )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["steps"][0]["agent_id"], "policy_chunking")
+        self.assertEqual(result["steps"][0]["status"], "success")
+        self.assertEqual(result["steps"][1]["agent_id"], "policy_extraction")
+        self.assertEqual(result["steps"][1]["status"], "success")
+        chunking_agent.storage_service.store_chunks.assert_awaited_once()
+        get_chunks_mock.assert_awaited_once()
 
 
 if __name__ == "__main__":

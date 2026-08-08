@@ -1,6 +1,5 @@
 """Policy agents extending existing infrastructure."""
 
-import asyncio
 import uuid
 from typing import Dict, Any, List
 from backend.agents.supervisor.interfaces import IAgent, AgentContext, AgentResult
@@ -17,25 +16,37 @@ class PolicyChunkingAgent(IAgent):
         self.chunking_factory = ChunkingFactory()
         self.storage_service = ChunkingStorageService()
     
-    def execute(self, context: AgentContext) -> AgentResult:
-        """Execute policy document chunking."""
+    async def execute(self, context: AgentContext) -> AgentResult:
+        """Execute policy document chunking.
+
+        Real, confirmed bug: this used to be a sync `def` that called
+        `asyncio.run(self.storage_service.store_chunks(...))` internally.
+        The only real caller, PolicyWorkflowOrchestrator.process_policy_document
+        (policy_workflow_orchestrator.py), is itself `async def` and was
+        already inside a running event loop by the time it reached this
+        call - `asyncio.run()` cannot be called from within a running
+        loop and raised RuntimeError every single time, silently caught
+        by the except block below and reported as a generic
+        "Policy processing failed", so POST /api/policies/upload never
+        worked. IAgent.execute's ABC declares a sync signature, but
+        Python doesn't enforce that at runtime, and the one real call
+        site now awaits this directly - see orchestrator.py.
+        """
         try:
             policy_text = context.input_data['policy_text']
             tenant_id = context.input_data['tenant_id']
             policy_name = context.input_data.get('policy_name', 'Unknown Policy')
-            
+
             # Use existing policy chunking strategy
             strategy = self.chunking_factory.create_strategy('policy')
             chunks = strategy.chunk_document(policy_text, {'document_type': 'policy'})
-            
+
             # Store using existing infrastructure
             document_id = f"policy_{tenant_id}_{uuid.uuid4().hex[:8]}"
-            
-            # Use existing async storage (convert to sync for now)
-            import asyncio
-            result = asyncio.run(self.storage_service.store_chunks(
+
+            result = await self.storage_service.store_chunks(
                 document_id, chunks, {'policy_name': policy_name, 'tenant_id': tenant_id}
-            ))
+            )
             
             return AgentResult(
                 status='success',
@@ -61,15 +72,20 @@ class PolicyChunkingAgent(IAgent):
 class PolicyExtractionAgent(IAgent):
     """Extends existing clause extraction for policy rules."""
     
-    def execute(self, context: AgentContext) -> AgentResult:
-        """Extract policy rules from chunks."""
+    async def execute(self, context: AgentContext) -> AgentResult:
+        """Extract policy rules from chunks.
+
+        Same asyncio.run()-inside-a-running-loop bug as
+        PolicyChunkingAgent.execute above, same fix - see that
+        docstring for the full explanation.
+        """
         try:
             document_id = context.input_data['document_id']
             tenant_id = context.input_data['tenant_id']
-            
+
             # Get chunks using existing storage service
             storage_service = ChunkingStorageService()
-            chunks = asyncio.run(storage_service.get_chunks(document_id))
+            chunks = await storage_service.get_chunks(document_id)
             
             # Extract policy rules from chunks
             policy_rules = []
@@ -92,6 +108,16 @@ class PolicyExtractionAgent(IAgent):
             return AgentResult(
                 status='success',
                 data={
+                    # document_id carried forward (not just consumed) - a
+                    # real, confirmed bug found live: PolicyWorkflowOrchestrator.
+                    # process_policy_document's final_result is just the LAST
+                    # step's .data, and this step's data previously had no
+                    # document_id of its own, so PolicyService.
+                    # upload_and_process_policy's `processing_result
+                    # ['final_result'].get('document_id')` always resolved to
+                    # None on a successful upload - the response reported
+                    # success with an unusable policy_id.
+                    'document_id': document_id,
                     'rules_extracted': len(policy_rules),
                     'policy_rules': [rule.__dict__ for rule in policy_rules]
                 },
@@ -158,14 +184,17 @@ class PolicyComplianceAgent(IAgent):
         try:
             from backend.agents.policy_rule_resolver import get_applicable_rules
             from backend.agents.policy_evaluation_service import PolicyEvaluationService
-            from backend.agents.llm_extraction_service import get_default_llm
 
             tenant_id = context.input_data['tenant_id']
             contract_clauses = context.input_data['clauses']
             contract_type = context.input_data.get('contract_type', 'general')
 
             applicable_rules = get_applicable_rules(tenant_id, contract_type)
-            evaluation_service = PolicyEvaluationService(get_default_llm())
+            # Real multi-provider fallback (backend/agents/
+            # llm_fallback_service.py) instead of eagerly resolving
+            # get_default_llm() (Gemini-only) - see intelligence_tools.py's
+            # PolicyCheckerTool/ClauseDetectorTool for the identical pattern.
+            evaluation_service = PolicyEvaluationService(use_fallback=True)
 
             violations = []
             for clause in contract_clauses:

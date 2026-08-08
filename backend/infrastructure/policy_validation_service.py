@@ -3,7 +3,11 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional
 from backend.agents.supervisor.interfaces import ValidationResult
-from backend.infrastructure.content_validator import ContentValidationService
+from backend.infrastructure.content_validator import (
+    ContentQualityValidator,
+    SecurityValidator,
+    ValidationSeverity,
+)
 from backend.domain.policies.entities import PolicyDocument, PolicyRule
 
 
@@ -68,29 +72,52 @@ class PolicyStructureValidator(PolicyValidator):
 
 
 class PolicyContentValidator(PolicyValidator):
-    """Validates policy content using existing content validation."""
-    
+    """Validates policy content quality (length, garbled text, PII).
+
+    Real, confirmed bug found live while verifying the asyncio.run() fix
+    above: this used to call ContentValidationService.validate_file_upload(
+    {'content': ..., 'file_type': 'policy', 'tenant_id': ...}) -
+    validate_file_upload's own docstring says "filename, size only", and
+    its FileTypeValidator unconditionally requires a `.pdf` filename
+    (data.get("filename", "")) that this code never had to give it (a
+    policy upload here is raw text + tenant_id, not a file with a real
+    filename) - so it always failed with "Invalid file type. Allowed:
+    .pdf" against an empty filename, for every policy document,
+    regardless of content. This was itself masked by a second,
+    independent bug: `validation_result.get('valid', False)` checked a
+    key named 'valid', but validate_file_upload() actually returns the
+    key 'is_valid' - so this branch always fell through to the `False`
+    default anyway, even on the rare case the file-type check might not
+    have fired. Net effect: policy content validation failed 100% of the
+    time, for every document. Fixed by validating the actual text content
+    directly - ContentQualityValidator (length/garbled-text) and
+    SecurityValidator (PII, via the same PIIEngine the chat path uses),
+    neither of which need a filename - instead of a file-metadata
+    validator that was never given file metadata.
+    """
+
     def __init__(self):
         super().__init__()
-        self.content_validator = ContentValidationService()
-    
+        self.quality_validator = ContentQualityValidator(min_length=100)
+        self.security_validator = SecurityValidator()
+
     def _validate(self, policy_data: Dict[str, Any]) -> ValidationResult:
         """Validate policy content quality."""
         policy_text = policy_data['policy_text']
-        
-        # Use existing content validation patterns
-        validation_result = self.content_validator.validate_file_upload({
-            'content': policy_text,
-            'file_type': 'policy',
-            'tenant_id': policy_data['tenant_id']
-        })
-        
-        if not validation_result.get('valid', False):
+        content_data = {'full_text': policy_text}
+
+        results = self.quality_validator.validate(content_data) + self.security_validator.validate(content_data)
+        blocking = [
+            r for r in results
+            if not r.is_valid and r.severity in (ValidationSeverity.ERROR, ValidationSeverity.CRITICAL)
+        ]
+
+        if blocking:
             return ValidationResult(
                 passed=False,
                 score=0.4,
-                message=f"Content validation failed: {validation_result.get('message', 'Unknown error')}",
-                details=validation_result
+                message=f"Content validation failed: {'; '.join(r.message for r in blocking)}",
+                details={'results': [r.to_dict() for r in results]}
             )
         
         # Check for policy-specific patterns
@@ -157,15 +184,27 @@ class PolicyRuleValidator(PolicyValidator):
 
 class PolicyValidationService:
     """Service for validating policies using Chain of Responsibility."""
-    
+
     def __init__(self):
         # Build validation chain
         self.structure_validator = PolicyStructureValidator()
         self.content_validator = PolicyContentValidator()
         self.rule_validator = PolicyRuleValidator()
-        
-        # Chain validators
-        self.structure_validator.set_next(self.content_validator).set_next(self.rule_validator)
+
+        # Chain validators. rule_validator is deliberately NOT chained here -
+        # it validates extracted_rules, which only exists after rule
+        # extraction has already happened (see validate_policy_rules below,
+        # the only real usage - PolicyRuleValidator.validate is a separate,
+        # standalone entry point). A real, confirmed bug found live during
+        # production verification: this used to chain structure -> content
+        # -> rule together, so validate_policy_upload (called once, before
+        # any extraction has run) always cascaded into rule_validator with
+        # an empty extracted_rules, unconditionally failing with "No policy
+        # rules could be extracted" - invisible until just now because
+        # PolicyContentValidator itself always failed first (see its own
+        # docstring), so the chain never actually reached rule_validator
+        # until that bug was fixed.
+        self.structure_validator.set_next(self.content_validator)
     
     def validate_policy_upload(self, policy_data: Dict[str, Any]) -> ValidationResult:
         """Validate policy for upload."""

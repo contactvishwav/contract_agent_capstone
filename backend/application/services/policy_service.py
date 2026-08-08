@@ -6,6 +6,7 @@ from backend.infrastructure.policy_repository import PolicyRepository
 from backend.infrastructure.policy_cache_service import PolicyCacheService
 from backend.infrastructure.policy_validation_service import PolicyValidationService
 from backend.infrastructure.policy_audit_service import PolicyAuditService
+from backend.infrastructure.error_tracker import ErrorCategory, ErrorContext, ErrorSeverity
 from backend.agents.policy_workflow_orchestrator import PolicyWorkflowOrchestrator
 
 
@@ -26,9 +27,14 @@ class PolicyService:
             validation_result = self.validation_service.validate_policy_upload(policy_data)
             if not validation_result.passed:
                 self.audit_service.error_tracker.track_error(
-                    error_type="policy_validation_error",
-                    error_message=validation_result.message,
-                    context=policy_data
+                    error=ValueError(validation_result.message),
+                    category=ErrorCategory.VALIDATION_ERROR,
+                    severity=ErrorSeverity.LOW,
+                    context=ErrorContext(
+                        operation="policy_upload_validation",
+                        tenant_id=policy_data.get('tenant_id'),
+                        metadata={'policy_name': policy_data.get('policy_name')},
+                    ),
                 )
                 return {
                     'success': False,
@@ -74,9 +80,14 @@ class PolicyService:
             
         except Exception as e:
             self.audit_service.error_tracker.track_error(
-                error_type="policy_service_error",
-                error_message=str(e),
-                context=policy_data
+                error=e,
+                category=ErrorCategory.PROCESSING_ERROR,
+                severity=ErrorSeverity.HIGH,
+                context=ErrorContext(
+                    operation="policy_upload_processing",
+                    tenant_id=policy_data.get('tenant_id'),
+                    metadata={'policy_name': policy_data.get('policy_name')},
+                ),
             )
             return {
                 'success': False,

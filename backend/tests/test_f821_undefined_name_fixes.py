@@ -81,11 +81,24 @@ class PolicyAuditServiceTests(unittest.TestCase):
 
 
 class PolicyAgentsAsyncioImportTests(unittest.TestCase):
-    def test_asyncio_module_is_imported_in_policy_agents(self):
-        # Import chain here pulls in a module-level Neo4jGraph singleton
-        # (contract_search_tool.py), so this checks the source directly
-        # rather than importing, matching this suite's other config-parsing
-        # style regression tests.
+    def test_asyncio_name_is_never_referenced_without_an_import(self):
+        # This originally asserted `import asyncio` was present, guarding
+        # the historical bug: `asyncio.run(...)` referenced without an
+        # import (F821 NameError). That specific asyncio.run() call was
+        # later found to be a second, independent bug of its own -
+        # PolicyChunkingAgent/PolicyExtractionAgent.execute() are the
+        # only real callers reached from a route that's already inside a
+        # running event loop, so `asyncio.run()` there raised RuntimeError
+        # every time (see test_policy_chunking.py's
+        # PolicyChunkingAgentRunningEventLoopRegressionTests). The real
+        # fix made both execute() methods `async def` and awaited the
+        # already-async storage calls directly - asyncio.run() and the
+        # asyncio import are both gone now, not reintroduced. Asserting
+        # "asyncio is imported" would just pin the old, buggy shape back
+        # in place, so this now asserts the actual invariant that
+        # matters: if `asyncio` is ever referenced as a bare name again,
+        # it must be backed by a real import (no F821), without requiring
+        # the import to exist when nothing in the file uses it.
         path = os.path.join(
             os.path.dirname(__file__), "..", "agents", "policy_agents.py"
         )
@@ -97,7 +110,12 @@ class PolicyAgentsAsyncioImportTests(unittest.TestCase):
             if isinstance(node, ast.Import)
             for alias in node.names
         }
-        self.assertIn("asyncio", imported_names)
+        asyncio_referenced = any(
+            isinstance(node, ast.Name) and node.id == "asyncio"
+            for node in ast.walk(tree)
+        )
+        if asyncio_referenced:
+            self.assertIn("asyncio", imported_names)
 
 
 if __name__ == "__main__":

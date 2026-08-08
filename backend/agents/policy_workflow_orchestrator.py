@@ -66,7 +66,7 @@ class PolicyWorkflowOrchestrator:
             )
             
             agent = self.registry.get_agent(step['agent_id'])
-            result = agent.execute(context)
+            result = await agent.execute(context)
             
             results.append({
                 'agent_id': step['agent_id'],
