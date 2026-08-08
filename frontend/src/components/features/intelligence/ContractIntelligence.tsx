@@ -47,6 +47,12 @@ interface ContractIntelligenceProps {
   onAnalysisComplete?: (contractId: string, riskScore?: number, riskLevel?: string, results?: IntelligenceResults) => void;
 }
 
+interface ExecutionIdentity {
+  executionPath: string;
+  plannedExecution: boolean | null;
+  modelUsed: string;
+}
+
 const TASK_POLL_INTERVAL_MS = 1500;
 const TASK_POLL_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -83,12 +89,14 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [networkError, setNetworkError] = useState(false);
+  const [executionIdentity, setExecutionIdentity] = useState<ExecutionIdentity | null>(null);
   const { openModal, closeModal, isOpen } = useModal();
 
   const analyzeContract = async () => {
     setLoading(true);
     setError(null);
     setNetworkError(false);
+    setExecutionIdentity(null);
     
     // Start polling for workflow status
     const pollWorkflow = setInterval(async () => {
@@ -130,6 +138,11 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
       }
 
       setResults(data.results);
+      setExecutionIdentity({
+        executionPath: data.execution_path || 'unknown',
+        plannedExecution: data.planned_execution ?? null,
+        modelUsed: data.model_used || model,
+      });
 
       // Report analysis completion with full results
       if (data.results?.risk_assessment) {
@@ -229,6 +242,19 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
         <div>
           <h3 className="text-lg font-semibold text-slate-800">AI Analysis</h3>
           <p className="text-sm text-slate-600">Contract {contractId}</p>
+          {executionIdentity && (
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-600">
+              <Badge variant="secondary">
+                {executionIdentity.executionPath === 'plan_execution_engine'
+                  ? 'PlanExecutionEngine'
+                  : executionIdentity.executionPath}
+              </Badge>
+              <span>Model: {executionIdentity.modelUsed}</span>
+              {executionIdentity.plannedExecution === false && (
+                <Badge className="bg-yellow-100 text-yellow-800">Fallback/traditional path</Badge>
+              )}
+            </div>
+          )}
         </div>
         <Button 
           onClick={analyzeContract} 

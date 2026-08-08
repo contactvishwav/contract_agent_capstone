@@ -3,7 +3,7 @@ import { useChat } from "./provider";
 import { ChatMessage } from "./message";
 
 export function ChatOutput() {
-    const { messages } = useChat();
+    const { messages, requestPrompt } = useChat();
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -23,12 +23,24 @@ export function ChatOutput() {
                             <div className="text-left bg-slate-50 rounded-lg p-4">
                                 <p className="text-sm font-medium text-slate-700 mb-2">Try these sample queries:</p>
                                 <ul className="text-sm text-slate-600 space-y-1">
-                                    <li>• how many SOW contracts? </li>
-                                    <li>• how many total active contracts? </li>
-                                    <li>• List all the contract types</li>
-                                    <li>• Display the summary of all the contracts that have monetary value of 50k </li>
-                                    <li>• who are the parties of SOW contracts?</li>
-                                    <li>• Show me all relationships between parties in SOW contracts - who works with whom?</li>
+                                    {[
+                                        'how many SOW contracts?',
+                                        'how many total active contracts?',
+                                        'List all the contract types',
+                                        'Display the summary of all the contracts that have monetary value of 50k',
+                                        'who are the parties of SOW contracts?',
+                                        'Show me all relationships between parties in SOW contracts - who works with whom?',
+                                    ].map((query) => (
+                                        <li key={query}>
+                                            <button
+                                                type="button"
+                                                className="w-full rounded px-2 py-1 text-left hover:bg-slate-100 hover:text-slate-900"
+                                                onClick={() => requestPrompt(query)}
+                                            >
+                                                {query}
+                                            </button>
+                                        </li>
+                                    ))}
                                 </ul>
                             </div>
                         </div>

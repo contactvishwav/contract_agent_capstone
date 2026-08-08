@@ -16,10 +16,20 @@ import { groupStoredMessagesIntoUiMessages } from "./sessionMessages";
 // count; a badge already answers "which contract is this about" at a
 // glance without it.
 export function SessionSwitcher() {
-    const { sessions, activeSession, selectSession, startNewSession } = useChatSession();
+    const {
+        sessions,
+        activeSession,
+        isLoadingSessions,
+        sessionListError,
+        refreshSessions,
+        selectSession,
+        startNewSession,
+    } = useChatSession();
     const { contracts, setSelectedContract } = useContractHistory();
     const { replaceMessages, reset } = useChat();
     const [loadingId, setLoadingId] = React.useState<string | null>(null);
+    const [loadError, setLoadError] = React.useState<string | null>(null);
+    const loadedSessionId = React.useRef<string | null>(null);
 
     const contractLabel = (contractId: string | null) => {
         if (!contractId) {
@@ -28,11 +38,9 @@ export function SessionSwitcher() {
         return contracts.find((c) => c.contract_id === contractId)?.filename || contractId;
     };
 
-    const handleSelect = async (session: ChatSessionSummary) => {
-        if (session.session_id === activeSession?.session_id) {
-            return;
-        }
+    const loadSession = React.useCallback(async (session: ChatSessionSummary) => {
         setLoadingId(session.session_id);
+        setLoadError(null);
         try {
             const detail = await chatSessionApi.getSessionDetail(session.session_id);
             selectSession(session);
@@ -41,24 +49,49 @@ export function SessionSwitcher() {
             // as authoritative, including explicit null for All Contracts.
             setSelectedContract(detail.contract_id);
             replaceMessages(groupStoredMessagesIntoUiMessages(detail.messages));
-        } catch (e) {
-            // Leave the previous conversation on screen rather than
-            // clearing it out from under the user on a transient failure.
+            loadedSessionId.current = session.session_id;
+        } catch {
+            setLoadError('Could not load this conversation. Try again.');
         } finally {
             setLoadingId(null);
         }
+    }, [replaceMessages, selectSession, setSelectedContract]);
+
+    React.useEffect(() => {
+        if (activeSession && loadedSessionId.current !== activeSession.session_id) {
+            loadSession(activeSession);
+        }
+    }, [activeSession, loadSession]);
+
+    const handleSelect = async (session: ChatSessionSummary) => {
+        // Deliberately reload even when this is already active. A refresh
+        // restores metadata first; the persisted messages still have to be
+        // fetched, and a retry must never be short-circuited as a no-op.
+        await loadSession(session);
     };
 
     const handleNewChat = () => {
         startNewSession();
+        loadedSessionId.current = null;
+        setLoadError(null);
         reset();
     };
 
     return (
         <div className="w-64 flex-none flex flex-col gap-2 border-r pr-4 overflow-y-auto">
+            <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Conversations
+            </div>
             <Button variant="outline" onClick={handleNewChat} className="w-full">
                 New chat
             </Button>
+            {sessionListError && (
+                <div className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700" role="alert">
+                    {sessionListError}{' '}
+                    <button className="underline" onClick={() => refreshSessions()}>Retry</button>
+                </div>
+            )}
+            {loadError && <p className="text-xs text-red-700" role="alert">{loadError}</p>}
             <div className="flex flex-col gap-1">
                 {sessions.map((session) => (
                     <button
@@ -76,7 +109,9 @@ export function SessionSwitcher() {
                     </button>
                 ))}
                 {sessions.length === 0 && (
-                    <p className="text-xs text-muted-foreground p-2">No conversations yet.</p>
+                    <p className="text-xs text-muted-foreground p-2">
+                        {isLoadingSessions ? 'Loading conversations…' : 'No conversations yet.'}
+                    </p>
                 )}
             </div>
         </div>

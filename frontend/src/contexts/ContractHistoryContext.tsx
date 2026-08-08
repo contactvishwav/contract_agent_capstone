@@ -1,6 +1,8 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { useAuth } from './AuthContext';
+import { listContracts } from '../services/contractApi';
 
-interface ContractRecord {
+export interface ContractRecord {
   contract_id: string;
   filename: string;
   upload_date: string;
@@ -8,7 +10,7 @@ interface ContractRecord {
   analysis_completed: boolean;
   risk_score?: number;
   risk_level?: string;
-  analysis_results?: any; // Cache analysis results
+  analysis_results?: unknown;
 }
 
 interface ContractHistoryContextType {
@@ -23,81 +25,102 @@ interface ContractHistoryContextType {
 
 const ContractHistoryContext = createContext<ContractHistoryContextType | undefined>(undefined);
 
+const isContractRecord = (value: unknown): value is ContractRecord => {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<ContractRecord>;
+  return Boolean(
+    record.contract_id &&
+    record.filename &&
+    record.upload_date &&
+    record.model_used !== undefined &&
+    record.analysis_completed !== undefined
+  );
+};
+
 export const ContractHistoryProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { session } = useAuth();
+  const tenantId = session?.tenantId ?? null;
+  const storageKey = useMemo(
+    () => (tenantId ? `contract_history:${tenantId}` : null),
+    [tenantId]
+  );
   const [contracts, setContracts] = useState<ContractRecord[]>([]);
   const [selectedContractId, setSelectedContractId] = useState<string | null>(null);
+  const [storageReadyKey, setStorageReadyKey] = useState<string | null>(null);
 
-  // Load from localStorage on mount with validation
   useEffect(() => {
-    const saved = localStorage.getItem('contract_history');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        // Validate contract data structure
-        const validContracts = parsed.filter((contract: any) =>
-          contract.contract_id &&
-          contract.filename &&
-          contract.upload_date &&
-          contract.model_used !== undefined &&
-          contract.analysis_completed !== undefined
-        );
-        setContracts(validContracts);
+    let cancelled = false;
+    setContracts([]);
+    setSelectedContractId(null);
+    setStorageReadyKey(null);
+    if (!storageKey) return () => { cancelled = true; };
 
-        // Clean up localStorage if we filtered out invalid contracts
-        if (validContracts.length !== parsed.length) {
-          localStorage.setItem('contract_history', JSON.stringify(validContracts));
-        }
-      } catch (e) {
-        // removed console error
-        localStorage.removeItem('contract_history'); // Clear corrupted data
-      }
+    let cached: ContractRecord[] = [];
+    try {
+      const saved = localStorage.getItem(storageKey);
+      const parsed = saved ? JSON.parse(saved) : [];
+      cached = Array.isArray(parsed) ? parsed.filter(isContractRecord) : [];
+    } catch {
+      localStorage.removeItem(storageKey);
     }
+    setContracts(cached);
+    setStorageReadyKey(storageKey);
+
+    listContracts()
+      .then((serverContracts) => {
+        if (cancelled) return;
+        setContracts((current) => serverContracts.map((server) => {
+          const local = current.find((item) => item.contract_id === server.contract_id);
+          return {
+            contract_id: server.contract_id,
+            filename: server.filename,
+            upload_date: server.upload_date || new Date(0).toISOString(),
+            model_used: server.model_used,
+            analysis_completed: server.analysis_completed,
+            risk_score: server.risk_score ?? undefined,
+            risk_level: server.risk_level ?? undefined,
+            analysis_results: local?.analysis_results,
+          };
+        }));
+      })
+      .catch(() => {
+        // The authenticated server list is authoritative when available;
+        // an outage leaves the tenant-scoped cache usable, never another
+        // tenant's global browser history.
+      });
+
+    return () => { cancelled = true; };
+  }, [storageKey]);
+
+  useEffect(() => {
+    if (!storageKey || storageReadyKey !== storageKey) return;
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(contracts));
+    } catch {
+      if (contracts.length > 10) setContracts(contracts.slice(0, 10));
+    }
+  }, [contracts, storageKey, storageReadyKey]);
+
+  const addContract = useCallback((contract: ContractRecord) => {
+    setContracts((current) => [contract, ...current.filter((item) => item.contract_id !== contract.contract_id)]);
   }, []);
 
-  // Save to localStorage whenever contracts change with error handling
-  useEffect(() => {
-    try {
-      localStorage.setItem('contract_history', JSON.stringify(contracts));
-    } catch (e) {
-      // removed console error
-      // If localStorage is full, remove oldest contracts
-      if (contracts.length > 10) {
-        const trimmed = contracts.slice(0, 10);
-        setContracts(trimmed);
-      }
-    }
-  }, [contracts]);
+  const updateContract = useCallback((contractId: string, updates: Partial<ContractRecord>) => {
+    setContracts((current) => current.map((contract) =>
+      contract.contract_id === contractId ? { ...contract, ...updates } : contract
+    ));
+  }, []);
 
-  const addContract = (contract: ContractRecord) => {
-    setContracts(prev => {
-      // Remove existing contract with same ID if it exists
-      const filtered = prev.filter(c => c.contract_id !== contract.contract_id);
-      return [contract, ...filtered]; // Add new contract at the beginning
-    });
-  };
+  const getContract = useCallback(
+    (contractId: string) => contracts.find((contract) => contract.contract_id === contractId),
+    [contracts]
+  );
 
-  const updateContract = (contract_id: string, updates: Partial<ContractRecord>) => {
-    setContracts(prev =>
-      prev.map(contract =>
-        contract.contract_id === contract_id
-          ? { ...contract, ...updates }
-          : contract
-      )
-    );
-  };
-
-  const setSelectedContract = (contract_id: string | null) => {
-    setSelectedContractId(contract_id);
-  };
-
-  const getContract = (contract_id: string) => {
-    return contracts.find(c => c.contract_id === contract_id);
-  };
-
-  const clearHistory = () => {
+  const clearHistory = useCallback(() => {
     setContracts([]);
-    localStorage.removeItem('contract_history');
-  };
+    setSelectedContractId(null);
+    if (storageKey) localStorage.removeItem(storageKey);
+  }, [storageKey]);
 
   return (
     <ContractHistoryContext.Provider value={{
@@ -107,7 +130,7 @@ export const ContractHistoryProvider: React.FC<{ children: React.ReactNode }> = 
       getContract,
       clearHistory,
       selectedContractId,
-      setSelectedContract
+      setSelectedContract: setSelectedContractId,
     }}>
       {children}
     </ContractHistoryContext.Provider>
@@ -116,8 +139,6 @@ export const ContractHistoryProvider: React.FC<{ children: React.ReactNode }> = 
 
 export const useContractHistory = () => {
   const context = useContext(ContractHistoryContext);
-  if (!context) {
-    throw new Error('useContractHistory must be used within ContractHistoryProvider');
-  }
+  if (!context) throw new Error('useContractHistory must be used within ContractHistoryProvider');
   return context;
 };

@@ -28,8 +28,19 @@ const ALL_CONTRACTS_VALUE = "__all_contracts__";
 
 export function ChatInput() {
     const [submiting, setSubmiting] = React.useState(false);
-    const { addMessage, addMessagePart, updateMessageGenerating, reset } = useChat();
+    const [promptValue, setPromptValue] = React.useState('');
+    const [pendingAutoSubmitId, setPendingAutoSubmitId] = React.useState<number | null>(null);
+    const {
+        addMessage,
+        addMessagePart,
+        updateMessageGenerating,
+        reset,
+        promptRequest,
+        consumePromptRequest,
+    } = useChat();
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const formRef = useRef<HTMLFormElement>(null);
+    const requestController = useRef<AbortController | null>(null);
     const { contracts, selectedContractId, setSelectedContract } = useContractHistory();
     const { activeSession, createSession } = useChatSession();
 
@@ -46,22 +57,31 @@ export function ChatInput() {
 
     const handleSubmit = async (event: any) => {
         event.preventDefault();
+        if (submiting) return;
         const formData = new FormData(event.target);
         const model = formData.get("model") as string;
         const prompt = formData.get("prompt") as string;
         const contractIdField = formData.get("contract_id") as string;
-        const contract_id = contractIdField && contractIdField !== ALL_CONTRACTS_VALUE ? contractIdField : null;
+        const selectedScope = contractIdField && contractIdField !== ALL_CONTRACTS_VALUE ? contractIdField : null;
+        const contract_id = activeSession ? activeSession.contract_id : selectedScope;
 
         if (!prompt.trim()) {
             return;
         }
 
+        setSubmiting(true);
+
         // Lazy session creation: "New chat" doesn't POST until the first
         // real message actually sends, so an unused click never leaves an
         // empty thread in the switcher.
         let session = activeSession;
-        if (!session) {
-            session = await createSession(contract_id);
+        try {
+            if (!session) {
+                session = await createSession(contract_id, prompt.trim().slice(0, 72));
+            }
+        } catch {
+            setSubmiting(false);
+            return;
         }
 
         const userMessage: Message = {
@@ -83,9 +103,12 @@ export function ChatInput() {
         // removed console log
 
         // Clear the form after submission
-        event.target.reset();
+        setPromptValue('');
 
         const auth = authHeader();
+        requestController.current?.abort();
+        const controller = new AbortController();
+        requestController.current = controller;
         await fetchEventSource('/api/run/', {
             method: 'POST',
             headers: {
@@ -93,6 +116,7 @@ export function ChatInput() {
                 ...(auth ? { Authorization: auth } : {}),
             },
             body: JSON.stringify({ model, prompt, contract_id, session_id: session.session_id }),
+            signal: controller.signal,
             onmessage(event) {
                 const data: MessagePart = JSON.parse(event.data);
 
@@ -115,13 +139,14 @@ export function ChatInput() {
                     clearSession();
                     throw new Error('Session expired - please sign in again');
                 }
-                setSubmiting(true);
             },
             onclose() {
                 setSubmiting(false);
+                requestController.current = null;
             },
             onerror() {
                 setSubmiting(false);
+                requestController.current = null;
                 // removed console error
                 addMessagePart(aiMessage.id, { type: "ai_message", content: "Error: Failed to generate the response." });
                 updateMessageGenerating(aiMessage.id, false);
@@ -132,10 +157,11 @@ export function ChatInput() {
 
     const handleClear = (event: MouseEvent) => {
         event.preventDefault();
+        requestController.current?.abort();
+        requestController.current = null;
+        setSubmiting(false);
         reset();
-        if (textareaRef.current) {
-            textareaRef.current.value = "";
-        }
+        setPromptValue('');
     };
 
     const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -156,6 +182,26 @@ export function ChatInput() {
         setContractSelection(effectiveContractId);
     }, [effectiveContractId]);
 
+    React.useEffect(() => {
+        if (!promptRequest || submiting) return;
+        setPromptValue(promptRequest.prompt);
+        setPendingAutoSubmitId(promptRequest.id);
+    }, [promptRequest, submiting]);
+
+    React.useEffect(() => {
+        if (
+            pendingAutoSubmitId === null ||
+            promptRequest?.id !== pendingAutoSubmitId ||
+            promptValue !== promptRequest.prompt ||
+            submiting
+        ) return;
+        consumePromptRequest(pendingAutoSubmitId);
+        setPendingAutoSubmitId(null);
+        formRef.current?.requestSubmit();
+    }, [consumePromptRequest, pendingAutoSubmitId, promptRequest, promptValue, submiting]);
+
+    React.useEffect(() => () => requestController.current?.abort(), []);
+
     const handleContractChange = (value: string) => {
         setContractSelection(value);
         setSelectedContract(value === ALL_CONTRACTS_VALUE ? null : value);
@@ -163,30 +209,43 @@ export function ChatInput() {
 
     return (
         <div className="flex-0">
-            <form className="flex flex-col gap-2 relative" onSubmit={handleSubmit}>
+            <form ref={formRef} className="flex flex-col gap-2 relative" onSubmit={handleSubmit}>
                 <Textarea
                     name="prompt"
                     className="m-0 max-h-[400px]"
                     placeholder="Type your prompt here!"
                     onKeyDown={handleKeyDown}
                     ref={textareaRef}
+                    value={promptValue}
+                    onChange={(event) => setPromptValue(event.target.value)}
                 />
                 <div className="flex gap-2">
-                    <Select name="contract_id" value={contractSelection} onValueChange={handleContractChange}>
-                        <SelectTrigger className="flex-1 text-foreground">
-                            <SelectValue placeholder="Which contract?" />
-                        </SelectTrigger>
-                        <SelectContent>
-                            <SelectGroup>
-                                <SelectItem value={ALL_CONTRACTS_VALUE}>All contracts</SelectItem>
-                                {contracts.map((c) => (
-                                    <SelectItem key={c.contract_id} value={c.contract_id}>
-                                        {c.filename}
-                                    </SelectItem>
-                                ))}
-                            </SelectGroup>
-                        </SelectContent>
-                    </Select>
+                    <div className="flex flex-1 flex-col gap-1">
+                        <span className="text-xs font-medium text-muted-foreground">Contract scope</span>
+                        <Select
+                            name="contract_id"
+                            value={contractSelection}
+                            onValueChange={handleContractChange}
+                            disabled={Boolean(activeSession)}
+                        >
+                            <SelectTrigger className="text-foreground">
+                                <SelectValue placeholder="Which contract?" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectGroup>
+                                    <SelectItem value={ALL_CONTRACTS_VALUE}>All contracts</SelectItem>
+                                    {contracts.map((c) => (
+                                        <SelectItem key={c.contract_id} value={c.contract_id}>
+                                            {c.filename}
+                                        </SelectItem>
+                                    ))}
+                                </SelectGroup>
+                            </SelectContent>
+                        </Select>
+                        {activeSession && (
+                            <span className="text-xs text-muted-foreground">Scope is locked for this conversation. Start a new chat to change it.</span>
+                        )}
+                    </div>
                     <Select name="model" defaultValue="gemini-2.5-flash">
                         <SelectTrigger className=" flex-1 text-foreground">
                             <SelectValue />

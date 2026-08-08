@@ -11,6 +11,7 @@ import { ContractHistoryProvider } from './contexts/ContractHistoryContext';
 import { ChatSessionProvider } from './contexts/ChatSessionContext';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { LoginScreen } from './components/features/auth/LoginScreen';
+import { ChatProvider } from './components/features/contracts/provider';
 import { useRouter } from './lib/useRouter';
 import './App.css';
 
@@ -62,8 +63,22 @@ function AuthenticatedApp() {
 }
 
 function Gate() {
-  const { isAuthenticated } = useAuth();
-  return isAuthenticated ? <AuthenticatedApp /> : <LoginScreen />;
+  const { session } = useAuth();
+  if (!session) return <LoginScreen />;
+
+  // Mount every tenant-owned client state container inside the auth gate
+  // and key the subtree by the validated token's tenant claim. Logout or
+  // tenant switch therefore unmounts stale chat/contract state before a
+  // different tenant can render it.
+  return (
+    <ContractHistoryProvider key={session.tenantId}>
+      <ChatProvider>
+        <ChatSessionProvider>
+          <AuthenticatedApp />
+        </ChatSessionProvider>
+      </ChatProvider>
+    </ContractHistoryProvider>
+  );
 }
 
 function App() {
@@ -82,13 +97,9 @@ function App() {
 
   return (
     <AuthProvider>
-      <ContractHistoryProvider>
-        <ChatSessionProvider>
-          <ThemeProvider defaultTheme="light" storageKey="vite-ui-theme">
-            <Gate />
-          </ThemeProvider>
-        </ChatSessionProvider>
-      </ContractHistoryProvider>
+      <ThemeProvider defaultTheme="light" storageKey="vite-ui-theme">
+        <Gate />
+      </ThemeProvider>
     </AuthProvider>
   );
 }

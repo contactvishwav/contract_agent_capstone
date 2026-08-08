@@ -28,6 +28,9 @@ type ChatProviderState = {
     // when the user opens a prior session from the switcher, distinct
     // from reset() (which clears to empty for a brand new conversation).
     replaceMessages: (messages: Message[]) => void;
+    promptRequest: { id: number; prompt: string } | null;
+    requestPrompt: (prompt: string) => void;
+    consumePromptRequest: (id: number) => void;
 };
 
 const initialState: ChatProviderState = {
@@ -36,13 +39,18 @@ const initialState: ChatProviderState = {
     addMessagePart: () => null,
     updateMessageGenerating: () => null,
     reset: () => null,
-    replaceMessages: () => null
+    replaceMessages: () => null,
+    promptRequest: null,
+    requestPrompt: () => null,
+    consumePromptRequest: () => null,
 };
 
 const ChatProviderContext = createContext<ChatProviderState>(initialState);
 
 export function ChatProvider({ children }: ChatProviderProps) {
     const [messages, setMessages] = useState<Message[]>([]);
+    const [promptRequest, setPromptRequest] = useState<{ id: number; prompt: string } | null>(null);
+    const promptSequence = React.useRef(0);
 
     const addMessage = useCallback((message: Message) => {
         setMessages((prevMessages) => [...prevMessages, message]);
@@ -76,13 +84,25 @@ export function ChatProvider({ children }: ChatProviderProps) {
         setMessages(newMessages);
     }, []);
 
+    const requestPrompt = useCallback((prompt: string) => {
+        promptSequence.current += 1;
+        setPromptRequest({ id: promptSequence.current, prompt });
+    }, []);
+
+    const consumePromptRequest = useCallback((id: number) => {
+        setPromptRequest((current) => current?.id === id ? null : current);
+    }, []);
+
     const value = {
         messages,
         addMessage,
         addMessagePart,
         updateMessageGenerating,
         reset,
-        replaceMessages
+        replaceMessages,
+        promptRequest,
+        requestPrompt,
+        consumePromptRequest,
     };
 
     return (
