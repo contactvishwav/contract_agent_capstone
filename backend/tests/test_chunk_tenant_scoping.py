@@ -93,6 +93,14 @@ class ChunkingAgentTenantThreadingTests(unittest.IsolatedAsyncioTestCase):
         agent = ChunkingAgent(embedding_service=MagicMock())
         agent.storage_service = MagicMock()
         agent.storage_service.store_chunks = AsyncMock(return_value={"success": True})
+        # Post-fix, process_document also generates+persists real chunk
+        # embeddings after storage (see test_chunk_embedding_persistence.py) -
+        # mocked here for the same reason storage_service is: without it,
+        # this test would make a real Gemini API call and a real write
+        # attempt against production Neo4j.
+        agent.chunk_embedding_service = MagicMock()
+        agent.chunk_embedding_service.generate_chunk_embeddings = AsyncMock(return_value=[])
+        agent.chunk_embedding_service.store_chunk_embeddings = AsyncMock(return_value=True)
 
         fake_result = MagicMock()
         fake_result.success = True

@@ -8,7 +8,6 @@ from abc import ABC, abstractmethod
 import hashlib
 import json
 
-from backend.governance.pii_engine import PIIEngine
 from backend.infrastructure.encryption import field_encryptor
 from backend.shared.utils.gemini_embedding_service import GeminiEmbeddingService
 from backend.shared.utils.contract_search_tool import graph
@@ -151,47 +150,44 @@ class ChunkEmbeddingService:
             raise Exception(f"Failed to generate embedding for chunk {chunk_id}: {str(e)}")
     
     async def store_chunk_embeddings(self, chunk_embeddings: List[ChunkEmbedding]) -> bool:
-        """Store chunk embeddings in Neo4j database."""
+        """Attach embeddings onto already-persisted Chunk nodes.
+
+        Real, confirmed bug found live: this used to MATCH (d:Document
+        {id: $document_id}) and CREATE a brand-new Chunk node with the
+        embedding attached - but on the real, primary chunking pipeline
+        (ChunkingAgent.process_document -> ChunkingOrchestrator.
+        execute_chunking), that MATCH ran *before* the Document node
+        existed (ChunkingStorageService.store_chunks, which actually
+        MERGEs the Document and CREATEs the real Chunk nodes with all
+        their real metadata, only runs afterward, once execute_chunking
+        already returned). The MATCH silently found nothing, so the
+        CREATE inside it never fired - no exception, nothing logged,
+        embeddings just never persisted. Confirmed directly in production
+        Neo4j: every real Chunk node had embedding_ready: true but
+        embedding: null, invisible to chunk_embedding_vector_index.
+
+        Fixed by inverting the dependency: this now runs strictly after
+        the real Chunk nodes already exist (see ChunkingAgent.
+        process_document's post-storage embedding step) and MATCHes the
+        Chunk directly by id, just SETting the embedding vector - it no
+        longer creates a node, duplicates content, or re-derives
+        metadata that ChunkingStorageService.store_chunks already wrote
+        (and already redacted+encrypted) when it created the chunk.
+        """
         try:
             for chunk_embedding in chunk_embeddings:
-                # Create chunk node with embedding
                 query = """
-                MATCH (d:Document {id: $document_id})
-                CREATE (c:Chunk {
-                    id: $chunk_id,
-                    content: $content,
-                    chunk_type: $chunk_type,
-                    start_position: $start_position,
-                    end_position: $end_position,
-                    size: $size,
-                    has_overlap: $has_overlap,
-                    overlap_size: $overlap_size,
-                    quality_score: $quality_score,
-                    embedding: $embedding
-                })
-                CREATE (d)-[:HAS_CHUNK]->(c)
+                MATCH (c:Chunk {id: $chunk_id})
+                SET c.embedding = $embedding
                 """
 
-                # Redact-then-encrypt before persistence (P3 item 21).
-                redacted_content = PIIEngine.redact(chunk_embedding.chunk_content)
-                encrypted_content = field_encryptor.encrypt(redacted_content)
-
                 self.graph.query(query, {
-                    'document_id': chunk_embedding.document_id,
                     'chunk_id': chunk_embedding.chunk_id,
-                    'content': encrypted_content,
-                    'chunk_type': chunk_embedding.chunk_metadata.get('chunk_type', 'unknown'),
-                    'start_position': chunk_embedding.chunk_metadata.get('start_position', 0),
-                    'end_position': chunk_embedding.chunk_metadata.get('end_position', 0),
-                    'size': chunk_embedding.chunk_metadata.get('size', 0),
-                    'has_overlap': chunk_embedding.chunk_metadata.get('has_overlap', False),
-                    'overlap_size': chunk_embedding.chunk_metadata.get('overlap_size', 0),
-                    'quality_score': chunk_embedding.chunk_metadata.get('quality_score', 0.0),
                     'embedding': chunk_embedding.embedding
                 })
-            
+
             return True
-            
+
         except Exception as e:
             print(f"Failed to store chunk embeddings: {e}")
             return False

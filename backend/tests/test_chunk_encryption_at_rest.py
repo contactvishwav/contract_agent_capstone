@@ -13,10 +13,12 @@ operations into application code, operating on content decrypted via the
 same field_encryptor/PIIEngine helpers already built for Contract/Clause -
 not a copy-paste of that pattern, a real restructure of 6 query call sites.
 
-This file exercises: write-path redact+encrypt (3 sites: Chunk via
-ChunkingStorageService.store_chunks and ChunkEmbeddingService.
-store_chunk_embeddings, DocumentChunk via ChunkStorageService.store_chunks),
-read-path decrypt (5 sites), the CONTAINS-fallback still finding matches
+This file exercises: write-path redact+encrypt (2 sites: Chunk via
+ChunkingStorageService.store_chunks, DocumentChunk via ChunkStorageService.
+store_chunks - ChunkEmbeddingService.store_chunk_embeddings no longer
+writes content at all, see its own test below and test_chunk_embedding_
+persistence.py for why), read-path decrypt (5 sites), the CONTAINS-fallback
+still finding matches
 against encrypted content post-decryption, and the substring()-snippet
 replacement producing real decrypted text (not garbled/base64) in both the
 primary semantic path and the fallback.
@@ -184,7 +186,16 @@ def _chunk_embedding_service():
 
 
 class ChunkEmbeddingServiceEncryptionTests(unittest.IsolatedAsyncioTestCase):
-    async def test_store_chunk_embeddings_encrypts_content(self):
+    async def test_store_chunk_embeddings_does_not_write_content_at_all(self):
+        """Real, confirmed bug found live (see test_chunk_embedding_
+        persistence.py): store_chunk_embeddings used to MATCH (d:Document)
+        and CREATE a brand-new Chunk node - including its own copy of
+        content - which ran before the Document even existed on the real
+        pipeline, so the write silently never happened. Fixed by having
+        this method only attach an embedding to a Chunk node that
+        ChunkingStorageService.store_chunks already created (and already
+        redacted+encrypted) - it must not write content at all anymore,
+        so there is nothing here left to encrypt."""
         service, fake_graph, ChunkEmbedding = _chunk_embedding_service()
         chunk_embedding = ChunkEmbedding(
             chunk_id="doc1_chunk_0", document_id="doc1", embedding=[0.1],
@@ -193,11 +204,11 @@ class ChunkEmbeddingServiceEncryptionTests(unittest.IsolatedAsyncioTestCase):
 
         await service.store_chunk_embeddings([chunk_embedding])
 
-        create_calls = [(c, p) for c, p in fake_graph.queries if "CREATE (c:Chunk" in c]
-        self.assertEqual(len(create_calls), 1)
-        stored_content = create_calls[0][1]["content"]
-        self.assertNotEqual(stored_content, SSN_CHUNK_TEXT)
-        self.assertNotIn("123-45-6789", stored_content)
+        self.assertEqual(len(fake_graph.queries), 1)
+        cypher, params = fake_graph.queries[0]
+        self.assertIn("MATCH (c:Chunk", cypher)
+        self.assertNotIn("CREATE (c:Chunk", cypher)
+        self.assertNotIn("content", params)
 
     async def test_search_similar_chunks_decrypts_content(self):
         service, _, _ = _chunk_embedding_service()

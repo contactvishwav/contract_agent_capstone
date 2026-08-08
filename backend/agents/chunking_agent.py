@@ -70,7 +70,24 @@ class ChunkingAgent:
                 storage_result = await self.storage_service.store_chunks(
                     document_id, result.chunks, metadata, tenant_id=tenant_id
                 )
-                
+
+                # Generate and persist embeddings only after the real Chunk
+                # nodes exist (see ChunkEmbeddingService.store_chunk_embeddings'
+                # docstring for the real, confirmed bug this ordering fixes -
+                # embeddings used to be attempted before storage_service had
+                # created the Document/Chunk nodes they attach to, so they
+                # were always silently dropped on this, the actual production
+                # pipeline). result.chunks is the exact list storage_result
+                # persisted, so chunk_id (derived from chunk_index, now set
+                # uniquely per chunk - see chunking_orchestrator.py) matches
+                # 1:1 between the two writes.
+                chunk_embeddings = await self.chunk_embedding_service.generate_chunk_embeddings(
+                    result.chunks, document_id
+                )
+                embedding_storage_result = await self.chunk_embedding_service.store_chunk_embeddings(
+                    chunk_embeddings
+                )
+
                 return {
                     'success': True,
                     'document_id': document_id,
@@ -82,8 +99,8 @@ class ChunkingAgent:
                     },
                     'quality_assessment': result.quality_metrics,
                     'storage_result': storage_result,
-                    'embedding_storage_result': result.embedding_results is not None,
-                    'embedding_metrics': len(result.embedding_results) if result.embedding_results else 0,
+                    'embedding_storage_result': embedding_storage_result,
+                    'embedding_metrics': len(chunk_embeddings),
                     'performance_metrics': result.performance_metrics,
                     'orchestrator_used': True
                 }

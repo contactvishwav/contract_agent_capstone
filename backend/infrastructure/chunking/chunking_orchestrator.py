@@ -10,11 +10,9 @@ from .document_analyzer import analyze_document
 from .content_density_analyzer import ContentDensityAnalyzer
 from .legal_chunking_facade import LegalChunkingFacade, LegalChunkingEnhancer
 from .overlap_analyzer import OverlapAnalyzer
-from .embedding_optimizer import EmbeddingOptimizerDecorator, TokenLimitEnforcer
 from .quality_validator import QualityValidator, QualityMetricsCollector
 from .performance_optimizer import get_performance_optimizer, PerformanceMonitor
 from .factory import ChunkingFactory
-from .chunk_embedding_service import ChunkEmbeddingService
 
 
 @dataclass
@@ -53,11 +51,7 @@ class ChunkingOrchestrator:
         self.quality_validator = QualityValidator()
         self.performance_optimizer = get_performance_optimizer()
         self.performance_monitor = PerformanceMonitor()
-        
-        # Embedding components
-        self.chunk_embedding_service = ChunkEmbeddingService()
-        self.embedding_optimizer = None  # Will be initialized with embedding service
-        
+
         # Quality observer
         self.quality_collector = QualityMetricsCollector()
         self.quality_validator.add_observer(self.quality_collector)
@@ -96,15 +90,10 @@ class ChunkingOrchestrator:
                 command.content, chunks, legal_context
             )
             chunks = optimization_result['optimized_chunks']
-            
+
             # Step 8: Quality Validation
             quality_metrics = await self.quality_validator.validate_chunks(chunks, legal_context)
-            
-            # Step 9: Embedding Generation (if requested)
-            embedding_results = None
-            if command.options.get('generate_embeddings', True):
-                embedding_results = await self._generate_embeddings(chunks, command.document_id)
-            
+
             # Step 10: Performance Monitoring
             processing_time = time.time() - start_time
             self.performance_monitor.record_processing_time(processing_time, len(chunks))
@@ -121,8 +110,7 @@ class ChunkingOrchestrator:
                     'processing_time': processing_time,
                     'optimization_stats': optimization_result,
                     'strategy_scores': {name: score.score for name, score in strategy_scores.items()}
-                },
-                embedding_results=embedding_results
+                }
             )
             
         except Exception as e:
@@ -216,48 +204,6 @@ class ChunkingOrchestrator:
             return False
         
         return True
-    
-    async def _generate_embeddings(self, chunks: List[Dict[str, Any]], 
-                                 document_id: str) -> List[Dict[str, Any]]:
-        """Generate embeddings with optimization."""
-        try:
-            # Initialize embedding optimizer if not done
-            if self.embedding_optimizer is None:
-                from backend.shared.utils.gemini_embedding_service import GeminiEmbeddingService
-                embedding_service = GeminiEmbeddingService()
-                self.embedding_optimizer = EmbeddingOptimizerDecorator(
-                    embedding_service, TokenLimitEnforcer()
-                )
-            
-            # Generate optimized embeddings
-            embedding_results = await self.embedding_optimizer.generate_optimized_embeddings(chunks)
-            
-            # Store embeddings using chunk embedding service
-            if embedding_results:
-                # Convert to ChunkEmbedding format
-                chunk_embeddings = []
-                for result in embedding_results:
-                    from backend.infrastructure.chunking.chunk_embedding_service import ChunkEmbedding
-                    chunk_embedding = ChunkEmbedding(
-                        chunk_id=result['chunk_id'],
-                        document_id=document_id,
-                        embedding=result['embedding'],
-                        chunk_content=result['content'],
-                        chunk_metadata={
-                            'token_count': result['token_count'],
-                            'split_from_original': result['split_from_original']
-                        }
-                    )
-                    chunk_embeddings.append(chunk_embedding)
-                
-                # Store embeddings
-                await self.chunk_embedding_service.store_chunk_embeddings(chunk_embeddings)
-            
-            return embedding_results
-            
-        except Exception as e:
-            print(f"Embedding generation failed: {e}")
-            return []
     
     def get_performance_report(self) -> Dict[str, Any]:
         """Get comprehensive performance report."""
