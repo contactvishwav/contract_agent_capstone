@@ -1,5 +1,6 @@
 import json
 from contextlib import asynccontextmanager
+from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Depends, Request, Response
@@ -211,6 +212,15 @@ class RunPayload(BaseModel):
     model: str
     prompt: str
     history: str
+    # Optional: which contract the user has selected in the Chat UI, if
+    # any. Real, confirmed bug this closes: Contract Chat had no way to
+    # know which contract "this"/"it" referred to in a question like
+    # "Analyze this contract" - there was no field anywhere in this
+    # request for it. Threaded into the agent via config["configurable"],
+    # the same trust-boundary pattern as tenant_id (see contract_chat_
+    # agent.py's execute_tools) - never exposed to the LLM as a tool-call
+    # argument it could guess or override.
+    contract_id: Optional[str] = None
 
 def rebuild_history(history):
     history = json.loads(history)
@@ -232,7 +242,7 @@ def rebuild_history(history):
     return messages
 
 
-async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, tenant_id: str, user_role: str = "unknown"):
+async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, tenant_id: str, user_role: str = "unknown", contract_id: Optional[str] = None):
     logger.info(f"Processing LLM request for model '{model}' for user_role '{user_role}'")
     
     # Initialize AuditLogger and AgentAuditService for Guard persistence
@@ -292,7 +302,7 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
     # execute_tools in.
     messages = llm_mgr.get_model_by_name(model).astream(
         input={"messages": input_messages},
-        config={"tags": run_tags, "configurable": {"tenant_id": tenant_id, "correlation_id": corr_id}},
+        config={"tags": run_tags, "configurable": {"tenant_id": tenant_id, "correlation_id": corr_id, "contract_id": contract_id}},
         stream_mode=["messages", "updates"]
     )
 
@@ -406,6 +416,7 @@ async def run(
             llm_mgr=llm_mgr,
             tenant_id=identity.tenant_id,
             user_role=identity.role,
+            contract_id=payload.contract_id,
         ),
         media_type="text/event-stream",
     )

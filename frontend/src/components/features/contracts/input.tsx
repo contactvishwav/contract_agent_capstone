@@ -14,18 +14,38 @@ import { MouseEvent } from 'react';
 import { SendHorizontal } from "lucide-react";
 import { Message, MessagePart, useChat } from "./provider";
 import { authHeader, clearSession } from "../../../lib/authStore";
+import { useContractHistory } from "../../../contexts/ContractHistoryContext";
+
+// Real, confirmed bug this closes: Contract Chat had no way to know
+// which contract a question like "Analyze this contract" referred to -
+// nothing anywhere in the UI let a user pick one, and the /api/run/
+// request had no field for it at all. ALL_CONTRACTS_VALUE is a real
+// selectable option (not just "unset"), since tenant-wide search across
+// every uploaded contract is a legitimate, common thing to want too -
+// this isn't forcing a single-contract scope, it's adding the option.
+const ALL_CONTRACTS_VALUE = "__all_contracts__";
 
 export function ChatInput() {
     const history = useRef<string[]>([])
     const [submiting, setSubmiting] = React.useState(false);
     const { addMessage, addMessagePart, updateMessageGenerating, reset } = useChat();
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const { contracts, selectedContractId, setSelectedContract } = useContractHistory();
+
+    // Defaults to whatever contract is already selected elsewhere in the
+    // app (e.g. just uploaded or opened on the Intelligence page) - "tied
+    // to whatever contract they're viewing", not just an empty dropdown -
+    // falling back to the most recently uploaded contract if nothing is
+    // selected yet, and to "all contracts" only if there's no history at all.
+    const effectiveContractId = selectedContractId || contracts[0]?.contract_id || ALL_CONTRACTS_VALUE;
 
     const handleSubmit = async (event: any) => {
         event.preventDefault();
         const formData = new FormData(event.target);
         const model = formData.get("model") as string;
         const prompt = formData.get("prompt") as string;
+        const contractIdField = formData.get("contract_id") as string;
+        const contract_id = contractIdField && contractIdField !== ALL_CONTRACTS_VALUE ? contractIdField : null;
 
         if (!prompt.trim()) {
             return;
@@ -59,7 +79,7 @@ export function ChatInput() {
                 'Content-Type': 'application/json',
                 ...(auth ? { Authorization: auth } : {}),
             },
-            body: JSON.stringify({ model, prompt, history: JSON.stringify(history.current) }),
+            body: JSON.stringify({ model, prompt, history: JSON.stringify(history.current), contract_id }),
             onmessage(event) {
                 const data: MessagePart = JSON.parse(event.data);
 
@@ -113,6 +133,19 @@ export function ChatInput() {
         }
     };
 
+    // Controlled (not defaultValue, unlike the model select below): needs
+    // to react to a contract being selected/uploaded elsewhere in the app
+    // (e.g. on the Intelligence page), not just the user's own choice here.
+    const [contractSelection, setContractSelection] = React.useState(effectiveContractId);
+    React.useEffect(() => {
+        setContractSelection(effectiveContractId);
+    }, [effectiveContractId]);
+
+    const handleContractChange = (value: string) => {
+        setContractSelection(value);
+        setSelectedContract(value === ALL_CONTRACTS_VALUE ? null : value);
+    };
+
     return (
         <div className="flex-0">
             <form className="flex flex-col gap-2 relative" onSubmit={handleSubmit}>
@@ -124,6 +157,21 @@ export function ChatInput() {
                     ref={textareaRef}
                 />
                 <div className="flex gap-2">
+                    <Select name="contract_id" value={contractSelection} onValueChange={handleContractChange}>
+                        <SelectTrigger className="flex-1 text-foreground">
+                            <SelectValue placeholder="Which contract?" />
+                        </SelectTrigger>
+                        <SelectContent>
+                            <SelectGroup>
+                                <SelectItem value={ALL_CONTRACTS_VALUE}>All contracts</SelectItem>
+                                {contracts.map((c) => (
+                                    <SelectItem key={c.contract_id} value={c.contract_id}>
+                                        {c.filename}
+                                    </SelectItem>
+                                ))}
+                            </SelectGroup>
+                        </SelectContent>
+                    </Select>
                     <Select name="model" defaultValue="gemini-2.5-flash">
                         <SelectTrigger className=" flex-1 text-foreground">
                             <SelectValue />

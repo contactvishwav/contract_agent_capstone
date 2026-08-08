@@ -74,6 +74,13 @@ def get_agent(llm):
         # invoked.
         tenant_id = (config.get("configurable") or {}).get("tenant_id") if config else None
 
+        # The contract the user has selected in the Chat UI, if any - same
+        # trust boundary and threading mechanism as tenant_id above (never
+        # from the LLM; set server-side in main.py's runner() from the
+        # request body's own contract_id field). None when no contract is
+        # selected, in which case tools search tenant-wide as before.
+        contract_id = (config.get("configurable") or {}).get("contract_id") if config else None
+
         # The HTTP request's own correlation_id (X-Correlation-ID, or a
         # freshly-generated one - see TracingMiddleware), threaded the same
         # way as tenant_id above rather than read from correlation_id_var
@@ -117,6 +124,13 @@ def get_agent(llm):
                                 args["tenant_id"] = tenant_id
                                 if tool.name in MCP_CHAT_TOOL_NAMES:
                                     args["correlation_id"] = correlation_id
+                                if tool.name == "EnhancedContractSearch" and contract_id:
+                                    # Overwrite, not merge - same reasoning
+                                    # as tenant_id above: EnhancedContractInput
+                                    # has no contract_id field, so there is
+                                    # nothing here for the model to have
+                                    # supplied itself.
+                                    args["contract_id"] = contract_id
                                 result = tool._run(**args)
                             else:
                                 result = tool.invoke(args)

@@ -96,7 +96,7 @@ def _multi_level_search_cache_key(
     tenant_id: str, search_level: SearchLevel, clause_types, section_types,
     min_effective_date, max_effective_date, min_end_date, max_end_date,
     contract_type, parties, summary_search, active, cypher_aggregation,
-    monetary_value, governing_law,
+    monetary_value, governing_law, contract_id=None,
 ) -> str:
     """
     Deterministic key over every argument that affects the result *except*
@@ -110,7 +110,7 @@ def _multi_level_search_cache_key(
     repr directly if applied to this function).
     """
     key_data = {
-        "tenant_id": tenant_id, "search_level": search_level.value,
+        "tenant_id": tenant_id, "search_level": search_level.value, "contract_id": contract_id,
         "clause_types": sorted(clause_types) if clause_types else None,
         "section_types": sorted(section_types) if section_types else None,
         "min_effective_date": min_effective_date, "max_effective_date": max_effective_date,
@@ -147,7 +147,8 @@ def get_contracts_multi_level(
     active: Optional[bool] = None,
     cypher_aggregation: Optional[str] = None,
     monetary_value: Optional[MonetaryValue] = None,
-    governing_law: Optional[Location] = None
+    governing_law: Optional[Location] = None,
+    contract_id: Optional[str] = None,
 ):
     """Enhanced contract search with multi-level embedding support and tenant isolation.
 
@@ -175,7 +176,7 @@ def get_contracts_multi_level(
         tenant_id, search_level, clause_types, section_types,
         min_effective_date, max_effective_date, min_end_date, max_end_date,
         contract_type, parties, summary_search, active, cypher_aggregation,
-        monetary_value, governing_law,
+        monetary_value, governing_law, contract_id,
     )
     if Phase3Config.CACHE_ENABLED:
         cached = cache.get(cache_key)
@@ -184,6 +185,9 @@ def get_contracts_multi_level(
 
     params: dict[str, Any] = {"tenant_id": tenant_id}
     filters: list[str] = ["c.tenant_id = $tenant_id"]
+    if contract_id:
+        filters.append("c.file_id = $contract_id")
+        params["contract_id"] = contract_id
 
     if search_level == SearchLevel.DOCUMENT:
         result = _search_documents(embeddings, tenant_id, summary_search, filters, params,
@@ -200,11 +204,11 @@ def get_contracts_multi_level(
         result = _search_relationships(embeddings, tenant_id, summary_search, parties, filters, params)
 
     elif search_level == SearchLevel.CHUNK:
-        result = _search_chunks(embeddings, tenant_id, summary_search, filters, params)
+        result = _search_chunks(embeddings, tenant_id, summary_search, filters, params, contract_id=contract_id)
 
     elif search_level == SearchLevel.ALL:
         result = _search_all_levels(embeddings, tenant_id, summary_search, clause_types, section_types,
-                                 filters, params)
+                                 filters, params, contract_id=contract_id)
     else:
         result = None
 
@@ -471,13 +475,20 @@ def _chunk_snippet(content: str) -> str:
     return content
 
 
-def _search_chunks(embeddings, tenant_id, summary_search, filters, params):
+def _search_chunks(embeddings, tenant_id, summary_search, filters, params, contract_id=None):
     """
     Enhanced search at chunk level with semantic capabilities and tenant
     isolation. Chunk.content/DocumentChunk.content are encrypted at rest,
     so neither the CONTAINS-based fallback match nor the preview-snippet
     slice can happen in Cypher anymore - both now operate on content
     decrypted in Python after a bounded, tenant-scoped fetch.
+
+    contract_id: optional - when the caller (Contract Chat, via a UI
+    contract selector) knows exactly which contract the user means,
+    scopes every query here to that one Document (Document.contract_id
+    was set correctly for this by an earlier fix - see storage_service.py/
+    document_upload.py). Server-injected only, same trust boundary as
+    tenant_id - see EnhancedContractInput's docstring.
     """
 
     # Try semantic search first if available
@@ -495,6 +506,7 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params):
             YIELD node AS c, score AS chunk_score
             MATCH (d:Document)-[:HAS_CHUNK]->(c)
             WHERE d.tenant_id = $tenant_id AND chunk_score > 0.7
+            {"AND d.contract_id = $contract_id" if contract_id else ""}
             RETURN d.id AS document_id, c.chunk_type AS chunk_type, c.content AS content,
                    c.chunk_index AS chunk_index, c.quality_score AS quality_score,
                    chunk_score AS similarity_score
@@ -503,6 +515,8 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params):
 
             chunk_embedding = embeddings.embed_query(summary_search)
             semantic_params = {"chunk_embedding": chunk_embedding, "tenant_id": tenant_id, "k": VECTOR_SEARCH_OVERFETCH}
+            if contract_id:
+                semantic_params["contract_id"] = contract_id
 
             rows = graph.query(semantic_query, semantic_params)
             if rows:
@@ -534,17 +548,19 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params):
     search_text = summary_search
     output = []
 
-    new_chunk_query = """
+    new_chunk_query = f"""
     MATCH (d:Document)-[:HAS_CHUNK]->(c:Chunk)
     WHERE d.tenant_id = $tenant_id
+    {"AND d.contract_id = $contract_id" if contract_id else ""}
     RETURN d.id AS document_id, c.chunk_type AS chunk_type, c.content AS content,
            c.chunk_index AS chunk_index, c.quality_score AS quality_score
     ORDER BY c.chunk_index DESC
     LIMIT $candidate_limit
     """
-    new_chunk_rows = graph.query(
-        new_chunk_query, {"tenant_id": tenant_id, "candidate_limit": CHUNK_TEXT_SEARCH_CANDIDATE_LIMIT}
-    )
+    new_chunk_params = {"tenant_id": tenant_id, "candidate_limit": CHUNK_TEXT_SEARCH_CANDIDATE_LIMIT}
+    if contract_id:
+        new_chunk_params["contract_id"] = contract_id
+    new_chunk_rows = graph.query(new_chunk_query, new_chunk_params)
 
     new_chunks_limit = 5 if search_text else 10
     new_chunks = []
@@ -565,16 +581,18 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params):
     output.append({"result": {"total_count": len(new_chunks), "chunks": new_chunks}})
 
     if search_text:
-        legacy_chunk_query = """
+        legacy_chunk_query = f"""
         MATCH (c:Contract)-[:CONTAINS_CHUNK]->(dc:DocumentChunk)
         WHERE c.tenant_id = $tenant_id
+        {"AND c.file_id = $contract_id" if contract_id else ""}
         RETURN c.file_id AS contract_id, dc.chunk_type AS chunk_type, dc.content AS content,
                dc.chunk_order AS chunk_order, dc.confidence AS confidence
         LIMIT $candidate_limit
         """
-        legacy_chunk_rows = graph.query(
-            legacy_chunk_query, {"tenant_id": tenant_id, "candidate_limit": CHUNK_TEXT_SEARCH_CANDIDATE_LIMIT}
-        )
+        legacy_chunk_params = {"tenant_id": tenant_id, "candidate_limit": CHUNK_TEXT_SEARCH_CANDIDATE_LIMIT}
+        if contract_id:
+            legacy_chunk_params["contract_id"] = contract_id
+        legacy_chunk_rows = graph.query(legacy_chunk_query, legacy_chunk_params)
 
         legacy_chunks = []
         for r in legacy_chunk_rows:
@@ -595,14 +613,25 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params):
 
     return [convert_neo4j_date(el) for el in output]
 
-def _search_all_levels(embeddings, tenant_id, summary_search, clause_types, section_types, filters, params):
-    """Search across all levels and combine results with tenant isolation"""
+def _search_all_levels(embeddings, tenant_id, summary_search, clause_types, section_types, filters, params, contract_id=None):
+    """Search across all levels and combine results with tenant isolation.
+
+    contract_id: threaded into every sub-call so 'all' (the default
+    search_level as of this fix) stays scoped to a single contract when
+    the caller (Contract Chat, via a UI contract selector) has one
+    selected - each sub-call builds its own filters/params rather than
+    reusing this function's own (pre-existing, unrelated to this fix -
+    each level needs its own base filter list regardless)."""
+    base_filters = lambda: (["c.tenant_id = $tenant_id", "c.file_id = $contract_id"] if contract_id
+                             else ["c.tenant_id = $tenant_id"])
+    base_params = lambda: ({"tenant_id": tenant_id, "contract_id": contract_id} if contract_id
+                            else {"tenant_id": tenant_id})
     results = {
-        "documents": _search_documents(embeddings, tenant_id, summary_search, ["c.tenant_id = $tenant_id"], {"tenant_id": tenant_id}, None, None, None, None, None, None, None, None, None, None),
-        "sections": _search_sections(embeddings, tenant_id, summary_search, section_types, ["c.tenant_id = $tenant_id"], {"tenant_id": tenant_id}),
-        "clauses": _search_clauses(embeddings, tenant_id, summary_search, clause_types, ["c.tenant_id = $tenant_id"], {"tenant_id": tenant_id}),
-        "relationships": _search_relationships(embeddings, tenant_id, summary_search, None, ["c.tenant_id = $tenant_id"], {"tenant_id": tenant_id}),
-        "chunks": _search_chunks(embeddings, tenant_id, summary_search, ["c.tenant_id = $tenant_id"], {"tenant_id": tenant_id})
+        "documents": _search_documents(embeddings, tenant_id, summary_search, base_filters(), base_params(), None, None, None, None, None, None, None, None, None, None),
+        "sections": _search_sections(embeddings, tenant_id, summary_search, section_types, base_filters(), base_params()),
+        "clauses": _search_clauses(embeddings, tenant_id, summary_search, clause_types, base_filters(), base_params()),
+        "relationships": _search_relationships(embeddings, tenant_id, summary_search, None, base_filters(), base_params()),
+        "chunks": _search_chunks(embeddings, tenant_id, summary_search, base_filters(), base_params(), contract_id=contract_id)
     }
     return [results]
 
@@ -706,7 +735,16 @@ class EnhancedContractSearchTool(BaseTool):
         active: Optional[bool] = None,
         monetary_value: Optional[MonetaryValue] = None,
         cypher_aggregation: Optional[str] = None,
-        governing_law: Optional[Location] = None
+        governing_law: Optional[Location] = None,
+        # Deliberately NOT a field on EnhancedContractInput, same reasoning
+        # as tenant_id above it in that class's docstring: the model has no
+        # legitimate way to know the real selected contract_id, so it must
+        # never be a guessable/spoofable tool-call argument. When the user
+        # has a contract selected in the Chat UI, contract_chat_agent.py's
+        # execute_tools injects the real one here from config[
+        # "configurable"]["contract_id"] (itself only ever set server-side
+        # from the authenticated request, in main.py's runner()).
+        contract_id: Optional[str] = None,
     ) -> str:
         """Use the enhanced search tool"""
         return get_contracts_multi_level(
@@ -725,5 +763,6 @@ class EnhancedContractSearchTool(BaseTool):
             active,
             cypher_aggregation,
             monetary_value,
-            governing_law
+            governing_law,
+            contract_id,
         )
