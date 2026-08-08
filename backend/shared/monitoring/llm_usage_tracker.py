@@ -43,6 +43,29 @@ OUTPUT_PRICE_PER_1M = float(os.getenv("LLM_OUTPUT_PRICE_PER_1M_TOKENS", "2.50"))
 _KEY_PREFIX = "llm_usage"
 _OPERATIONS_KEY = f"{_KEY_PREFIX}:operations"
 
+# Provider dimension (added alongside real multi-provider fallback -
+# backend/agents/llm_fallback_service.py): every real call recorded before
+# that work was, unconditionally, Gemini - there was no other provider
+# configured. `model` was always recorded as a string but never broken out
+# as its own queryable dimension, so there was no way to tell "the
+# extraction benchmark's numbers reflect Gemini only" from "these numbers
+# are a blend of providers" after fallback exists. Inferred from `model`
+# rather than requiring every call site to pass a redundant explicit
+# provider string.
+_PROVIDER_MARKERS = (
+    ("gemini", "gemini"),
+    ("gpt", "openai"),
+    ("claude", "anthropic"),
+)
+
+
+def _infer_provider(model: str) -> str:
+    model_lower = (model or "").lower()
+    for marker, provider in _PROVIDER_MARKERS:
+        if marker in model_lower:
+            return provider
+    return "unknown"
+
 
 def estimate_cost_usd(input_tokens: int, output_tokens: int) -> float:
     return (input_tokens / 1_000_000) * INPUT_PRICE_PER_1M + (output_tokens / 1_000_000) * OUTPUT_PRICE_PER_1M
@@ -72,7 +95,19 @@ class LLMUsageTracker:
         model: str,
         cache_hit: bool,
         usage_metadata: Optional[Dict[str, Any]] = None,
+        is_fallback: bool = False,
     ) -> None:
+        """
+        is_fallback: True when this call was actually served by a
+        secondary provider (backend/agents/llm_fallback_service.py),
+        i.e. the primary provider (Gemini) was unavailable for this
+        specific request. False (the default) covers both "no fallback
+        infrastructure involved" and "fallback infrastructure involved,
+        but the primary provider served it anyway" - both are the normal
+        case today. Provider itself is inferred from `model` (see
+        _infer_provider) rather than requiring a second, redundant param.
+        """
+        provider = _infer_provider(model)
         usage_metadata = usage_metadata or {}
         input_tokens = int(usage_metadata.get("input_tokens", 0) or 0)
         output_tokens = int(usage_metadata.get("output_tokens", 0) or 0)
@@ -92,6 +127,13 @@ class LLMUsageTracker:
                 client.incrby(f"{_KEY_PREFIX}:{operation}:total_output_tokens", output_tokens)
             if cost:
                 client.incrbyfloat(f"{_KEY_PREFIX}:{operation}:total_estimated_cost_usd", cost)
+
+            # Provider breakdown - additive, doesn't change any of the
+            # operation-level counters above.
+            client.sadd(f"{_KEY_PREFIX}:{operation}:providers", provider)
+            client.incr(f"{_KEY_PREFIX}:{operation}:by_provider:{provider}:total_calls")
+            if is_fallback:
+                client.incr(f"{_KEY_PREFIX}:{operation}:fallback_calls")
         except Exception as e:
             # Usage tracking must never break the actual LLM call it's
             # observing - log and move on, matching RedisCache.get/set's
@@ -100,7 +142,8 @@ class LLMUsageTracker:
             return
 
         logger.info(
-            f"LLM call: operation={operation} model={model} cache_hit={cache_hit} "
+            f"LLM call: operation={operation} model={model} provider={provider} "
+            f"is_fallback={is_fallback} cache_hit={cache_hit} "
             f"input_tokens={input_tokens} output_tokens={output_tokens} "
             f"estimated_cost_usd={cost:.6f}"
         )
@@ -133,6 +176,16 @@ class LLMUsageTracker:
 
         total_calls = _int("total_calls")
         cache_hits = _int("cache_hits")
+
+        try:
+            providers = client.smembers(f"{_KEY_PREFIX}:{operation}:providers") or set()
+        except Exception:
+            providers = set()
+        by_provider = {
+            p: _int(f"by_provider:{p}:total_calls") for p in sorted(providers)
+        }
+        fallback_calls = _int("fallback_calls")
+
         return {
             "total_calls": total_calls,
             "cache_hits": cache_hits,
@@ -140,6 +193,16 @@ class LLMUsageTracker:
             "total_input_tokens": _int("total_input_tokens"),
             "total_output_tokens": _int("total_output_tokens"),
             "total_estimated_cost_usd": round(_float("total_estimated_cost_usd"), 6),
+            # Provider visibility (real multi-provider fallback): which
+            # provider(s) actually served this operation's real calls, and
+            # how many of those were served by a fallback provider rather
+            # than the primary. by_provider having exactly one key (today,
+            # always "gemini") means these numbers reflect ONE provider's
+            # behavior only, not a blended scenario - important context for
+            # anyone reading benchmark numbers against this operation.
+            "by_provider": by_provider,
+            "fallback_calls": fallback_calls,
+            "is_single_provider": len(by_provider) <= 1,
         }
 
     @staticmethod
@@ -147,6 +210,12 @@ class LLMUsageTracker:
         op_summaries = list(op_summaries)
         total_calls = sum(s["total_calls"] for s in op_summaries)
         cache_hits = sum(s["cache_hits"] for s in op_summaries)
+
+        by_provider: Dict[str, int] = {}
+        for s in op_summaries:
+            for provider, count in s.get("by_provider", {}).items():
+                by_provider[provider] = by_provider.get(provider, 0) + count
+
         return {
             "total_calls": total_calls,
             "cache_hits": cache_hits,
@@ -154,6 +223,9 @@ class LLMUsageTracker:
             "total_input_tokens": sum(s["total_input_tokens"] for s in op_summaries),
             "total_output_tokens": sum(s["total_output_tokens"] for s in op_summaries),
             "total_estimated_cost_usd": round(sum(s["total_estimated_cost_usd"] for s in op_summaries), 6),
+            "by_provider": by_provider,
+            "fallback_calls": sum(s.get("fallback_calls", 0) for s in op_summaries),
+            "is_single_provider": len(by_provider) <= 1,
         }
 
 

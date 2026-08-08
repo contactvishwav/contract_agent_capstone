@@ -16,6 +16,7 @@ from typing import Any, Dict, List
 
 from pydantic import BaseModel, Field
 
+from backend.agents.llm_fallback_service import PRIMARY_PROVIDER, invoke_with_fallback
 from backend.domain.policies.entities import PolicyRule
 from backend.shared.cache.redis_cache import cache
 from backend.shared.config.phase3_config import Phase3Config
@@ -60,8 +61,13 @@ class PolicyEvaluationService:
     stays scoped to exactly the rules applicable to that one clause.
     """
 
-    def __init__(self, llm=None):
+    def __init__(self, llm=None, use_fallback: bool = False):
+        """use_fallback: see LLMExtractionService.__init__'s identical
+        parameter - real multi-provider fallback, only takes effect when
+        `llm` is None (an explicit llm is always a deliberate single-
+        provider choice, never silently overridden)."""
         self.llm = llm
+        self.use_fallback = use_fallback and llm is None
         self._model_name = getattr(llm, "model", None) or "unknown"
         self._structured_llm = (
             llm.with_structured_output(_LLMPolicyEvaluationResponse, include_raw=True) if llm else None
@@ -85,7 +91,7 @@ class PolicyEvaluationService:
         type/text, applicable rules) - see LLMExtractionService.
         extract_clauses's identical rationale.
         """
-        if not rules or not self._structured_llm or not clause_text or not clause_text.strip():
+        if not rules or not (self._structured_llm or self.use_fallback) or not clause_text or not clause_text.strip():
             return []
 
         valid_rule_ids = {r.id for r in rules}
@@ -105,9 +111,21 @@ class PolicyEvaluationService:
         # the API response). PolicyCheckerTool._run is responsible for
         # catching this per-clause and honestly reporting which clauses
         # failed to evaluate vs. which were evaluated and came back clean.
+        # This includes AllProvidersExhaustedError (backend/agents/
+        # llm_fallback_service.py) when self.use_fallback is set - every
+        # configured provider failing is exactly as real a failure as the
+        # single-provider case, and must propagate identically, not be
+        # swallowed just because more than one provider was attempted.
+        model_used = self._model_name
+        provider_used = PRIMARY_PROVIDER
         with llm_call_semaphore:
-            with GEMINI_CIRCUIT_BREAKER.guard():
-                raw_result = self._structured_llm.invoke(prompt)
+            if self._structured_llm is not None:
+                with GEMINI_CIRCUIT_BREAKER.guard():
+                    raw_result = self._structured_llm.invoke(prompt)
+            else:
+                raw_result, provider_used, model_used = invoke_with_fallback(
+                    _LLMPolicyEvaluationResponse, prompt, operation="policy_evaluation"
+                )
 
         response = raw_result.get("parsed")
         if response is None:
@@ -117,7 +135,18 @@ class PolicyEvaluationService:
 
         usage_metadata = getattr(raw_result.get("raw"), "usage_metadata", None)
         llm_usage_tracker.record_call(
-            "policy_evaluation", self._model_name, cache_hit=False, usage_metadata=usage_metadata
+            "policy_evaluation", model_used, cache_hit=False, usage_metadata=usage_metadata,
+            # Real, confirmed bug found live during production
+            # verification: comparing model_used against self._model_name
+            # (which defaults to the placeholder "unknown" for a
+            # use_fallback=True, llm=None construction) meant is_fallback
+            # was True for EVERY successful fallback-enabled call, even
+            # when the primary provider (gemini) itself served it - the
+            # placeholder never equals any real model name. Fixed to
+            # compare the actual provider_used against PRIMARY_PROVIDER
+            # directly, which is well-defined regardless of how this
+            # service was constructed.
+            is_fallback=(self.use_fallback and provider_used != PRIMARY_PROVIDER),
         )
 
         violations = []

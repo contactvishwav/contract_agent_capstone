@@ -7,7 +7,7 @@ from langchain_core.tools import BaseTool
 from backend.shared.utils.gemini_embedding_service import embedding
 from langchain_neo4j import Neo4jGraph
 from pydantic import BaseModel, Field
-from backend.agents.reranker_service import RerankerService, get_reranker_llm
+from backend.agents.reranker_service import RerankerService
 from backend.infrastructure.encryption import field_encryptor
 from backend.shared.cache.redis_cache import cache
 from backend.shared.config.phase3_config import Phase3Config
@@ -78,12 +78,15 @@ def _maybe_rerank(query: Optional[str], items: List[Dict[str, Any]], text_key: s
     if not (Phase3Config.RERANKING_ENABLED and query and items):
         return items[:RERANK_TOP_K], None
     try:
-        outcome = RerankerService(get_reranker_llm()).rerank(query, items, text_key=text_key, top_k=RERANK_TOP_K)
+        # use_fallback=True - see search_strategies.py's identical
+        # _maybe_rerank comment (real multi-provider fallback, backend/
+        # agents/llm_fallback_service.py).
+        outcome = RerankerService(use_fallback=True).rerank(query, items, text_key=text_key, top_k=RERANK_TOP_K)
     except Exception as e:
         # See search_strategies.py's identical _maybe_rerank comment: a
-        # construction-time failure (get_reranker_llm()/RerankerService.
-        # __init__ itself raising, before RerankerService.rerank()'s own
-        # internal safety net exists) must not crash the whole search.
+        # construction-time failure (RerankerService.__init__ itself
+        # raising, before RerankerService.rerank()'s own internal safety
+        # net exists) must not crash the whole search.
         logger.error(f"Re-ranking setup failed, falling back to unranked results: {e}")
         return items[:RERANK_TOP_K], {"applied": False, "reason": "error"}
     return outcome.results, {"applied": outcome.reranked, "reason": outcome.reason}

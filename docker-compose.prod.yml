@@ -87,6 +87,14 @@ services:
       # search route, not the Celery analysis task.
       - RERANKING_ENABLED=${RERANKING_ENABLED-false}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:?Set GOOGLE_API_KEY}
+      # Real multi-provider LLM fallback (backend/agents/llm_fallback_
+      # service.py), added after a real production incident where Gemini
+      # was the only configured provider and its only working model hit a
+      # quota wall. Optional, not required (`-` default, not `:?`) -
+      # unlike GOOGLE_API_KEY, the app is fully functional without these;
+      # they only add resilience if/when Gemini itself is unavailable.
+      - OPENAI_API_KEY=${OPENAI_API_KEY-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY-}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:?Set JWT_SECRET_KEY to a real generated secret}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:?Set ENCRYPTION_KEY to a real generated secret (or set KEY_PROVIDER=gcp below and this is ignored)}
       - KEY_PROVIDER=${KEY_PROVIDER-env}
@@ -129,6 +137,10 @@ services:
       - REDIS_URL=redis://redis:6379
       - CACHE_ENABLED=true
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:?Set GOOGLE_API_KEY}
+      # See backend service's identical comment above - real
+      # multi-provider LLM fallback, optional.
+      - OPENAI_API_KEY=${OPENAI_API_KEY-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY-}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:?Set ENCRYPTION_KEY to a real generated secret (or set KEY_PROVIDER=gcp below and this is ignored)}
       - KEY_PROVIDER=${KEY_PROVIDER-env}
       - GCP_PROJECT_ID=${GCP_PROJECT_ID-}

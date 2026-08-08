@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Any, List, Dict
-from backend.agents.reranker_service import RerankerService, get_reranker_llm
+from backend.agents.reranker_service import RerankerService
 from backend.domain.search_entities import SearchParams, SearchResult
 from backend.infrastructure.encryption import field_encryptor
 from backend.shared.config.phase3_config import Phase3Config
@@ -51,18 +51,23 @@ def _maybe_rerank(params: SearchParams, items: List[Dict[str, Any]], text_key: s
         return items[:RERANK_TOP_K], metadata
 
     try:
-        outcome = RerankerService(get_reranker_llm()).rerank(params.query, items, text_key=text_key, top_k=RERANK_TOP_K)
+        # use_fallback=True (not get_reranker_llm(), Gemini-only) - real
+        # multi-provider fallback (backend/agents/llm_fallback_service.py),
+        # so a Gemini-specific outage/quota exhaustion degrades to a
+        # different provider before falling all the way back to unranked
+        # results.
+        outcome = RerankerService(use_fallback=True).rerank(params.query, items, text_key=text_key, top_k=RERANK_TOP_K)
     except Exception as e:
         # RerankerService.rerank() already catches failures *inside* its own
         # LLM call and degrades gracefully (RerankOutcome.reranked=False) -
-        # but get_reranker_llm() or RerankerService.__init__() itself
-        # raising (e.g. a construction-time error) happens before any of
-        # that internal safety net exists. Without this try/except, that
-        # exception would propagate uncaught and crash the whole search
-        # request - a real gap found live while extending re-ranking to
-        # more search levels, and just as real for the original Document/
-        # Clause wiring this helper already served. Search must never
-        # hard-fail because re-ranking failed, full stop.
+        # but RerankerService.__init__() itself raising (e.g. a
+        # construction-time error) happens before any of that internal
+        # safety net exists. Without this try/except, that exception would
+        # propagate uncaught and crash the whole search request - a real
+        # gap found live while extending re-ranking to more search levels,
+        # and just as real for the original Document/Clause wiring this
+        # helper already served. Search must never hard-fail because
+        # re-ranking failed, full stop.
         logger.error(f"Re-ranking setup failed, falling back to unranked results: {e}")
         return items[:RERANK_TOP_K], {**metadata, "reranking": {"applied": False, "reason": "error"}}
 

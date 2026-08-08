@@ -201,3 +201,26 @@ NEO4J_CIRCUIT_BREAKER = CircuitBreaker("neo4j", failure_threshold=5, recovery_ti
 # because of something optional. Same CLOSED/OPEN/HALF_OPEN mechanism,
 # same Redis-backed persistence, independent failure domain.
 RERANKER_CIRCUIT_BREAKER = CircuitBreaker("gemini_reranker", failure_threshold=5, recovery_timeout_seconds=30.0)
+
+# Real multi-provider fallback (backend/agents/llm_fallback_service.py),
+# added the same night a real production incident (Gemini was the only
+# configured provider, and its only working model hit a real daily quota
+# exhaustion) took down PDF upload/analysis entirely. One breaker per
+# fallback provider, independent of GEMINI_CIRCUIT_BREAKER and of each
+# other - the whole point of falling back to OpenAI/Anthropic is that a
+# Gemini-specific outage (or, as happened tonight, a Gemini-specific
+# billing problem) must not also affect whether OpenAI/Anthropic are
+# considered healthy, and vice versa. Used by the extraction/policy-
+# evaluation fallback chain (120s budget, matching GEMINI_CIRCUIT_BREAKER).
+OPENAI_CIRCUIT_BREAKER = CircuitBreaker("openai", failure_threshold=5, recovery_timeout_seconds=30.0)
+ANTHROPIC_CIRCUIT_BREAKER = CircuitBreaker("anthropic", failure_threshold=5, recovery_timeout_seconds=30.0)
+
+# Separate OpenAI/Anthropic breakers for the re-ranking fallback chain,
+# mirroring RERANKER_CIRCUIT_BREAKER's isolation from GEMINI_CIRCUIT_BREAKER
+# above for the exact same reason: re-ranking's short timeout budget trips
+# more often than extraction/policy's own failure rate even when a
+# provider is perfectly healthy, so it must never share a failure count
+# with (and potentially spuriously open) the breaker guarding the
+# load-bearing extraction/policy-evaluation fallback chain.
+RERANKER_OPENAI_CIRCUIT_BREAKER = CircuitBreaker("openai_reranker", failure_threshold=5, recovery_timeout_seconds=30.0)
+RERANKER_ANTHROPIC_CIRCUIT_BREAKER = CircuitBreaker("anthropic_reranker", failure_threshold=5, recovery_timeout_seconds=30.0)

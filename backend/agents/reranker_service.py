@@ -38,6 +38,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from backend.agents.llm_fallback_service import AllProvidersExhaustedError, PRIMARY_PROVIDER, invoke_with_fallback_reranker
 from backend.shared.monitoring.llm_usage_tracker import llm_usage_tracker
 from backend.shared.monitoring.latency_tracker import track_latency
 from backend.shared.reliability.circuit_breaker import RERANKER_CIRCUIT_BREAKER, CircuitBreakerOpenError
@@ -138,14 +139,21 @@ class RerankerService:
     TenantIsolationTests for the concrete proof.
     """
 
-    def __init__(self, llm=None):
+    def __init__(self, llm=None, use_fallback: bool = False):
         # No internal fallback to get_reranker_llm() here, deliberately -
         # matches LLMExtractionService/PolicyEvaluationService's identical
         # convention: the caller resolves the LLM (typically via
         # get_reranker_llm()) and passes it in, so "no LLM configured" is
         # an explicit, observable llm=None a caller chose, never a silent
         # env-var lookup this class does behind a caller's back.
+        #
+        # use_fallback: real multi-provider fallback (backend/agents/
+        # llm_fallback_service.py's invoke_with_fallback_reranker) - only
+        # takes effect when `llm` is None, same convention as the other two
+        # services. Uses re-ranking's own isolated breakers/timeout, not
+        # extraction/policy's 120s chain - see llm_fallback_service.py.
         self.llm = llm
+        self.use_fallback = use_fallback and llm is None
         self._model_name = getattr(llm, "model", None) or "unknown"
         self._structured_llm = (
             llm.with_structured_output(_RerankResponse, include_raw=True) if llm else None
@@ -172,16 +180,27 @@ class RerankerService:
         """
         if not candidates:
             return self._fallback(candidates, top_k, "no_candidates")
-        if not self._structured_llm:
+        if not self._structured_llm and not self.use_fallback:
             return self._fallback(candidates, top_k, "no_llm_configured")
 
         prompt = self._build_prompt(query, candidates, text_key)
+        model_used = self._model_name
+        provider_used = PRIMARY_PROVIDER
 
         try:
             with llm_call_semaphore:
-                with RERANKER_CIRCUIT_BREAKER.guard():
-                    raw_result = self._structured_llm.invoke(prompt)
+                if self._structured_llm is not None:
+                    with RERANKER_CIRCUIT_BREAKER.guard():
+                        raw_result = self._structured_llm.invoke(prompt)
+                else:
+                    raw_result, provider_used, model_used = invoke_with_fallback_reranker(
+                        _RerankResponse, prompt, operation="search_reranking",
+                        timeout_seconds=RERANKER_TIMEOUT_SECONDS,
+                    )
         except CircuitBreakerOpenError as e:
+            logger.warning(f"Re-ranking skipped - {e}")
+            return self._fallback(candidates, top_k, "circuit_open")
+        except AllProvidersExhaustedError as e:
             logger.warning(f"Re-ranking skipped - {e}")
             return self._fallback(candidates, top_k, "circuit_open")
         except Exception as e:
@@ -199,7 +218,14 @@ class RerankerService:
 
         usage_metadata = getattr(raw_result.get("raw"), "usage_metadata", None)
         llm_usage_tracker.record_call(
-            "search_reranking", self._model_name, cache_hit=False, usage_metadata=usage_metadata
+            "search_reranking", model_used, cache_hit=False, usage_metadata=usage_metadata,
+            # is_fallback based on provider_used vs. PRIMARY_PROVIDER - see
+            # policy_evaluation_service.py's identical fix for the real
+            # bug this avoids (this class's own self._model_name default,
+            # "unknown", never equals any real model name, so the old
+            # model_used-comparison was always True once use_fallback was
+            # set, confirmed live during production verification).
+            is_fallback=(self.use_fallback and provider_used != PRIMARY_PROVIDER),
         )
 
         return self._apply_rankings(candidates, response.rankings, top_k)

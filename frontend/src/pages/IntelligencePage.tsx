@@ -92,8 +92,18 @@ export const IntelligencePage: React.FC = () => {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="gemini-2.5-flash">Gemini 2.0 Flash</SelectItem>
-                <SelectItem value="gemini-1.5-pro">Gemini 1.5 Pro</SelectItem>
+                {/* Real, confirmed bug found live: this said "Gemini 2.0
+                Flash" while value="gemini-2.5-flash" - the label never
+                matched what was actually selected. gemini-1.5-pro (the
+                option below this comment previously) is now confirmed
+                dead (404 NOT_FOUND from the real API, not just
+                deprecated) - removed rather than relabeled, since there
+                is no live model to correctly point it at. Note: this
+                selector's value doesn't currently reach the real analysis
+                LLM choice at all (a separate, larger, already-flagged bug
+                in the upload/analyze wiring) - fixing the label/removing
+                the dead option here doesn't change that. */}
+                <SelectItem value="gemini-2.5-flash">Gemini 2.5 Flash</SelectItem>
                 <SelectItem value="gpt-4o">GPT-4o</SelectItem>
                 <SelectItem value="sonnet-3.5">Claude Sonnet 3.5</SelectItem>
               </SelectContent>

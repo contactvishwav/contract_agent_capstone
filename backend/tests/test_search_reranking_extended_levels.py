@@ -27,6 +27,7 @@ already fixed in search_strategies.py's ClauseSearchStrategy.
 """
 
 import unittest
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -36,6 +37,7 @@ from backend.agents.reranker_service import _RerankResponse, _RerankedItem, Rera
 from backend.domain.search_entities import SearchParams, SearchLevel
 from backend.infrastructure.encryption import field_encryptor
 from backend.shared.config.phase3_config import Phase3Config
+from backend.shared.reliability.circuit_breaker import CircuitBreaker
 
 
 def _wrap(response):
@@ -52,6 +54,29 @@ def _make_fake_llm(response):
     structured.invoke.return_value = _wrap(response)
     fake_llm.with_structured_output.return_value = structured
     return fake_llm, structured
+
+
+@contextmanager
+def _reranker_fallback_llm(fake_llm=None, raises=None):
+    """See test_search_reranking_integration.py's identical helper -
+    RerankerService's real construction changed from
+    `RerankerService(get_reranker_llm())` to `RerankerService(
+    use_fallback=True)` (real multi-provider fallback, backend/agents/
+    llm_fallback_service.py); this injects a fake single-provider chain
+    in its place so these tests keep proving the same real behavior
+    against the new construction path. Yields the factory MagicMock for
+    assert_called_once()/assert_not_called(), matching the old
+    get_reranker_llm() mock's usage."""
+    def _side_effect(timeout_seconds):
+        if raises is not None:
+            raise raises
+        return fake_llm
+
+    factory_mock = MagicMock(side_effect=_side_effect)
+    breaker = CircuitBreaker("test_reranker_fallback_chain", failure_threshold=5, recovery_timeout_seconds=30.0)
+    chain = [{"name": "gemini", "model": "gemini-2.5-flash", "factory": factory_mock, "breaker": breaker}]
+    with patch("backend.agents.llm_fallback_service._RERANKER_CHAIN", chain):
+        yield factory_mock
 
 
 class FakeEmbeddingService:
@@ -102,7 +127,7 @@ class SectionRelationshipRerankingTests(unittest.TestCase):
         ])
         fake_llm, structured = _make_fake_llm(response)
         with patch.object(Phase3Config, "RERANKING_ENABLED", True), \
-             patch("backend.shared.utils.search_strategies.get_reranker_llm", return_value=fake_llm):
+             _reranker_fallback_llm(fake_llm):
             result = search_strategies.SectionSearchStrategy().execute(
                 SearchParams(search_level=SearchLevel.SECTION, tenant_id="tenant_a", query="termination clause")
             )
@@ -118,7 +143,7 @@ class SectionRelationshipRerankingTests(unittest.TestCase):
         ])
         fake_llm, structured = _make_fake_llm(response)
         with patch.object(Phase3Config, "RERANKING_ENABLED", True), \
-             patch("backend.shared.utils.search_strategies.get_reranker_llm", return_value=fake_llm):
+             _reranker_fallback_llm(fake_llm):
             result = search_strategies.RelationshipSearchStrategy().execute(
                 SearchParams(search_level=SearchLevel.RELATIONSHIP, tenant_id="tenant_a", query="vendor relationship")
             )
@@ -128,30 +153,30 @@ class SectionRelationshipRerankingTests(unittest.TestCase):
 
     def test_flag_off_section_search_unchanged_no_llm_call(self):
         with patch.object(Phase3Config, "RERANKING_ENABLED", False), \
-             patch("backend.shared.utils.search_strategies.get_reranker_llm") as mock_get_llm:
+             _reranker_fallback_llm() as factory_mock:
             result = search_strategies.SectionSearchStrategy().execute(
                 SearchParams(search_level=SearchLevel.SECTION, tenant_id="tenant_a", query="termination")
             )
-        mock_get_llm.assert_not_called()
+        factory_mock.assert_not_called()
         self.assertNotIn("reranking", result.search_metadata)
 
     def test_flag_on_no_query_relationship_search_does_not_engage(self):
         with patch.object(Phase3Config, "RERANKING_ENABLED", True), \
-             patch("backend.shared.utils.search_strategies.get_reranker_llm") as mock_get_llm:
+             _reranker_fallback_llm() as factory_mock:
             result = search_strategies.RelationshipSearchStrategy().execute(
                 SearchParams(search_level=SearchLevel.RELATIONSHIP, tenant_id="tenant_a", query=None)
             )
-        mock_get_llm.assert_not_called()
+        factory_mock.assert_not_called()
         self.assertNotIn("reranking", result.search_metadata)
 
     def test_graceful_degradation_on_reranker_failure_section_search(self):
         with patch.object(Phase3Config, "RERANKING_ENABLED", True), \
-             patch("backend.shared.utils.search_strategies.get_reranker_llm", side_effect=RuntimeError("boom")):
+             _reranker_fallback_llm(raises=RuntimeError("boom")):
             result = search_strategies.SectionSearchStrategy().execute(
                 SearchParams(search_level=SearchLevel.SECTION, tenant_id="tenant_a", query="termination")
             )
-        # get_reranker_llm blowing up must not crash the search - falls
-        # back to unranked results just like RerankerService's own
+        # The provider construction blowing up must not crash the search -
+        # falls back to unranked results just like RerankerService's own
         # documented graceful-degradation contract.
         self.assertEqual(len(result.items), 2)
 
@@ -235,7 +260,7 @@ class EnhancedToolRerankingTests(unittest.TestCase):
         ])
         fake_llm, structured = _make_fake_llm(response)
         with patch.object(Phase3Config, "RERANKING_ENABLED", True), \
-             patch.object(enhanced_tool, "get_reranker_llm", return_value=fake_llm):
+             _reranker_fallback_llm(fake_llm):
             result = enhanced_tool.get_contracts_multi_level(
                 self.embeddings, "tenant_a", enhanced_tool.SearchLevel.DOCUMENT, summary_search="msa contract"
             )
@@ -270,25 +295,25 @@ class EnhancedToolRerankingTests(unittest.TestCase):
 
     def test_flag_off_document_search_unchanged_no_reranking_key(self):
         with patch.object(Phase3Config, "RERANKING_ENABLED", False), \
-             patch.object(enhanced_tool, "get_reranker_llm") as mock_get_llm:
+             _reranker_fallback_llm() as factory_mock:
             result = enhanced_tool.get_contracts_multi_level(
                 self.embeddings, "tenant_a", enhanced_tool.SearchLevel.DOCUMENT, summary_search="msa"
             )
-        mock_get_llm.assert_not_called()
+        factory_mock.assert_not_called()
         self.assertNotIn("reranking", result[0]["result"])
 
     def test_flag_on_no_query_does_not_engage(self):
         with patch.object(Phase3Config, "RERANKING_ENABLED", True), \
-             patch.object(enhanced_tool, "get_reranker_llm") as mock_get_llm:
+             _reranker_fallback_llm() as factory_mock:
             result = enhanced_tool.get_contracts_multi_level(
                 self.embeddings, "tenant_a", enhanced_tool.SearchLevel.SECTION, summary_search=None
             )
-        mock_get_llm.assert_not_called()
+        factory_mock.assert_not_called()
         self.assertNotIn("reranking", result[0]["result"])
 
     def test_graceful_degradation_on_reranker_failure(self):
         with patch.object(Phase3Config, "RERANKING_ENABLED", True), \
-             patch.object(enhanced_tool, "get_reranker_llm", side_effect=RuntimeError("boom")):
+             _reranker_fallback_llm(raises=RuntimeError("boom")):
             result = enhanced_tool.get_contracts_multi_level(
                 self.embeddings, "tenant_a", enhanced_tool.SearchLevel.RELATIONSHIP, summary_search="vendor"
             )

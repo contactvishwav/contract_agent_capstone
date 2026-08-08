@@ -10,14 +10,17 @@ prompt/parsing logic - previously each had its own stubbed
 _parse_llm_response() that discarded the LLM's response and returned [].
 """
 
+import asyncio
 import hashlib
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
+from backend.agents.llm_fallback_service import AllProvidersExhaustedError, PRIMARY_PROVIDER, invoke_with_fallback
 from backend.shared.cache.redis_cache import cache
 from backend.shared.config.phase3_config import Phase3Config
 from backend.shared.monitoring.llm_usage_tracker import llm_usage_tracker
@@ -239,6 +242,76 @@ _FALLBACK_CATEGORY_GUIDANCE: Dict["CUADClauseType", str] = {
     ),
 }
 
+# PILOT (not wired into any production call path yet - see
+# extract_clauses_grouped and research/benchmark/pilot_grouped_extraction.py):
+# a competing hypothesis for the same attention-dilution problem
+# _CATEGORY_HINTS/FALLBACK_CATEGORIES were built to address. Instead of a
+# hint or a conditional second call for a hand-picked 8 categories, this
+# splits ALL 41 categories into 7 always-run, fully-isolated groups (one
+# prompt/call per group, run concurrently) - the question this groups is
+# built to test is whether isolation itself (never competing with 40 other
+# categories for the model's attention) closes the gap more generally than
+# the targeted patches above, not just for the 8 FALLBACK_CATEGORIES.
+#
+# Grouped by real-world contract-review taxonomy (paralleling how a legal
+# reviewer already mentally buckets clause types, and the categories the
+# original enterprise-readiness audit's risk-category list itself organized
+# around), not by benchmark performance - every category has a natural home
+# regardless of how it scored under single-pass extraction, so the grouping
+# doesn't just re-encode "which categories were already weak."
+CATEGORY_GROUPS: Dict[str, List["CUADClauseType"]] = {
+    "metadata": [
+        CUADClauseType.DOCUMENT_NAME, CUADClauseType.PARTIES,
+        CUADClauseType.AGREEMENT_DATE, CUADClauseType.EFFECTIVE_DATE,
+        CUADClauseType.EXPIRATION_DATE,
+    ],
+    "liability_indemnity": [
+        CUADClauseType.CAP_ON_LIABILITY, CUADClauseType.UNCAPPED_LIABILITY,
+        CUADClauseType.LIQUIDATED_DAMAGES, CUADClauseType.WARRANTY_DURATION,
+        CUADClauseType.INSURANCE, CUADClauseType.AUDIT_RIGHTS,
+        CUADClauseType.COVENANT_NOT_TO_SUE,
+    ],
+    "termination_continuity": [
+        CUADClauseType.RENEWAL_TERM, CUADClauseType.NOTICE_PERIOD_TO_TERMINATE_RENEWAL,
+        CUADClauseType.TERMINATION_FOR_CONVENIENCE, CUADClauseType.CHANGE_OF_CONTROL,
+        CUADClauseType.POST_TERMINATION_SERVICES,
+    ],
+    "restrictive_covenants": [
+        CUADClauseType.NON_COMPETE, CUADClauseType.EXCLUSIVITY,
+        CUADClauseType.NO_SOLICIT_OF_CUSTOMERS, CUADClauseType.COMPETITIVE_RESTRICTION_EXCEPTION,
+        CUADClauseType.NO_SOLICIT_OF_EMPLOYEES, CUADClauseType.NON_DISPARAGEMENT,
+        CUADClauseType.ROFR_ROFO_ROFN,
+    ],
+    "ip": [
+        CUADClauseType.IP_OWNERSHIP_ASSIGNMENT, CUADClauseType.JOINT_IP_OWNERSHIP,
+        CUADClauseType.LICENSE_GRANT, CUADClauseType.NON_TRANSFERABLE_LICENSE,
+        CUADClauseType.AFFILIATE_LICENSE_LICENSOR, CUADClauseType.AFFILIATE_LICENSE_LICENSEE,
+        CUADClauseType.UNLIMITED_ALL_YOU_CAN_EAT_LICENSE, CUADClauseType.IRREVOCABLE_OR_PERPETUAL_LICENSE,
+        CUADClauseType.SOURCE_CODE_ESCROW,
+    ],
+    "commercial_terms": [
+        CUADClauseType.MOST_FAVORED_NATION, CUADClauseType.REVENUE_PROFIT_SHARING,
+        CUADClauseType.PRICE_RESTRICTIONS, CUADClauseType.MINIMUM_COMMITMENT,
+        CUADClauseType.VOLUME_RESTRICTION,
+    ],
+    "governance": [
+        CUADClauseType.GOVERNING_LAW, CUADClauseType.ANTI_ASSIGNMENT,
+        CUADClauseType.THIRD_PARTY_BENEFICIARY,
+    ],
+}
+
+# Every one of the 41 categories must appear in exactly one group - enforced
+# at import time (not just by a test) since a silently-dropped or
+# double-counted category would corrupt any comparison against single-pass
+# extraction (which always considers all 41).
+_grouped_types = [t for types in CATEGORY_GROUPS.values() for t in types]
+assert len(_grouped_types) == len(CUADClauseType), (
+    f"CATEGORY_GROUPS covers {len(_grouped_types)} category slots, expected {len(CUADClauseType)}"
+)
+assert len(set(_grouped_types)) == len(CUADClauseType), "CATEGORY_GROUPS has a duplicate category"
+assert set(_grouped_types) == set(CUADClauseType), "CATEGORY_GROUPS is missing a category"
+del _grouped_types
+
 
 class _LLMExtractedClause(BaseModel):
     """
@@ -317,8 +390,21 @@ class LLMExtractionService:
     asks Gemini to identify every applicable clause type in the given text.
     """
 
-    def __init__(self, llm=None):
+    def __init__(self, llm=None, use_fallback: bool = False):
+        """
+        use_fallback: real multi-provider fallback (backend/agents/
+        llm_fallback_service.py) - only takes effect when `llm` is None
+        (a caller that explicitly passed its own llm has made a deliberate
+        single-provider choice, e.g. research/benchmark scripts pinning a
+        specific model for reproducible numbers, or a test double - that
+        choice is always respected as-is, never silently overridden).
+        Real production callers (intelligence_tools.py's ClauseDetectorTool)
+        pass use_fallback=True with no llm instead of eagerly resolving
+        get_default_llm() themselves, so a missing/exhausted Gemini key no
+        longer means clause extraction is unconditionally unavailable.
+        """
         self.llm = llm
+        self.use_fallback = use_fallback and llm is None
         self._model_name = getattr(llm, "model", None) or DEFAULT_MODEL
         self._structured_llm = (
             llm.with_structured_output(_LLMExtractionResponse, include_raw=True) if llm else None
@@ -377,7 +463,7 @@ class LLMExtractionService:
         enable_fallback, text), so an identical request is free and instant
         on a cache hit.
         """
-        if not self._structured_llm or not text or not text.strip():
+        if not (self._structured_llm or self.use_fallback) or not text or not text.strip():
             return []
 
         cache_key = self._cache_key(text, candidate_types, enable_fallback)
@@ -410,15 +496,99 @@ class LLMExtractionService:
 
         return result
 
+    async def extract_clauses_grouped(
+        self,
+        text: str,
+        raise_on_error: bool = False,
+    ) -> Tuple[List[ExtractedClause], Dict[str, str]]:
+        """
+        PILOT method, not called from any production path yet (see
+        CATEGORY_GROUPS's module-level docstring and
+        research/benchmark/pilot_grouped_extraction.py). Alternative to
+        extract_clauses(): instead of one 41-category call (plus a
+        conditional fallback call), runs CATEGORY_GROUPS's 7 groups as fully
+        independent, concurrent LLM calls - each group's prompt only ever
+        lists that group's categories, so a category is never competing
+        with the other ~35 for the model's attention.
+
+        Returns (clauses, group_failures). group_failures maps group_name ->
+        error message for any group whose call failed - the other groups'
+        results are still returned, not discarded, matching this project's
+        honest-partial-failure discipline (node_status et al). raise_on_error
+        controls only whether this method itself re-raises after every group
+        has had a chance to run (the first group's failure, if any) - it does
+        NOT abort other groups' in-flight calls, since one group failing is
+        never a reason to discard results already obtained from the others.
+
+        No caching, no PROMPT_VERSION cache-key involvement, no fallback
+        pass, no usage of _CATEGORY_HINTS beyond what _build_prompt already
+        applies per-category regardless of grouping - deliberately identical
+        to extract_clauses() everywhere except the one variable under test
+        (grouping), so a pilot comparison isolates that variable cleanly.
+        """
+        if not self._structured_llm or not text or not text.strip():
+            return [], {}
+
+        loop = asyncio.get_event_loop()
+
+        async def run_group(executor: ThreadPoolExecutor, group_name: str, categories: List["CUADClauseType"]):
+            prompt = self._build_prompt(text, categories)
+            try:
+                clauses = await loop.run_in_executor(
+                    executor, self._invoke, prompt, text, True
+                )
+                return group_name, clauses, None
+            except Exception as e:
+                logger.error(f"Grouped extraction: group '{group_name}' failed: {e}")
+                return group_name, [], str(e)
+
+        # One shared pool, sized to the group count, so all 7 groups'
+        # synchronous _invoke() calls (each already guarded by the real
+        # llm_call_semaphore/circuit breaker inside _invoke itself) actually
+        # run concurrently rather than one blocking the next.
+        with ThreadPoolExecutor(max_workers=len(CATEGORY_GROUPS)) as executor:
+            outcomes = await asyncio.gather(*[
+                run_group(executor, name, categories) for name, categories in CATEGORY_GROUPS.items()
+            ])
+
+        results: List[ExtractedClause] = []
+        failures: Dict[str, str] = {}
+        for group_name, clauses, error in outcomes:
+            results.extend(clauses)
+            if error is not None:
+                failures[group_name] = error
+
+        if failures and raise_on_error:
+            first_group, first_error = next(iter(failures.items()))
+            raise RuntimeError(f"Grouped extraction: group '{first_group}' failed: {first_error}")
+
+        return results, failures
+
     def _invoke(self, prompt: str, source_text: str, raise_on_error: bool) -> List[ExtractedClause]:
         """One structured-output LLM call, shared by the primary and
         fallback passes: identical guard rails (circuit breaker, semaphore,
-        usage tracking, error handling), different prompt text only."""
+        usage tracking, error handling), different prompt text only.
+
+        When self.use_fallback is set, routes through invoke_with_fallback
+        (backend/agents/llm_fallback_service.py) instead of a single bound
+        LLM - Gemini first, then OpenAI, then Anthropic, whichever is
+        actually configured and healthy right now. model_used is whatever
+        provider actually served the call, not necessarily self._model_name
+        (the constructor-time default), so usage tracking reflects reality."""
+        model_used = self._model_name
+        provider_used = PRIMARY_PROVIDER
         try:
             with llm_call_semaphore:
-                with GEMINI_CIRCUIT_BREAKER.guard():
-                    raw_result = self._structured_llm.invoke(prompt)
-        except CircuitBreakerOpenError as e:
+                if self._structured_llm is not None:
+                    with GEMINI_CIRCUIT_BREAKER.guard():
+                        raw_result = self._structured_llm.invoke(prompt)
+                elif self.use_fallback:
+                    raw_result, provider_used, model_used = invoke_with_fallback(
+                        _LLMExtractionResponse, prompt, operation="clause_extraction"
+                    )
+                else:
+                    return []
+        except (CircuitBreakerOpenError, AllProvidersExhaustedError) as e:
             logger.warning(f"LLM clause extraction skipped - {e}")
             if raise_on_error:
                 raise
@@ -441,7 +611,14 @@ class LLMExtractionService:
 
         usage_metadata = getattr(raw_result.get("raw"), "usage_metadata", None)
         llm_usage_tracker.record_call(
-            "clause_extraction", self._model_name, cache_hit=False, usage_metadata=usage_metadata
+            "clause_extraction", model_used, cache_hit=False, usage_metadata=usage_metadata,
+            # is_fallback based on provider_used vs. PRIMARY_PROVIDER, not
+            # model_used vs. self._model_name - see policy_evaluation_
+            # service.py's identical fix for the real bug this avoids
+            # (this file's DEFAULT_MODEL happening to equal the primary's
+            # real model name masked the same bug here, accidentally, but
+            # only for this one class - not something to rely on).
+            is_fallback=(self.use_fallback and provider_used != PRIMARY_PROVIDER),
         )
 
         return [self._resolve_offsets(clause, source_text) for clause in response.clauses]

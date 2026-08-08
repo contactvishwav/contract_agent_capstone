@@ -2,7 +2,7 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 from typing import Type, Dict, Any, List, Optional
 from backend.domain.entities import ContractClause, PolicyViolation, RiskAssessment, RedlineRecommendation
-from backend.agents.llm_extraction_service import LLMExtractionService, get_default_llm
+from backend.agents.llm_extraction_service import LLMExtractionService
 from backend.agents.policy_evaluation_service import PolicyEvaluationService
 from backend.agents.policy_rule_resolver import get_applicable_rules
 from backend.agents.deterministic_policy_rules import evaluate_deterministic
@@ -66,9 +66,18 @@ class ClauseDetectorTool(BaseTool):
 
             # Resolve the LLM lazily so construction never requires credentials
             # (this tool is constructed eagerly in several places regardless
-            # of whether extraction is ever actually invoked).
-            llm = self._llm or get_default_llm()
-            service = LLMExtractionService(llm)
+            # of whether extraction is ever actually invoked). An explicit
+            # self._llm (a caller's deliberate model choice) is always
+            # respected as-is; otherwise real multi-provider fallback
+            # (backend/agents/llm_fallback_service.py) takes over instead of
+            # eagerly resolving get_default_llm() (Gemini-only) here - a
+            # missing/exhausted Gemini key no longer means clause extraction
+            # is unconditionally unavailable.
+            service = (
+                LLMExtractionService(self._llm)
+                if self._llm
+                else LLMExtractionService(use_fallback=True)
+            )
             extracted = service.extract_clauses(contract_text, enable_fallback=enable_fallback)
 
             seen: Dict[str, int] = {}
@@ -156,7 +165,15 @@ class PolicyCheckerTool(BaseTool):
             failed_clause_ids = []
 
             applicable_rules = get_applicable_rules(tenant_id, contract_type)
-            evaluation_service = PolicyEvaluationService(self._llm or get_default_llm())
+            # Same real multi-provider fallback rationale as
+            # ClauseDetectorTool._run above: an explicit self._llm override
+            # is always respected as-is, otherwise fall back through
+            # Gemini -> OpenAI -> Anthropic instead of being Gemini-only.
+            evaluation_service = (
+                PolicyEvaluationService(self._llm)
+                if self._llm
+                else PolicyEvaluationService(use_fallback=True)
+            )
 
             for clause in clauses:
                 clause_type = clause.get("clause_type", "")

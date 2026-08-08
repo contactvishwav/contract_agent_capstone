@@ -11,6 +11,7 @@ queries hit the cache instead of re-invoking the re-ranker.
 """
 
 import unittest
+from contextlib import contextmanager
 from unittest.mock import patch, MagicMock
 from types import SimpleNamespace
 
@@ -20,6 +21,7 @@ from backend.domain.search_entities import SearchParams, SearchLevel
 from backend.agents.reranker_service import _RerankResponse, _RerankedItem
 from backend.shared.cache.redis_cache import cache
 from backend.shared.config.phase3_config import Phase3Config
+from backend.shared.reliability.circuit_breaker import CircuitBreaker
 
 
 def _wrap(response):
@@ -28,6 +30,31 @@ def _wrap(response):
         "parsed": response,
         "parsing_error": None,
     }
+
+
+@contextmanager
+def _reranker_fallback_llm(fake_llm=None, raises=None):
+    """RerankerService's real construction changed from
+    `RerankerService(get_reranker_llm())` to `RerankerService(
+    use_fallback=True)` (real multi-provider fallback, backend/agents/
+    llm_fallback_service.py) - this replaces the old get_reranker_llm()-
+    patching convention with an equivalent single-provider fake chain, so
+    these tests keep proving the same real behavior against the new
+    construction path. fake_llm=None means "no provider configured"
+    (old get_reranker_llm() returning None); raises simulates a
+    construction-time failure (old get_reranker_llm() raising). Yields
+    the factory MagicMock so callers can assert_called_once()/
+    assert_not_called(), matching the old get_reranker_llm() mock's usage."""
+    def _side_effect(timeout_seconds):
+        if raises is not None:
+            raise raises
+        return fake_llm
+
+    factory_mock = MagicMock(side_effect=_side_effect)
+    breaker = CircuitBreaker("test_reranker_fallback_chain", failure_threshold=5, recovery_timeout_seconds=30.0)
+    chain = [{"name": "gemini", "model": "gemini-2.5-flash", "factory": factory_mock, "breaker": breaker}]
+    with patch("backend.agents.llm_fallback_service._RERANKER_CHAIN", chain):
+        yield factory_mock
 
 
 class FakeEmbeddingService:
@@ -96,7 +123,7 @@ class RerankingTenantIsolationTests(unittest.TestCase):
         structured.invoke.return_value = _wrap(response)
         fake_llm.with_structured_output.return_value = structured
 
-        with patch("backend.shared.utils.search_strategies.get_reranker_llm", return_value=fake_llm):
+        with _reranker_fallback_llm(fake_llm):
             strategy = search_strategies.DocumentSearchStrategy()
             result_a = strategy.execute(SearchParams(search_level=SearchLevel.DOCUMENT, tenant_id="tenant_a", query="msa"))
             result_b = strategy.execute(SearchParams(search_level=SearchLevel.DOCUMENT, tenant_id="tenant_b", query="msa"))
@@ -120,11 +147,11 @@ class FeatureFlagGatesRerankingTests(unittest.TestCase):
 
     def test_flag_off_old_behavior_unchanged_no_reranking_metadata_no_llm_call(self):
         with patch.object(Phase3Config, "RERANKING_ENABLED", False), \
-             patch("backend.shared.utils.search_strategies.get_reranker_llm") as mock_get_llm:
+             _reranker_fallback_llm() as factory_mock:
             strategy = search_strategies.DocumentSearchStrategy()
             result = strategy.execute(SearchParams(search_level=SearchLevel.DOCUMENT, tenant_id="tenant_a", query="msa"))
 
-        mock_get_llm.assert_not_called()
+        factory_mock.assert_not_called()
         self.assertNotIn("reranking", result.search_metadata)
         # Cypher page_size must still be the original top-10, not the wider pool
         cypher, params = self.fake_graph.queries[-1]
@@ -138,7 +165,7 @@ class FeatureFlagGatesRerankingTests(unittest.TestCase):
         fake_llm.with_structured_output.return_value = structured
 
         with patch.object(Phase3Config, "RERANKING_ENABLED", True), \
-             patch("backend.shared.utils.search_strategies.get_reranker_llm", return_value=fake_llm):
+             _reranker_fallback_llm(fake_llm):
             strategy = search_strategies.DocumentSearchStrategy()
             result = strategy.execute(SearchParams(search_level=SearchLevel.DOCUMENT, tenant_id="tenant_a", query="msa"))
 
@@ -152,11 +179,11 @@ class FeatureFlagGatesRerankingTests(unittest.TestCase):
         """Reranking has nothing to judge relevance against without a real
         query - a browse-all/filter-only request must not call the LLM."""
         with patch.object(Phase3Config, "RERANKING_ENABLED", True), \
-             patch("backend.shared.utils.search_strategies.get_reranker_llm") as mock_get_llm:
+             _reranker_fallback_llm() as factory_mock:
             strategy = search_strategies.DocumentSearchStrategy()
             result = strategy.execute(SearchParams(search_level=SearchLevel.DOCUMENT, tenant_id="tenant_a", query=None))
 
-        mock_get_llm.assert_not_called()
+        factory_mock.assert_not_called()
         self.assertNotIn("reranking", result.search_metadata)
 
 
@@ -185,7 +212,7 @@ class RerankedResultCachingTests(unittest.TestCase):
         structured.invoke.return_value = _wrap(response)
         fake_llm.with_structured_output.return_value = structured
 
-        with patch("backend.shared.utils.search_strategies.get_reranker_llm", return_value=fake_llm):
+        with _reranker_fallback_llm(fake_llm):
             service = EnhancedSearchService()
             params = SearchParams(search_level=SearchLevel.DOCUMENT, tenant_id="tenant_a", query="msa")
             first = service.search(params)
@@ -207,7 +234,7 @@ class RerankedResultCachingTests(unittest.TestCase):
         structured.invoke.return_value = _wrap(response)
         fake_llm.with_structured_output.return_value = structured
 
-        with patch("backend.shared.utils.search_strategies.get_reranker_llm", return_value=fake_llm):
+        with _reranker_fallback_llm(fake_llm):
             service = EnhancedSearchService()
             service.search(SearchParams(search_level=SearchLevel.DOCUMENT, tenant_id="tenant_a", query="msa"))
             service.search(SearchParams(search_level=SearchLevel.DOCUMENT, tenant_id="tenant_b", query="msa"))
