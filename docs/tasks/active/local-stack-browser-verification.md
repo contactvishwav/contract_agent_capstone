@@ -5,7 +5,8 @@
 - Branch: `feat/persistent-chat-sessions`
 - Worktree: `/Users/vishwa/contract_agent_capstone_copy`
 - Base commit: `a7ad6f3`
-- Last verified feature commit: `cd56411`
+- Last verified implementation commit: `cd56411`
+- Handoff/source-map commit: `720fffb`
 
 ## Goal
 
@@ -174,7 +175,7 @@ with real local services.
 - `50d9500` — `fix: restore tenant-scoped chat journeys`
 - `60b545e` — `fix: preserve first chat turn while streaming`
 - `cd56411` — `chore: allow local backend port override`
-- Documentation/handoff commit follows this record.
+- `720fffb` — `docs: record local browser verification handoff`
 
 ## Verification outcomes
 
@@ -214,9 +215,7 @@ with real local services.
 
 ## Uncommitted/protected files
 
-- This task record and the targeted `docs/SYSTEM_MAP.md` runtime update are the
-  only handoff documentation pending commit at the time of writing.
-- Protected and untouched:
+- Protected and untouched; these are the only files expected to remain untracked:
   `research/benchmark/pilot_grouped_extraction.py` and
   `research/benchmark/pilot_grouped_extraction_sample.json`.
 
