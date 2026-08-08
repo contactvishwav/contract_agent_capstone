@@ -270,10 +270,18 @@ def _search_tool_module():
 
 
 class ChunkSnippetTests(unittest.TestCase):
-    def test_snippet_matches_old_substring_semantics(self):
+    def test_returns_full_content_not_a_200_char_truncation(self):
+        """Real, confirmed bug found live: the old 200-char truncation
+        could (and did) cut off before the actual answer-bearing text in
+        a real chunk - a real query correctly matched the right chunk
+        (0.78 similarity) but its answer sat at character ~400, past the
+        old cutoff, so it never reached the model. Chunks are already a
+        bounded unit; a second truncation on top defeats the point of
+        chunk-level search."""
         tool = _search_tool_module()
-        long_text = "x" * 300
-        self.assertEqual(tool._chunk_snippet(long_text), long_text[:200] + "...")
+        long_text = "x" * 300 + " THE REAL ANSWER IS HERE"
+        self.assertEqual(tool._chunk_snippet(long_text), long_text)
+        self.assertIn("THE REAL ANSWER IS HERE", tool._chunk_snippet(long_text))
 
 
 class SearchChunksEncryptionTests(unittest.TestCase):
@@ -305,7 +313,7 @@ class SearchChunksEncryptionTests(unittest.TestCase):
         chunks = output[0]["result"]["chunks"]
         self.assertEqual(len(chunks), 1)
         self.assertEqual(chunks[0]["search_type"], "semantic")
-        self.assertEqual(chunks[0]["content"], SSN_CHUNK_TEXT[:200] + "...")
+        self.assertEqual(chunks[0]["content"], SSN_CHUNK_TEXT)
         self.assertNotIn("123-45-6789", encrypted)  # sanity: ciphertext really doesn't contain plaintext
 
     def test_fallback_text_search_finds_match_against_encrypted_content(self):
@@ -342,7 +350,7 @@ class SearchChunksEncryptionTests(unittest.TestCase):
         new_chunks_result = output[0]["result"]
         self.assertEqual(new_chunks_result["total_count"], 1)
         self.assertEqual(len(new_chunks_result["chunks"]), 1)
-        self.assertEqual(new_chunks_result["chunks"][0]["content"], SSN_CHUNK_TEXT[:200] + "...")
+        self.assertEqual(new_chunks_result["chunks"][0]["content"], SSN_CHUNK_TEXT)
         self.assertEqual(new_chunks_result["chunks"][0]["search_type"], "text_new")
 
     def test_fallback_candidate_fetch_is_bounded(self):

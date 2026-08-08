@@ -134,7 +134,7 @@ def _multi_level_search_cache_key(
 def get_contracts_multi_level(
     embeddings: Any,
     tenant_id: str,
-    search_level: SearchLevel = SearchLevel.DOCUMENT,
+    search_level: SearchLevel = SearchLevel.ALL,
     clause_types: Optional[List[str]] = None,
     section_types: Optional[List[str]] = None,
     min_effective_date: Optional[str] = None,
@@ -453,11 +453,22 @@ def _search_relationships(embeddings, tenant_id, summary_search, parties, filter
     return converted
 
 def _chunk_snippet(content: str) -> str:
-    """Equivalent to the old substring(content, 0, 200) + '...' Cypher
-    snippet - now computed in Python since Neo4j can no longer operate on
-    Chunk.content/DocumentChunk.content directly (encrypted at rest, P3
-    item 21 follow-up)."""
-    return content[:200] + '...'
+    """Real, confirmed bug found live during a full Contract Chat
+    functional audit: this used to truncate to 200 characters (a leftover
+    equivalent of the old substring(content, 0, 200) Cypher snippet, from
+    before Chunk.content was encrypted at rest - P3 item 21). A real
+    question containing a section title verbatim from the document
+    ("Fees & Invoicing") correctly matched the right chunk (real,
+    confirmed: similarity_score 0.78), but the answer text - "4. Fees &
+    Invoicing\\nTotal project fee: $500,000." - sat at character ~400 of a
+    1405-character chunk, well past the 200-character cutoff, so it never
+    reached the model at all despite the retrieval itself working
+    correctly. Chunks are already a bounded, chunking-pipeline-sized unit
+    (not whole documents) - truncating them a second time down to a
+    "preview" defeats the actual purpose of chunk-level search, which is
+    to give the model real content to answer from. Returns the chunk in
+    full."""
+    return content
 
 
 def _search_chunks(embeddings, tenant_id, summary_search, filters, params):
@@ -596,10 +607,44 @@ def _search_all_levels(embeddings, tenant_id, summary_search, clause_types, sect
     return [results]
 
 class EnhancedContractInput(BaseModel):
-    search_level: Optional[SearchLevel] = Field(SearchLevel.DOCUMENT, description="Level of search: document, section, clause, relationship, or all")
+    # Real, confirmed bug found live: this used to default to
+    # SearchLevel.DOCUMENT, and its description gave the model no real
+    # guidance on what each level actually searches (it didn't even
+    # mention 'chunk' as an option). 'document' only searches each
+    # contract's short AI-generated summary blurb - never the real
+    # contract text - so the model routinely picked (or, more often,
+    # simply omitted search_level and silently fell through to) the one
+    # level guaranteed not to find real content. Confirmed live: a
+    # question containing a section title verbatim from the document
+    # ("Fees & Invoicing") returned total_count: 0, because 'document'
+    # was searched, not 'chunk'. Fixed by defaulting to SearchLevel.ALL
+    # (already proven to aggregate every level, chunks included, in one
+    # call) and by writing a description that actually explains what
+    # each level searches, not just enumerating the enum values.
+    search_level: Optional[SearchLevel] = Field(
+        SearchLevel.ALL,
+        description=(
+            "Which level(s) to search - these search fundamentally different data, not just "
+            "different levels of the same data:\n"
+            "- 'document': ONLY each contract's short AI-generated summary paragraph. Does NOT "
+            "search the real contract text. Use only for metadata-style questions (contract type, "
+            "parties, dates, monetary value) - never for a question about actual wording, terms, "
+            "or a specific clause/section.\n"
+            "- 'chunk': the real, verbatim paragraphs of the actual uploaded contract. Use this for "
+            "ANY question about what the contract actually says, including exact section titles, "
+            "specific terms, dollar amounts, deadlines, or quoted language.\n"
+            "- 'section' / 'clause' / 'relationship': structured extractions that only exist after "
+            "a full contract analysis has been run on that document - frequently empty for a "
+            "freshly uploaded contract, even though 'chunk' already has real content for it.\n"
+            "- 'all' (default): searches every level above in one call. This is the safe default "
+            "for any real content question, and never worse than picking a single level - if in "
+            "doubt, or for any question about what the contract actually says, do not set this "
+            "field at all and let it default to 'all'."
+        ),
+    )
     clause_types: Optional[List[str]] = Field(None, description="Specific CUAD clause types to search")
     section_types: Optional[List[str]] = Field(None, description="Document sections to focus on: payment, termination, liability, etc.")
-    
+
     # Existing fields
     min_effective_date: Optional[str] = Field(None, description="Earliest contract effective date (YYYY-MM-DD)")
     max_effective_date: Optional[str] = Field(None, description="Latest contract effective date (YYYY-MM-DD)")
@@ -607,7 +652,17 @@ class EnhancedContractInput(BaseModel):
     max_end_date: Optional[str] = Field(None, description="Latest contract end date (YYYY-MM-DD)")
     contract_type: Optional[str] = Field(None, description="Contract type")
     parties: Optional[List[str]] = Field(None, description="List of parties involved in the contract")
-    summary_search: Optional[str] = Field(None, description="Semantic search of contract content")
+    summary_search: Optional[str] = Field(
+        None,
+        description=(
+            "The search text to match against contract content. What this actually searches "
+            "depends entirely on search_level: at 'chunk' or 'all' level (the default) it searches "
+            "the real, verbatim contract paragraphs; at 'document' level it searches ONLY each "
+            "contract's short AI-generated summary, not the real text - a query can legitimately "
+            "find nothing at 'document' level while the exact same text is present verbatim in the "
+            "contract at 'chunk' level."
+        ),
+    )
     active: Optional[bool] = Field(None, description="Whether the contract is active")
     governing_law: Optional[Location] = Field(None, description="Governing law of the contract")
     monetary_value: Optional[MonetaryValue] = Field(None, description="The total amount or value of a contract")
@@ -628,15 +683,17 @@ class EnhancedContractInput(BaseModel):
 class EnhancedContractSearchTool(BaseTool):
     name: str = "EnhancedContractSearch"
     description: str = (
-        "Advanced contract search with multi-level embedding support. "
-        "Can search at document, section, clause, chunk, or relationship levels for precise results."
+        "Search uploaded contracts. Defaults to searching every level at once (document summary, "
+        "sections, clauses, relationships, and the real verbatim chunk text), so it always has "
+        "access to real contract content, not just a short AI-generated summary. For any question "
+        "about what a contract actually says, do not restrict search_level - let it default."
     )
     args_schema: Type[BaseModel] = EnhancedContractInput
 
     def _run(
         self,
         tenant_id: str,
-        search_level: SearchLevel = SearchLevel.DOCUMENT,
+        search_level: SearchLevel = SearchLevel.ALL,
         clause_types: Optional[List[str]] = None,
         section_types: Optional[List[str]] = None,
         min_effective_date: Optional[str] = None,

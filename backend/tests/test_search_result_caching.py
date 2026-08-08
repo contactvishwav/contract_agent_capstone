@@ -41,6 +41,11 @@ def _search_tool_module():
     return enhanced_contract_search_tool
 
 
+def _search_level_document():
+    from backend.shared.utils.enhanced_contract_search_tool import SearchLevel
+    return SearchLevel.DOCUMENT
+
+
 class CountingFakeGraph:
     def __init__(self, response):
         self._response = response
@@ -69,10 +74,12 @@ class VectorSearchCachingTests(unittest.TestCase):
              patch.object(tool, "graph", fake_graph):
             first = tool.get_contracts_multi_level(
                 self._fake_embeddings(), tenant_id="tenant_cache_1",
+                search_level=_search_level_document(),
                 summary_search="a distinctive liability clause query",
             )
             second = tool.get_contracts_multi_level(
                 self._fake_embeddings(), tenant_id="tenant_cache_1",
+                search_level=_search_level_document(),
                 summary_search="a distinctive liability clause query",
             )
 
@@ -91,10 +98,12 @@ class VectorSearchCachingTests(unittest.TestCase):
              patch.object(tool, "graph", fake_graph):
             tool.get_contracts_multi_level(
                 self._fake_embeddings(), tenant_id="tenant_cache_2a",
+                search_level=_search_level_document(),
                 summary_search="another distinctive query",
             )
             tool.get_contracts_multi_level(
                 self._fake_embeddings(), tenant_id="tenant_cache_2b",
+                search_level=_search_level_document(),
                 summary_search="another distinctive query",
             )
 
@@ -108,10 +117,12 @@ class VectorSearchCachingTests(unittest.TestCase):
              patch.object(tool, "graph", fake_graph):
             tool.get_contracts_multi_level(
                 self._fake_embeddings(), tenant_id="tenant_cache_3",
+                search_level=_search_level_document(),
                 summary_search="cache disabled query",
             )
             tool.get_contracts_multi_level(
                 self._fake_embeddings(), tenant_id="tenant_cache_3",
+                search_level=_search_level_document(),
                 summary_search="cache disabled query",
             )
 
