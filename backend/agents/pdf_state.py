@@ -9,3 +9,4 @@ class PDFProcessingState(TypedDict):
     processing_result: Optional[ProcessingResult]
     messages: list
     filename: Optional[str]
+    contract_id: Optional[str]

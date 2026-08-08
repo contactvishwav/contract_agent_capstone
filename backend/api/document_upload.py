@@ -216,13 +216,33 @@ async def upload_pdf(
                     embedding_service = GeminiEmbeddingService()
                     
                     chunking_agent = ChunkingAgent(embedding_service)
-                    contract_id = file.filename.replace('.pdf', '')
-                    # `contract_id` is reassigned below (Step 7) to the real,
-                    # UUID-based Contract.file_id once it exists - this
-                    # filename-derived value is captured under its own name
-                    # so it survives that reassignment, for the real->Document
-                    # link performed after Step 7 (see chunking_document_id
-                    # usage below).
+                    from backend.infrastructure.contract_repository import generate_contract_id
+                    # Real, confirmed bug found live: this used to be
+                    # file.filename.replace('.pdf', '') - not tenant-scoped,
+                    # not unique per upload. Two different tenants (or the
+                    # same tenant re-uploading) with the same filename wrote
+                    # onto one shared Document node forever (storage_service.
+                    # py's Chunk writes use CREATE, so nothing even
+                    # overwrote cleanly - chunks just piled up under it,
+                    # tenant_id last-write-wins). Confirmed live: 14
+                    # accumulated Chunk nodes on one Document, from unrelated
+                    # uploads across sessions. Fixed by generating the real,
+                    # unique, UUID-based id upfront - the same id
+                    # store_contract will use for the real Contract node
+                    # (threaded through via DocumentProcessingRequest.
+                    # contract_id below), not a second, disposable,
+                    # collision-prone placeholder.
+                    contract_id = generate_contract_id()
+                    # `contract_id` is still reassigned below (Step 7) from
+                    # the real processing result - normally an identical
+                    # value now that both sides agree upfront, but the
+                    # enable_enhanced=True branch uses a separate processor
+                    # that doesn't thread this id through yet (a separately
+                    # flagged, out-of-scope gap - see report) and could
+                    # still return a different one. Captured under its own
+                    # name so the real->Document link performed after Step 7
+                    # always targets the Document chunking actually wrote to,
+                    # not whatever contract_id ends up being.
                     chunking_document_id = contract_id
                     async_chunking_succeeded = False
 
@@ -322,8 +342,13 @@ async def upload_pdf(
                     file_path=temp_path,
                     filename=file.filename,
                     tenant_id=tenant_id,
+                    # Same real, UUID-based id Step 5.5's chunking already
+                    # used as its Document node's id - threaded through so
+                    # store_contract uses this exact id instead of minting a
+                    # second one, closing the cross-tenant chunk-mixing gap.
+                    contract_id=contract_id,
                     processing_options={
-                        "model": model, 
+                        "model": model,
                         "full_text": full_text,
                         "enable_enhanced": enable_enhanced
                     }

@@ -81,9 +81,9 @@ class PdfProcessingAgentThreadsFilenameTests(unittest.IsolatedAsyncioTestCase):
 
         captured = {}
 
-        async def fake_store_contract(data_dict, tenant_id):
+        async def fake_store_contract(data_dict, tenant_id, contract_id=None):
             captured["data_dict"] = data_dict
-            return "UPLOADED_captured_20260807"
+            return contract_id or "UPLOADED_captured_20260807"
 
         # pdf_processing_agent.py does `from ...contract_repository import
         # Neo4jContractRepository`, binding its own local reference - must

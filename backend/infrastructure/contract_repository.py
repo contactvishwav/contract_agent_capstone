@@ -12,6 +12,15 @@ import logging
 from backend.shared.utils.logger import get_logger
 logger = get_logger(__name__)
 
+def generate_contract_id() -> str:
+    """Same format store_contract has always generated internally -
+    pulled out so a caller can generate the real id *before* store_contract
+    runs, when something else needs to agree on it first (see
+    document_upload.py's Step 5.5 chunking document_id, threaded through
+    via store_contract's optional contract_id param below)."""
+    return f"UPLOADED_{uuid.uuid4().hex[:8].upper()}_{datetime.now().strftime('%Y%m%d')}"
+
+
 class Neo4jContractRepository(IContractRepository):
     """Repository implementation using existing Neo4j infrastructure - DRY principle"""
 
@@ -69,13 +78,31 @@ class Neo4jContractRepository(IContractRepository):
             logger.error(f"Failed to get contract {contract_id}: {e}")
             return None
     
-    async def store_contract(self, contract_data: Dict[str, Any], tenant_id: str = "default-tenant") -> str:
-        """Store contract in Neo4j with tenant isolation"""
-        
+    async def store_contract(self, contract_data: Dict[str, Any], tenant_id: str = "default-tenant",
+                            contract_id: Optional[str] = None) -> str:
+        """Store contract in Neo4j with tenant isolation.
+
+        contract_id: real, confirmed bug found live - the chunking
+        pipeline (Step 5.5 of document_upload.py, which runs before this
+        method) used to derive its own document_id from the filename
+        alone (not tenant-scoped, not unique per upload), because the
+        real UUID-based id below didn't exist yet at that point in the
+        pipeline. Two different tenants (or the same tenant re-uploading)
+        with the same filename then wrote onto one shared Document node
+        forever - confirmed live: 14 accumulated Chunk nodes, tenant_id
+        overwritten last-write-wins. Fixed by generating this id upfront
+        (see generate_contract_id above) and threading it through to
+        chunking *before* store_contract is ever called - the same id
+        Document/Chunk nodes get is now the real Contract.file_id, not a
+        second, disposable, collision-prone placeholder. Optional (not
+        required) so pdf_tools.py's separate call site keeps generating
+        its own, exactly as before.
+        """
+
         try:
-            # Generate unique contract ID
-            contract_id = f"UPLOADED_{uuid.uuid4().hex[:8].upper()}_{datetime.now().strftime('%Y%m%d')}"
-            
+            if contract_id is None:
+                contract_id = generate_contract_id()
+
             # Log what we're about to store
             logger.info(f"=== STORING CONTRACT ===")
             logger.info(f"Contract ID: {contract_id}")

@@ -132,7 +132,9 @@ def get_pdf_processing_agent(llm):
                 "tenant_id": tenant_id
             }
             
-            contract_id = await contract_repository.store_contract(data_dict, tenant_id)
+            contract_id = await contract_repository.store_contract(
+                data_dict, tenant_id, contract_id=state.get("contract_id")
+            )
             logger.info(f"Contract stored with ID: {contract_id}")
             
             return {**state, "processing_result": ProcessingResult(

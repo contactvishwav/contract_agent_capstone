@@ -117,6 +117,11 @@ class DocumentProcessingService:
             # so duplicate-detection can actually match on it - see
             # value_objects.py's ContractData.filename docstring.
             "filename": request.filename,
+            # Real, pre-generated UUID-based id - see
+            # Neo4jContractRepository.store_contract's contract_id
+            # docstring for the real cross-tenant chunk-mixing bug this
+            # fixes.
+            "contract_id": request.contract_id,
         }
         
         logger.info("Starting PDF agent processing with structured state")

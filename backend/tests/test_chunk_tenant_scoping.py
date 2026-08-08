@@ -129,13 +129,14 @@ class DocumentUploadChunkingWiringTests(unittest.IsolatedAsyncioTestCase):
     bug is fixed (no false "async failed" fallback on a real success),
     and the post-Step-7 Contract link actually fires with the real ids."""
 
-    async def _upload(self, chunking_success=True):
+    async def _upload(self, chunking_success=True, tenant_id="tenant_a", filename="Sample_MSA.pdf",
+                     upload_contract_id="UPLOADED_REAL_20260808"):
         import io
         from fastapi import BackgroundTasks, UploadFile
         from backend.api.document_upload import upload_pdf
         from backend.governance.auth import TokenIdentity
 
-        fake_identity = TokenIdentity(tenant_id="tenant_a", role="ADMIN", username="tester")
+        fake_identity = TokenIdentity(tenant_id=tenant_id, role="ADMIN", username="tester")
         fake_llm_mgr = MagicMock()
         fake_llm_mgr.agents = {"gemini-2.5-flash": MagicMock()}
 
@@ -144,7 +145,7 @@ class DocumentUploadChunkingWiringTests(unittest.IsolatedAsyncioTestCase):
 
         chunking_result = {
             "success": chunking_success,
-            "document_id": "Sample_MSA",
+            "document_id": "unused-placeholder",
             "chunk_count": 2,
             "plan": {"strategy_type": "sentence", "fallback_chain": ["sentence"], "reasoning": "x"},
             # Real shape from quality_validator.py's QualityValidator.
@@ -177,14 +178,14 @@ class DocumentUploadChunkingWiringTests(unittest.IsolatedAsyncioTestCase):
              patch("backend.application.services.document_processing_service.DocumentServiceFactory.create_service") as fake_factory:
             fake_service = MagicMock()
             fake_service.process_pdf_upload = AsyncMock(return_value={
-                "status": "success", "contract_id": "UPLOADED_REAL_20260808",
+                "status": "success", "contract_id": upload_contract_id,
                 "final_result": "Contract stored successfully",
             })
             fake_factory.return_value = fake_service
 
             await upload_pdf(
                 background_tasks=BackgroundTasks(),
-                file=UploadFile(filename="Sample_MSA.pdf", file=io.BytesIO(b"%PDF-1.4 fake pdf content")),
+                file=UploadFile(filename=filename, file=io.BytesIO(b"%PDF-1.4 fake pdf content")),
                 model="gemini-2.5-flash",
                 enable_enhanced=False,
                 llm_mgr=fake_llm_mgr,
@@ -209,18 +210,74 @@ class DocumentUploadChunkingWiringTests(unittest.IsolatedAsyncioTestCase):
         this test would fail here, before even reaching the assertion."""
         fake_process, link_calls = await self._upload(chunking_success=True)
         fake_process.assert_awaited_once()  # got this far without an unhandled exception
+        _, kwargs = fake_process.call_args
+        real_document_id = kwargs.get("document_id")
         # And genuinely completed successfully (not silently swallowed by
         # the except block this bug used to fall into) - the Contract link
         # only fires when async_chunking_succeeded is True.
-        self.assertEqual(link_calls, [("Sample_MSA", "UPLOADED_REAL_20260808")])
+        self.assertEqual(link_calls, [(real_document_id, "UPLOADED_REAL_20260808")])
 
     async def test_successful_chunking_links_document_to_the_real_contract_id(self):
-        _, link_calls = await self._upload(chunking_success=True)
-        self.assertEqual(link_calls, [("Sample_MSA", "UPLOADED_REAL_20260808")])
+        fake_process, link_calls = await self._upload(chunking_success=True)
+        _, kwargs = fake_process.call_args
+        self.assertEqual(link_calls, [(kwargs.get("document_id"), "UPLOADED_REAL_20260808")])
 
     async def test_failed_chunking_does_not_attempt_to_link(self):
         _, link_calls = await self._upload(chunking_success=False)
         self.assertEqual(link_calls, [])
+
+    async def test_chunking_document_id_is_not_derived_from_filename(self):
+        """Real, confirmed bug found live: this used to be
+        file.filename.replace('.pdf', '') - not tenant-scoped, not unique
+        per upload. Two different tenants (or the same tenant
+        re-uploading) with an identically-named file wrote onto one
+        shared Document node forever (confirmed live: 14 accumulated
+        Chunk nodes on one Document, tenant_id last-write-wins). Fixed by
+        generating a real, unique, UUID-based id upfront - this must never
+        equal the filename-derived value again."""
+        fake_process, _ = await self._upload(filename="Sample_MSA.pdf")
+        _, kwargs = fake_process.call_args
+        self.assertNotEqual(kwargs.get("document_id"), "Sample_MSA")
+        self.assertTrue(kwargs.get("document_id"))
+
+    async def test_two_tenants_uploading_the_same_filename_get_different_document_ids(self):
+        """The real regression this fix closes: two different tenants
+        uploading identically-named files must never collide onto the
+        same chunking Document node - the exact scenario confirmed live
+        in production (acme-legal and acme-legal2 both uploading
+        Clean_MSA.pdf onto one shared Document, tenant_id overwritten
+        last-write-wins)."""
+        fake_process_a, _ = await self._upload(
+            tenant_id="tenant_a", filename="Clean_MSA.pdf", upload_contract_id="UPLOADED_TENANT_A"
+        )
+        document_id_a = fake_process_a.call_args.kwargs.get("document_id")
+
+        fake_process_b, _ = await self._upload(
+            tenant_id="tenant_b", filename="Clean_MSA.pdf", upload_contract_id="UPLOADED_TENANT_B"
+        )
+        document_id_b = fake_process_b.call_args.kwargs.get("document_id")
+
+        self.assertTrue(document_id_a)
+        self.assertTrue(document_id_b)
+        self.assertNotEqual(document_id_a, document_id_b)
+
+    async def test_same_tenant_reuploading_the_same_filename_gets_a_different_document_id(self):
+        """Same collision, single-tenant case: re-uploading a same-named
+        file must not pile new chunks onto the same old Document node
+        either (storage_service.py's Chunk writes use CREATE, so nothing
+        would even overwrite cleanly - they'd just accumulate, as
+        confirmed live)."""
+        fake_process_1, _ = await self._upload(
+            tenant_id="tenant_a", filename="Clean_MSA.pdf", upload_contract_id="UPLOADED_FIRST"
+        )
+        document_id_1 = fake_process_1.call_args.kwargs.get("document_id")
+
+        fake_process_2, _ = await self._upload(
+            tenant_id="tenant_a", filename="Clean_MSA.pdf", upload_contract_id="UPLOADED_SECOND"
+        )
+        document_id_2 = fake_process_2.call_args.kwargs.get("document_id")
+
+        self.assertNotEqual(document_id_1, document_id_2)
 
 
 if __name__ == "__main__":

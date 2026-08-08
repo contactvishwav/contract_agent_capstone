@@ -10,6 +10,13 @@ class DocumentProcessingRequest:
     tenant_id: str
     user_id: Optional[str] = None
     processing_options: Dict[str, Any] = None
+    # Real, unique, UUID-based id generated upfront by document_upload.py
+    # (contract_repository.generate_contract_id()) - threaded through so
+    # store_contract uses this exact id instead of minting its own, and so
+    # it matches the id Step 5.5's chunking already used. See
+    # Neo4jContractRepository.store_contract's contract_id docstring for
+    # the real bug this fixes.
+    contract_id: Optional[str] = None
 
 @dataclass 
 class ContractExtractionResult:
