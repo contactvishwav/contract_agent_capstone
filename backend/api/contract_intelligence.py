@@ -124,6 +124,8 @@ async def get_intelligence_status(
                c.clauses_count as clauses_count,
                c.redlines_count as redlines_count,
                c.processing_time as processing_time,
+               c.analysis_execution_path as execution_path,
+               c.analysis_planned_execution as planned_execution,
                c.intelligence_updated as updated
         """
 
@@ -143,6 +145,8 @@ async def get_intelligence_status(
             "clauses_count": contract_data.get("clauses_count", 0),
             "redlines_count": contract_data.get("redlines_count", 0),
             "processing_time": contract_data.get("processing_time"),
+            "execution_path": contract_data.get("execution_path"),
+            "planned_execution": contract_data.get("planned_execution"),
             # c.intelligence_updated is set via datetime() (contract_
             # intelligence_service.py's _store_intelligence_results), so it
             # comes back as a raw neo4j.time.DateTime object here - same

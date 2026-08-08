@@ -63,6 +63,11 @@ class ChunkingStorageServiceTenantScopingTests(unittest.IsolatedAsyncioTestCase)
         self.assertIn("tenant_id", merge_calls[0][0], "the Cypher must actually SET d.tenant_id")
         self.assertEqual(merge_calls[0][1]["tenant_id"], "tenant_a")
 
+        chunk_calls = [(c, p) for c, p in fake_graph.queries if "CREATE (c:Chunk" in c]
+        self.assertEqual(len(chunk_calls), 1)
+        self.assertIn("tenant_id: $tenant_id", chunk_calls[0][0])
+        self.assertEqual(chunk_calls[0][1]["tenant_id"], "tenant_a")
+
     async def test_link_document_to_contract_writes_the_real_contract_id(self):
         service, fake_graph = _storage_service()
 

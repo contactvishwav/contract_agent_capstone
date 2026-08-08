@@ -262,15 +262,18 @@ class StepExecutor:
             clauses = context.get("extracted_clauses", [])
             contract_text = context.get("contract_text", "")
             violations = context.get("policy_violations", [])
+            tenant_id = context.get("tenant_id")
+            if not tenant_id:
+                raise ValueError("Authenticated tenant_id is required for CUAD precedent matching")
 
             # Run optimized CUAD tools
             deviation_tool = OptimizedDeviationDetectorTool()
             jurisdiction_tool = OptimizedJurisdictionAdapterTool()
             precedent_tool = OptimizedPrecedentMatcherTool()
 
-            deviations = json.loads(deviation_tool._run(json.dumps(clauses)))
+            deviations = json.loads(deviation_tool._run(json.dumps(clauses), tenant_id))
             jurisdiction_info = json.loads(jurisdiction_tool._run(contract_text))
-            precedent_matches = json.loads(precedent_tool._run(json.dumps(clauses)))
+            precedent_matches = json.loads(precedent_tool._run(json.dumps(clauses), tenant_id))
 
             # Apply adaptive learning on top of a real, computed baseline
             # risk_level - CHECK_POLICIES already ran (it's a dependency of
@@ -309,7 +312,7 @@ class StepExecutor:
                 
                 deviations = json.loads(deviation_tool._run(json.dumps(clauses)))
                 jurisdiction_info = json.loads(jurisdiction_tool._run(contract_text))
-                precedent_matches = json.loads(precedent_tool._run(json.dumps(clauses)))
+                precedent_matches = json.loads(precedent_tool._run(json.dumps(clauses), tenant_id))
                 
                 return {
                     "cuad_deviations": deviations,
@@ -606,7 +609,8 @@ class PlanExecutionEngine:
             "node_status": step_status,
             "processing_complete": not any_failed,
             "escalated": escalated,
-            "planned_execution": True
+            "planned_execution": True,
+            "execution_path": "plan_execution_engine",
         }
         # Built on signals already in `result` above - see quality_grader.py's
         # module docstring for the full rationale. Additive: nothing above
@@ -625,6 +629,8 @@ class PlanExecutionEngine:
             "analysis_method": None,
             "node_status": step_status,
             "processing_complete": False,
+            "planned_execution": True,
+            "execution_path": "plan_execution_engine",
             # A hard abort always warrants review, regardless of whether
             # any individual step had already been marked "failed" yet.
             "escalated": True,

@@ -61,7 +61,13 @@ class LlamaGuardValidator(IGuardValidator):
                 )
         except Exception as e:
             from backend.shared.utils.logger import get_logger
-            get_logger(__name__).error(f"Llama Guard validation failed: {e}")
+            # Provider/LangGraph exceptions can embed the entire invocation
+            # (system instruction plus the contract-derived output).  Log
+            # only the exception class; raw prompts and legal text are never
+            # safe operational-log fields.
+            get_logger(__name__).error(
+                f"Llama Guard validation failed ({type(e).__name__}); output omitted"
+            )
             pass
             
         return GuardResult(is_safe=True)

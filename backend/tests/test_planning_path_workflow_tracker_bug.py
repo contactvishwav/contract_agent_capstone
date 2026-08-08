@@ -28,12 +28,12 @@ actually returned - not a silent fallback.
 """
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 with patch("langchain_neo4j.Neo4jGraph"), \
      patch("backend.shared.utils.gemini_embedding_service.embedding"):
     from backend.agents.contract_intelligence_agents import IntelligenceOrchestrator
-    from backend.agents.planning.execution_engine import PlanExecutionEngine, ExecutionResult
+    from backend.agents.planning.execution_engine import PlanExecutionEngine, ExecutionResult, StepExecutor
     from backend.agents.planning.planning_agent import PlanningAgentFactory, StepType
     from backend.agents.agent_workflow_tracker import workflow_tracker
 
@@ -83,6 +83,7 @@ class PlanningPathWorkflowTrackerBugTests(unittest.IsolatedAsyncioTestCase):
         # fallback to the traditional workflow - only PlanExecutionEngine's
         # _format_final_results sets "planned_execution".
         self.assertTrue(result.get("planned_execution"), "must be the real planning-path result, not a swallowed fallback")
+        self.assertEqual(result.get("execution_path"), "plan_execution_engine")
         self.assertIn("quality_grade", result)
 
     async def test_workflow_start_time_is_actually_set_before_execute_plan_runs(self):
@@ -109,6 +110,66 @@ class PlanningPathWorkflowTrackerBugTests(unittest.IsolatedAsyncioTestCase):
             await orchestrator._analyze_with_planning("contract text", contract_id="c1", tenant_id="t1")
 
         self.assertIsNotNone(observed_start_time.get("value"))
+
+
+class ExecutionPathIdentityTests(unittest.TestCase):
+    def test_planning_failure_is_explicitly_labeled_as_fallback(self):
+        orchestrator = IntelligenceOrchestrator.__new__(IntelligenceOrchestrator)
+        orchestrator._analyze_with_planning = AsyncMock(side_effect=RuntimeError("planned path failed"))
+        orchestrator._analyze_traditional = MagicMock(return_value={"processing_complete": True})
+
+        orchestrator.analyze_contract("contract", use_planning=True, tenant_id="tenant-a")
+
+        self.assertEqual(
+            orchestrator._analyze_traditional.call_args.kwargs["execution_path"],
+            "langgraph_traditional_fallback",
+        )
+
+    def test_explicit_traditional_request_is_not_mislabeled_as_fallback(self):
+        orchestrator = IntelligenceOrchestrator.__new__(IntelligenceOrchestrator)
+        orchestrator._analyze_traditional = MagicMock(return_value={"processing_complete": True})
+
+        orchestrator.analyze_contract("contract", use_planning=False, tenant_id="tenant-a")
+
+        self.assertEqual(
+            orchestrator._analyze_traditional.call_args.kwargs["execution_path"],
+            "langgraph_traditional_explicit",
+        )
+
+
+class CuadTenantPropagationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_optimized_deviation_cache_is_scoped_by_authenticated_tenant(self):
+        executor = StepExecutor.__new__(StepExecutor)
+        deviation = MagicMock()
+        deviation._run.return_value = "[]"
+        jurisdiction = MagicMock()
+        jurisdiction._run.return_value = "{}"
+        precedent = MagicMock()
+        precedent._run.return_value = "[]"
+
+        with patch(
+            "backend.agents.optimized_cuad_tools.OptimizedDeviationDetectorTool",
+            return_value=deviation,
+        ), patch(
+            "backend.agents.optimized_cuad_tools.OptimizedJurisdictionAdapterTool",
+            return_value=jurisdiction,
+        ), patch(
+            "backend.agents.optimized_cuad_tools.OptimizedPrecedentMatcherTool",
+            return_value=precedent,
+        ):
+            result = await executor._execute_cuad_mitigation(
+                MagicMock(),
+                {
+                    "tenant_id": "tenant-a",
+                    "contract_text": "contract",
+                    "extracted_clauses": [],
+                    "policy_violations": [],
+                },
+            )
+
+        deviation._run.assert_called_once_with("[]", "tenant-a")
+        precedent._run.assert_called_once_with("[]", "tenant-a")
+        self.assertEqual(result["analysis_method"], "optimized_phase3")
 
 
 if __name__ == "__main__":

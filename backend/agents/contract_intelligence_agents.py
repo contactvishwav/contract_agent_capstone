@@ -231,7 +231,7 @@ class IntelligenceOrchestrator:
             
             # 1. Optimized deviation detection with caching and monitoring
             deviation_tool = OptimizedDeviationDetectorTool()
-            deviations_json = deviation_tool._run(clauses_json)
+            deviations_json = deviation_tool._run(clauses_json, state["tenant_id"])
             deviations = json.loads(deviations_json)
             
             # 2. Optimized jurisdiction adaptation with caching
@@ -241,7 +241,7 @@ class IntelligenceOrchestrator:
             
             # 3. Optimized precedent matching with parallel processing
             precedent_tool = OptimizedPrecedentMatcherTool()
-            precedents_json = precedent_tool._run(clauses_json)
+            precedents_json = precedent_tool._run(clauses_json, state["tenant_id"])
             precedent_matches = json.loads(precedents_json)
             
             # 4. Apply learned patterns from legal team feedback, on top of
@@ -320,7 +320,7 @@ class IntelligenceOrchestrator:
             jurisdiction_info = json.loads(jurisdiction_tool._run(state["contract_text"]))
             
             precedent_tool = EnhancedPrecedentMatcherTool()
-            precedent_matches = json.loads(precedent_tool._run(clauses_json))
+            precedent_matches = json.loads(precedent_tool._run(clauses_json, state["tenant_id"]))
             
             enhanced_violations = state["policy_violations"] + deviations
             enhanced_risk_data = dict(state["risk_data"])
@@ -400,9 +400,21 @@ class IntelligenceOrchestrator:
                         return asyncio.run(self._analyze_with_planning(contract_text, contract_id, tenant_id, contract_type))
                 except Exception as planning_error:
                     logger.error(f"Planning agent failed: {planning_error}, falling back to traditional workflow")
-                    return self._analyze_traditional(contract_text, contract_id, tenant_id, contract_type)
+                    return self._analyze_traditional(
+                        contract_text,
+                        contract_id,
+                        tenant_id,
+                        contract_type,
+                        execution_path="langgraph_traditional_fallback",
+                    )
             else:
-                return self._analyze_traditional(contract_text, contract_id, tenant_id, contract_type)
+                return self._analyze_traditional(
+                    contract_text,
+                    contract_id,
+                    tenant_id,
+                    contract_type,
+                    execution_path="langgraph_traditional_explicit",
+                )
             
         except Exception as e:
             logger.error(f"Analysis failed: {e}")
@@ -411,7 +423,9 @@ class IntelligenceOrchestrator:
                 "violations": [],
                 "risk_assessment": {"overall_risk_score": 0, "risk_level": "UNKNOWN"},
                 "redlines": [],
-                "processing_complete": False
+                "processing_complete": False,
+                "planned_execution": None,
+                "execution_path": "analysis_failed",
             }
     
     async def _analyze_with_planning(self, contract_text: str, contract_id: Optional[str] = None, tenant_id: Optional[str] = None, contract_type: Optional[str] = None) -> dict:
@@ -481,7 +495,14 @@ class IntelligenceOrchestrator:
             logger.error(f"🧠 Full traceback: {traceback.format_exc()}")
             raise e
     
-    def _analyze_traditional(self, contract_text: str, contract_id: Optional[str] = None, tenant_id: Optional[str] = None, contract_type: Optional[str] = None) -> dict:
+    def _analyze_traditional(
+        self,
+        contract_text: str,
+        contract_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        contract_type: Optional[str] = None,
+        execution_path: str = "langgraph_traditional_explicit",
+    ) -> dict:
         """Traditional workflow analysis (fallback)"""
         # Start workflow tracking
         workflow_tracker.start_workflow()
@@ -530,7 +551,9 @@ class IntelligenceOrchestrator:
             "precedent_matches": final_state.get("precedent_matches", []),
             "validation_result": final_state.get("validation_result"),
             "node_status": node_status,
-            "processing_complete": processing_complete
+            "processing_complete": processing_complete,
+            "planned_execution": False,
+            "execution_path": execution_path,
         }
 
 class ContractIntelligenceAgentFactory:

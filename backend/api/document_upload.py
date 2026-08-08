@@ -1,6 +1,6 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Query, Form, Depends, Request
 from backend.governance.rbac import Permission, requires_permission
-from backend.governance.auth import TokenIdentity
+from backend.governance.auth import TokenIdentity, get_current_identity
 from fastapi.responses import StreamingResponse
 from backend.application.services.document_processing_service import DocumentServiceFactory
 from backend.domain.entities import DocumentProcessingRequest
@@ -10,6 +10,7 @@ from backend.infrastructure.content_validator import ContentValidationService
 from backend.infrastructure.error_tracker import ErrorTracker, ErrorCategory, ErrorSeverity, error_tracking_context
 from backend.agents.chunking_agent import ChunkingAgent
 from backend.infrastructure.chunking.storage_service import ChunkStorageService
+from backend.shared.utils.utils import serialize_neo4j_datetime
 import os
 import uuid
 import json
@@ -25,6 +26,50 @@ router = APIRouter(prefix="/api/documents", tags=["documents"])
 # Dependency injection
 def get_llm_manager(request: Request):
     return request.app.state.llm_manager
+
+
+@router.get("")
+async def list_uploaded_contracts(
+    identity: TokenIdentity = Depends(get_current_identity),
+):
+    """Return the authenticated tenant's contract-picker metadata.
+
+    Browser localStorage is only an optional cache; it cannot be the source
+    of truth for contract ownership or survive a clean browser/session.  The
+    tenant predicate is part of the Neo4j MATCH so another tenant's contract
+    metadata is never fetched and filtered after the fact.
+    """
+    from backend.infrastructure.contract_repository import Neo4jContractRepository
+
+    rows = Neo4jContractRepository().graph.query(
+        """
+        MATCH (c:Contract {tenant_id: $tenant_id})
+        RETURN c.file_id AS contract_id,
+               coalesce(c.filename, c.file_id) AS filename,
+               c.upload_date AS upload_date,
+               coalesce(c.model_used, 'gemini-2.5-flash') AS model_used,
+               c.intelligence_status AS intelligence_status,
+               c.risk_score AS risk_score,
+               c.risk_level AS risk_level
+        ORDER BY c.upload_date DESC, c.file_id ASC
+        """,
+        {"tenant_id": identity.tenant_id},
+    )
+    return [
+        {
+            "contract_id": row["contract_id"],
+            "filename": row["filename"],
+            "upload_date": serialize_neo4j_datetime(row.get("upload_date")),
+            "model_used": row["model_used"],
+            "analysis_completed": row.get("intelligence_status") in {
+                "completed",
+                "completed_with_errors",
+            },
+            "risk_score": row.get("risk_score"),
+            "risk_level": row.get("risk_level"),
+        }
+        for row in rows
+    ]
 
 @router.post("/upload")
 @audit_log(AuditEventType.DOCUMENT_UPLOAD, "upload_pdf")

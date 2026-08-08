@@ -303,8 +303,10 @@ class EnhancedPrecedentMatcherTool(PrecedentMatcherTool):
         # Use object.__setattr__ to bypass Pydantic validation
         object.__setattr__(self, 'repository', Neo4jContractRepository())
     
-    def _run(self, clauses_json: str, tenant_id: str = "demo_tenant_1") -> str:
+    def _run(self, clauses_json: str, tenant_id: str) -> str:
         """Enhanced precedent matching with real database - Enforces multi-tenancy"""
+        if not tenant_id:
+            raise ValueError("Authenticated tenant_id is required for precedent matching")
         try:
             clauses = json.loads(clauses_json)
             matches = []

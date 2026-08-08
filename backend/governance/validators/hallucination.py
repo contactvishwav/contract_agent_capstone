@@ -74,7 +74,13 @@ class HallucinationValidator(IGuardValidator):
                     metadata={"hallucination_details": data}
                 )
         except Exception as e:
-            logger.error(f"Hallucination check failed: {e}")
+            # Some model/runtime exceptions include the complete prompt,
+            # which here contains retrieved contract text.  Preserve the
+            # actionable failure class without copying sensitive material
+            # into logs.
+            logger.error(
+                f"Hallucination check failed ({type(e).__name__}); prompt and source omitted"
+            )
             # In case of failure, we might want to fail-safe (pass) or fail-secure (block).
             # For this implementation, we fail-safe to avoid blocking users on technical errors.
             return GuardResult(is_safe=True)

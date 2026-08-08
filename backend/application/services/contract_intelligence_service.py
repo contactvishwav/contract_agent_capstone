@@ -213,6 +213,8 @@ class ContractIntelligenceService:
         intelligence.quality_grade = analysis_result.get("quality_grade", {})
         intelligence.escalated = analysis_result.get("escalated", False)
         intelligence.analysis_method = analysis_result.get("analysis_method")
+        intelligence.execution_path = analysis_result.get("execution_path")
+        intelligence.planned_execution = analysis_result.get("planned_execution")
         
         return intelligence
     
@@ -243,7 +245,9 @@ class ContractIntelligenceService:
                 "precedent_matches": len(intelligence.precedent_matches),
                 "semantic_analysis_enabled": True,
                 "cache_enabled": True,
-                "performance_optimized": True
+                "performance_optimized": True,
+                "execution_path": intelligence.execution_path,
+                "planned_execution": intelligence.planned_execution,
             }
             
             # Store in Neo4j with CUAD fields
@@ -264,6 +268,8 @@ class ContractIntelligenceService:
                 c.semantic_analysis_enabled = $semantic_analysis_enabled,
                 c.cache_enabled = $cache_enabled,
                 c.performance_optimized = $performance_optimized,
+                c.analysis_execution_path = $execution_path,
+                c.analysis_planned_execution = $planned_execution,
                 c.intelligence_updated = datetime()
             RETURN c
             """

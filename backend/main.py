@@ -1,3 +1,4 @@
+import asyncio
 import json
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -560,6 +561,56 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
     yield f"data: {json.dumps({'content': '', 'type': 'end'})}\n\n"
 
 
+def _persist_chat_terminal_state(
+    chat_session_id: Optional[str],
+    tenant_id: str,
+    model: str,
+    message: str,
+) -> None:
+    """Close an interrupted persisted turn with an explicit safe state."""
+    if not chat_session_id:
+        return
+    repository = Neo4jChatSessionRepository()
+    existing = repository.list_messages(chat_session_id, tenant_id)
+    if not existing or existing[-1].get("role") == "ai_message":
+        return
+    repository.append_message(
+        chat_session_id,
+        tenant_id,
+        role="ai_message",
+        content=message,
+        model=model,
+    )
+
+
+async def resilient_runner(**kwargs):
+    """Keep failed/cancelled SSE turns honest in the persistence layer."""
+    try:
+        async for event in runner(**kwargs):
+            yield event
+    except asyncio.CancelledError:
+        _persist_chat_terminal_state(
+            kwargs.get("chat_session_id"),
+            kwargs["tenant_id"],
+            kwargs["model"],
+            "Response cancelled before completion.",
+        )
+        raise
+    except Exception as exc:
+        logger.error(
+            f"Contract Chat stream failed ({type(exc).__name__}); prompt and content omitted"
+        )
+        message = "Response failed before completion. Please retry."
+        _persist_chat_terminal_state(
+            kwargs.get("chat_session_id"),
+            kwargs["tenant_id"],
+            kwargs["model"],
+            message,
+        )
+        yield f"data: {json.dumps({'content': message, 'type': 'error'})}\n\n"
+        yield f"data: {json.dumps({'content': '', 'type': 'end'})}\n\n"
+
+
 @app.post("/api/run/")
 async def run(
     payload: RunPayload,
@@ -592,7 +643,7 @@ async def run(
         raise HTTPException(status_code=404, detail="Contract not found")
 
     return StreamingResponse(
-        runner(
+        resilient_runner(
             model=payload.model,
             prompt=payload.prompt,
             history=payload.history or "[]",

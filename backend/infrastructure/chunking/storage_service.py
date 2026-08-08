@@ -69,7 +69,7 @@ class ChunkingStorageService:
             # Store each chunk with enhanced properties
             for chunk in chunks:
                 chunk_query = """
-                MATCH (d:Document {id: $document_id})
+                MATCH (d:Document {id: $document_id, tenant_id: $tenant_id})
                 CREATE (c:Chunk {
                     id: $chunk_id,
                     content: $content,
@@ -99,6 +99,7 @@ class ChunkingStorageService:
 
                 self.graph.query(chunk_query, {
                     'document_id': document_id,
+                    'tenant_id': tenant_id,
                     'chunk_id': chunk_id,
                     'content': encrypted_content,
                     'start_position': chunk.get('start_position', 0),

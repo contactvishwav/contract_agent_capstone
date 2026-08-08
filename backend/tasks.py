@@ -42,13 +42,17 @@ def _intelligence_to_response_dict(contract_id: str, model: str, intelligence) -
     """Same response shape the /analyze route returned synchronously
     before this became a Celery task - a caller polling task status for
     the result sees an identical payload either way."""
+    execution_path = getattr(intelligence, "execution_path", None)
+    planned_execution = getattr(intelligence, "planned_execution", None)
     return {
         "contract_id": contract_id,
         "analysis_complete": intelligence.processing_complete,
         "node_status": intelligence.node_status,
         "processing_time": intelligence.processing_time,
         "model_used": model,
-        "phase_used": "phase3_optimized",
+        "phase_used": execution_path or "unknown",
+        "execution_path": execution_path,
+        "planned_execution": planned_execution,
         # Supervisor rebuild: real A-F grade, escalation flag, and which
         # CUAD mitigation tier actually ran - see PlanExecutionEngine.
         # _format_final_results. Empty/False/None when analysis ran via

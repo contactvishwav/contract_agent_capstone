@@ -22,7 +22,7 @@ class OptimizedDeviationDetectorTool(EnhancedDeviationDetectorTool):
     
     @track_performance("deviation_detection")
     @cache_result("deviation_analysis", ttl=1800)  # 30 minutes cache
-    def _run(self, clauses_json: str) -> str:
+    def _run(self, clauses_json: str, tenant_id: str) -> str:
         """Cached and monitored deviation detection"""
         return super()._run(clauses_json)
     
@@ -89,8 +89,10 @@ class OptimizedPrecedentMatcherTool(EnhancedPrecedentMatcherTool):
     description: str = "High-performance precedent matching with intelligent caching"
     
     @track_performance("precedent_matching")
-    def _run(self, clauses_json: str) -> str:
+    def _run(self, clauses_json: str, tenant_id: str) -> str:
         """Optimized precedent matching with clause-level caching"""
+        if not tenant_id:
+            raise ValueError("Authenticated tenant_id is required for precedent matching")
         try:
             clauses = json.loads(clauses_json)
             matches = []
@@ -98,7 +100,7 @@ class OptimizedPrecedentMatcherTool(EnhancedPrecedentMatcherTool):
             # Process clauses in parallel for better performance
             with ThreadPoolExecutor(max_workers=5) as executor:
                 futures = {
-                    executor.submit(self._process_clause_precedents, clause): clause 
+                    executor.submit(self._process_clause_precedents, clause, tenant_id): clause
                     for clause in clauses
                 }
                 
@@ -117,10 +119,10 @@ class OptimizedPrecedentMatcherTool(EnhancedPrecedentMatcherTool):
             return json.dumps([])
     
     @cache_result("precedent_clause", ttl=7200)  # 2 hour cache per clause
-    def _process_clause_precedents(self, clause: Dict[str, Any]) -> Dict[str, Any]:
+    def _process_clause_precedents(self, clause: Dict[str, Any], tenant_id: str) -> Dict[str, Any]:
         """Process precedents for individual clause with caching"""
         # Get real precedents from database
-        real_precedents = self._find_real_precedents(clause)
+        real_precedents = self._find_real_precedents(clause, tenant_id)
         
         if real_precedents:
             analysis = self._analyze_precedents(real_precedents, clause)
@@ -183,6 +185,9 @@ class BatchProcessor:
         try:
             contract_text = contract.get("text", "")
             clauses = contract.get("clauses", [])
+            tenant_id = contract.get("tenant_id")
+            if not tenant_id:
+                raise ValueError("Authenticated tenant_id is required for optimized CUAD processing")
             
             # Run analysis in thread pool to avoid blocking
             loop = asyncio.get_event_loop()
@@ -190,13 +195,16 @@ class BatchProcessor:
             with ThreadPoolExecutor(max_workers=3) as executor:
                 # Submit all tasks
                 deviation_future = loop.run_in_executor(
-                    executor, self.deviation_tool._run, json.dumps(clauses)
+                    executor, self.deviation_tool._run, json.dumps(clauses), tenant_id
                 )
                 jurisdiction_future = loop.run_in_executor(
                     executor, self.jurisdiction_tool._run, contract_text
                 )
                 precedent_future = loop.run_in_executor(
-                    executor, self.precedent_tool._run, json.dumps(clauses)
+                    executor,
+                    self.precedent_tool._run,
+                    json.dumps(clauses),
+                    tenant_id,
                 )
                 
                 # Wait for all results

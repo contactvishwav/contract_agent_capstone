@@ -127,6 +127,11 @@ class ContractIntelligence:
     quality_grade: Dict[str, Any] = None
     escalated: bool = False
     analysis_method: Optional[str] = None
+    # Identity of the top-level analysis route.  This is deliberately
+    # separate from analysis_method, which describes the CUAD mitigation
+    # tier inside a route and cannot prove PlanExecutionEngine ran.
+    execution_path: Optional[str] = None
+    planned_execution: Optional[bool] = None
 
     def __post_init__(self):
         if self.cuad_deviations is None:

@@ -104,6 +104,16 @@ services:
       watch:
         - action: rebuild
           path: ./backend
+    # The backend image's Dockerfile healthcheck probes FastAPI on :8000;
+    # this service deliberately runs Celery instead, so inheriting that
+    # probe marks a healthy worker unhealthy forever.  Use Celery's own
+    # broker-mediated ping, infrequently enough for the e2-micro target.
+    healthcheck:
+      test: ["CMD-SHELL", "uv run celery -A backend.celery_app inspect ping -d celery@$$HOSTNAME --timeout=10 | grep -q pong"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 30s
   ui:
     build:
       context: ./frontend

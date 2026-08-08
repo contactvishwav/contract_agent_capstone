@@ -42,6 +42,7 @@ def _fake_intelligence(processing_complete=True, node_status=None, risk_level="L
         # Supervisor rebuild fields - see domain/entities.py's
         # ContractIntelligence and tasks.py's _intelligence_to_response_dict.
         quality_grade={}, escalated=False, analysis_method=None,
+        execution_path="plan_execution_engine", planned_execution=True,
     )
 
 
@@ -71,6 +72,8 @@ class TaskProcessesSuccessfullyTests(unittest.TestCase):
         self.assertEqual(payload["contract_id"], "CONTRACT_1")
         self.assertTrue(payload["analysis_complete"])
         self.assertEqual(payload["model_used"], "gemini-2.5-flash")
+        self.assertEqual(payload["execution_path"], "plan_execution_engine")
+        self.assertTrue(payload["planned_execution"])
         self.assertIn("results", payload)
         self.assertIn("risk_assessment", payload["results"])
 

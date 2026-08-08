@@ -27,6 +27,8 @@ class DomainEntityThreadingTests(unittest.TestCase):
             "quality_grade": {"grade": "A", "grounded_rate": 1.0},
             "escalated": False,
             "analysis_method": "optimized_phase3",
+            "execution_path": "plan_execution_engine",
+            "planned_execution": True,
         }
 
         intelligence = service._convert_to_domain_entities(analysis_result)
@@ -34,6 +36,8 @@ class DomainEntityThreadingTests(unittest.TestCase):
         self.assertEqual(intelligence.quality_grade["grade"], "A")
         self.assertFalse(intelligence.escalated)
         self.assertEqual(intelligence.analysis_method, "optimized_phase3")
+        self.assertEqual(intelligence.execution_path, "plan_execution_engine")
+        self.assertTrue(intelligence.planned_execution)
 
     def test_missing_keys_fall_back_to_safe_defaults_not_fabricated_values(self):
         # The traditional (non-planning) workflow path doesn't compute
@@ -50,6 +54,8 @@ class DomainEntityThreadingTests(unittest.TestCase):
         self.assertEqual(intelligence.quality_grade, {})
         self.assertFalse(intelligence.escalated)
         self.assertIsNone(intelligence.analysis_method)
+        self.assertIsNone(intelligence.execution_path)
+        self.assertIsNone(intelligence.planned_execution)
 
 
 class TaskResponseDictTests(unittest.TestCase):
@@ -66,12 +72,16 @@ class TaskResponseDictTests(unittest.TestCase):
         intelligence.quality_grade = {"grade": "B"}
         intelligence.escalated = True
         intelligence.analysis_method = "fallback_phase1"
+        intelligence.execution_path = "plan_execution_engine"
+        intelligence.planned_execution = True
 
         response = _intelligence_to_response_dict("c1", "gemini-2.5-flash", intelligence)
 
         self.assertEqual(response["quality_grade"]["grade"], "B")
         self.assertTrue(response["escalated"])
         self.assertEqual(response["analysis_method"], "fallback_phase1")
+        self.assertEqual(response["execution_path"], "plan_execution_engine")
+        self.assertTrue(response["planned_execution"])
 
 
 class ExecuteWorkflowEndpointTests(unittest.IsolatedAsyncioTestCase):
