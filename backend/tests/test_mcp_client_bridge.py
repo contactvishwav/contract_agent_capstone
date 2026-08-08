@@ -62,6 +62,7 @@ class CallMcpToolSuccessTests(unittest.TestCase):
         payload = asyncio.run(call_mcp_tool(
             "get_playbook_rule",
             {"tenant_id": "tenant_bridge_1", "contract_type": "NDA"},
+            authenticated_tenant_id="tenant_bridge_1",
         ))
 
         self.assertTrue(payload["success"])
@@ -85,6 +86,7 @@ class CallMcpToolSuccessTests(unittest.TestCase):
                 "search_clause_library",
                 {"tenant_id": "tenant_bridge_2", "query": "liability cap"},
                 correlation_id="corr-live-e2e-42",
+                authenticated_tenant_id="tenant_bridge_2",
             ))
 
         self.assertTrue(payload["success"])
@@ -109,6 +111,7 @@ class CallMcpToolSuccessTests(unittest.TestCase):
         payload = asyncio.run(call_mcp_tool(
             "fetch_contract_metadata",
             {"tenant_id": "tenant_bridge_3", "contract_id": "C1"},
+            authenticated_tenant_id="tenant_bridge_3",
         ))
         self.assertTrue(payload["success"])
 
@@ -125,12 +128,16 @@ class CallMcpToolGracefulFailureTests(unittest.TestCase):
             payload = asyncio.run(call_mcp_tool(
                 "get_playbook_rule",
                 {"tenant_id": "tenant_bridge_4", "contract_type": "NDA"},
+                authenticated_tenant_id="tenant_bridge_4",
             ))
         self.assertFalse(payload["success"])
-        self.assertIn("mcp session unavailable", payload["error"])
+        self.assertEqual(payload["error"], "MCP tool call unavailable")
 
     def test_unknown_tool_name_degrades_gracefully_not_raises(self):
-        payload = asyncio.run(call_mcp_tool("this_tool_does_not_exist", {"tenant_id": "t1"}))
+        payload = asyncio.run(call_mcp_tool(
+            "this_tool_does_not_exist", {"tenant_id": "t1"},
+            authenticated_tenant_id="t1",
+        ))
         self.assertFalse(payload.get("success", False))
         self.assertIn("error", payload)
 
@@ -152,6 +159,7 @@ class CallMcpToolSyncTests(unittest.TestCase):
         payload = call_mcp_tool_sync(
             "get_playbook_rule",
             {"tenant_id": "tenant_sync_1", "contract_type": "MSA"},
+            authenticated_tenant_id="tenant_sync_1",
         )
         self.assertTrue(payload["success"])
 
@@ -170,6 +178,7 @@ class CallMcpToolSyncTests(unittest.TestCase):
             payload = call_mcp_tool_sync(
                 "get_playbook_rule",
                 {"tenant_id": f"tenant_repeat_{i}", "contract_type": "NDA"},
+                authenticated_tenant_id=f"tenant_repeat_{i}",
             )
             self.assertTrue(payload["success"], f"call {i} failed: {payload}")
 
@@ -188,6 +197,7 @@ class CallMcpToolSyncTests(unittest.TestCase):
             return call_mcp_tool_sync(
                 "get_playbook_rule",
                 {"tenant_id": "tenant_sync_2", "contract_type": "MSA"},
+                authenticated_tenant_id="tenant_sync_2",
             )
 
         payload = asyncio.run(call_from_within_a_loop())

@@ -162,7 +162,11 @@ app.include_router(supervisor_router)
 
 # Persistent Contract Chat sessions (list/create/detail) - /api/run/ below
 # is where messages actually get appended as a conversation happens.
-from backend.api.chat_sessions import router as chat_sessions_router
+from backend.api.chat_sessions import (
+    contract_exists_for_tenant,
+    normalize_contract_scope,
+    router as chat_sessions_router,
+)
 app.include_router(chat_sessions_router)
 
 # Debug routes (development only)
@@ -321,16 +325,23 @@ def _normalize_ai_message_content(content):
     return str(content) if content else ""
 
 
-async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, tenant_id: str, user_role: str = "unknown", contract_id: Optional[str] = None, chat_session_id: Optional[str] = None):
+async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, tenant_id: str, user_role: str = "unknown", user_id: str = "authenticated_user", contract_id: Optional[str] = None, chat_session_id: Optional[str] = None):
     logger.info(f"Processing LLM request for model '{model}' for user_role '{user_role}'")
 
     # Initialize AuditLogger and AgentAuditService for Guard persistence
     from backend.infrastructure.agent_audit_service import AgentAuditService
 
     audit_logger = AuditLogger()
-    agent_audit = AgentAuditService(audit_logger)
     session_id = correlation_id_var.get() or "unknown_session"
-    context_metadata = {"user_role": user_role}
+    agent_audit = AgentAuditService(
+        audit_logger, tenant_id=tenant_id, user_id=user_id, correlation_id=session_id
+    )
+    context_metadata = {
+        "user_role": user_role,
+        "user_id": user_id,
+        "tenant_id": tenant_id,
+        "correlation_id": session_id,
+    }
 
     # Persistent Contract Chat session (backend/infrastructure/
     # chat_session_repository.py) - deliberately a distinct name from the
@@ -521,6 +532,8 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
                 event_type=AuditEventType.SECURITY_VIOLATION,
                 resource_id=session_id,
                 action="pii_redaction",
+                tenant_id=tenant_id,
+                user_id=user_id,
                 metadata={"status": "redacted"}
             )
             # Update the last message in context with the redacted version
@@ -553,14 +566,30 @@ async def run(
     llm_mgr: LLMManager = Depends(get_llm_manager),
     identity: TokenIdentity = Depends(requires_permission(Permission.ANALYZE)),
 ):
+    effective_contract_id = normalize_contract_scope(payload.contract_id)
     if payload.session_id:
         # Ownership check happens here, not inside runner(): runner() is an
         # async generator feeding StreamingResponse, and by the time it
         # could raise, response headers (200, text/event-stream) may
         # already be committed, so a clean HTTPException(404) isn't
         # reliably achievable from inside it. This is a plain coroutine.
-        if not Neo4jChatSessionRepository().get_session(payload.session_id, identity.tenant_id):
+        session = Neo4jChatSessionRepository().get_session(payload.session_id, identity.tenant_id)
+        if not session:
             raise HTTPException(status_code=404, detail=f"Chat session {payload.session_id} not found")
+        persisted_contract_id = normalize_contract_scope(session.get("contract_id"))
+        if effective_contract_id != persisted_contract_id:
+            # Reject before StreamingResponse starts and before runner()
+            # appends the user turn, so the stored conversation remains
+            # unchanged after an attempted scope override.
+            raise HTTPException(status_code=409, detail="Contract scope does not match chat session")
+        effective_contract_id = persisted_contract_id
+
+    if effective_contract_id and not contract_exists_for_tenant(
+        effective_contract_id, identity.tenant_id
+    ):
+        # Same response for a missing contract and one owned by another
+        # tenant; the tenant predicate is inside the Neo4j query.
+        raise HTTPException(status_code=404, detail="Contract not found")
 
     return StreamingResponse(
         runner(
@@ -570,7 +599,8 @@ async def run(
             llm_mgr=llm_mgr,
             tenant_id=identity.tenant_id,
             user_role=identity.role,
-            contract_id=payload.contract_id,
+            user_id=identity.username or "authenticated_user",
+            contract_id=effective_contract_id,
             chat_session_id=payload.session_id,
         ),
         media_type="text/event-stream",

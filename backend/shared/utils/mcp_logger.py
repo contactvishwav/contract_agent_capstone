@@ -3,7 +3,7 @@ import uuid
 from contextvars import ContextVar
 from datetime import datetime
 from typing import Dict, Any, Optional
-from backend.infrastructure.audit_logger import AuditLogger, AuditEventType
+from backend.infrastructure.audit_logger import AuditLogger, AuditEventType, AuditScope
 
 # Context variable to store trace_id for the current task/request
 trace_id_var: ContextVar[Optional[str]] = ContextVar("trace_id", default=None)
@@ -40,9 +40,21 @@ class MCPLogger:
         if metadata:
             self.logger.info(f"Metadata: {metadata}", extra={"trace_id": tid})
 
-    def error(self, message: str, error: Exception, metadata: Optional[Dict[str, Any]] = None):
+    def error(
+        self,
+        message: str,
+        error: Exception,
+        metadata: Optional[Dict[str, Any]] = None,
+        tenant_id: Optional[str] = None,
+    ):
         tid = self._get_trace_id()
-        self.logger.error(f"{message}: {str(error)}", extra={"trace_id": tid}, exc_info=True)
+        self.logger.error(
+            f"{message}: {type(error).__name__}",
+            extra={"trace_id": tid},
+            # exc_info would append the exception's raw message. Tool and
+            # provider errors may contain prompts, document text, or secrets.
+            exc_info=False,
+        )
         
         # Log to AuditLogger for persistence in Neo4j
         self.audit_logger.log_event(
@@ -50,7 +62,9 @@ class MCPLogger:
             resource_id="mcp_server",
             action=message,
             status="error",
-            error_details=str(error),
+            error_details=type(error).__name__,
+            tenant_id=tenant_id,
+            scope=AuditScope.TENANT if tenant_id else AuditScope.SYSTEM,
             metadata={**(metadata or {}), "trace_id": tid}
         )
 

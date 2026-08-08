@@ -147,7 +147,7 @@ class ErrorTrackerRecentErrorsSerializationTests(unittest.TestCase):
             "resource_id": "res_1", "timestamp": _FIXED_DATETIME,
         }]
 
-        errors = tracker.get_recent_errors(limit=10)
+        errors = tracker.get_recent_errors("tenant_a", limit=10)
 
         self.assertEqual(len(errors), 1)
         timestamp = errors[0]["timestamp"]

@@ -95,7 +95,7 @@ class TestMCPCapabilities(unittest.IsolatedAsyncioTestCase):
         result = json.loads(result_json)
 
         self.assertFalse(result["success"])
-        self.assertIn("not found for tenant wrong_tenant", result["error"])
+        self.assertEqual(result["error"], "Contract not found")
 
     @patch("backend.mcp_server.get_contract_repo")
     async def test_fetch_metadata_awaits_async_repo_call(self, mock_get_repo):

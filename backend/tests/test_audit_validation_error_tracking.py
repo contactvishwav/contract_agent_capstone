@@ -40,7 +40,10 @@ class FakeGraph:
             return [{"audit_id": params["audit_id"]}]
 
         if "MATCH (a:AuditLog" in cypher:
-            matches = [r for r in self.audit_logs if r["resource_id"] == params["resource_id"]]
+            matches = [
+                r for r in self.audit_logs
+                if r["resource_id"] == params["resource_id"] and r["tenant_id"] == params["tenant_id"]
+            ]
             matches = matches[-params.get("limit", 100):][::-1]
             return [
                 {
@@ -55,12 +58,17 @@ class FakeGraph:
             self.error_logs.append(dict(params))
             return [{"error_id": params["error_id"]}]
 
-        if "MATCH (e:ErrorLog)" in cypher and "count(*)" in cypher:
-            counts = Counter((r["category"], r["severity"]) for r in self.error_logs)
+        if "MATCH (e:ErrorLog" in cypher and "count(*)" in cypher:
+            counts = Counter(
+                (r["category"], r["severity"])
+                for r in self.error_logs if r["tenant_id"] == params["tenant_id"]
+            )
             return [{"category": cat, "severity": sev, "count": n} for (cat, sev), n in counts.items()]
 
-        if "MATCH (e:ErrorLog)" in cypher:
-            return list(reversed(self.error_logs))[:params.get("limit", 50)]
+        if "MATCH (e:ErrorLog" in cypher:
+            return [
+                r for r in reversed(self.error_logs) if r["tenant_id"] == params["tenant_id"]
+            ][:params.get("limit", 50)]
 
         return []
 
@@ -79,6 +87,7 @@ def test_audit_logger_basic():
         event_type=AuditEventType.DOCUMENT_UPLOAD,
         resource_id="test_contract_123",
         action="test_upload",
+        tenant_id="tenant_test",
         status="success",
         metadata={"test": "data"}
     )
@@ -98,11 +107,12 @@ def test_audit_trail_retrieval():
             event_type=AuditEventType.DOCUMENT_ACCESS,
             resource_id="test_contract_456",
             action=f"access_{i}",
+            tenant_id="tenant_test",
             status="success"
         )
     
     # Retrieve trail
-    trail = audit_logger.get_audit_trail("test_contract_456", limit=10)
+    trail = audit_logger.get_audit_trail("test_contract_456", "tenant_test", limit=10)
     
     assert len(trail) >= 3
     print(f"✅ Retrieved {len(trail)} audit events")
@@ -214,6 +224,7 @@ def test_error_tracker_basic():
     context = ErrorContext(
         operation="test_operation",
         resource_id="test_resource",
+        tenant_id="tenant_test",
         metadata={"test": "data"}
     )
     
@@ -238,7 +249,7 @@ def test_error_tracker_statistics():
 
     # Track multiple errors
     for i in range(3):
-        context = ErrorContext(operation=f"test_op_{i}")
+        context = ErrorContext(operation=f"test_op_{i}", tenant_id="tenant_test")
         try:
             raise RuntimeError(f"Test error {i}")
         except Exception as e:
@@ -250,7 +261,7 @@ def test_error_tracker_statistics():
             )
     
     # Get statistics
-    stats = error_tracker.get_error_statistics(hours=24)
+    stats = error_tracker.get_error_statistics("tenant_test", hours=24)
     
     assert stats["total_errors"] >= 3
     print(f"✅ Error statistics: {stats}")
@@ -262,7 +273,8 @@ def test_error_tracking_context_manager():
     with error_tracking_context(
         operation="test_success",
         category=ErrorCategory.PROCESSING_ERROR,
-        resource_id="test_123"
+        resource_id="test_123",
+        tenant_id="tenant_test",
     ) as ctx:
         result = "success"
     
@@ -274,6 +286,7 @@ def test_error_tracking_context_manager():
         operation="test_failure",
         category=ErrorCategory.PROCESSING_ERROR,
         resource_id="test_456",
+        tenant_id="tenant_test",
         raise_on_error=False
     ) as ctx:
         raise ValueError("Test error")
@@ -299,6 +312,7 @@ def test_integration_validation_with_audit():
             event_type=AuditEventType.VALIDATION_FAILURE,
             resource_id="test.pdf",
             action="content_validation",
+            tenant_id="tenant_test",
             status="failure",
             error_details=str(validation_result)
         )

@@ -148,9 +148,9 @@ A real Model Context Protocol server (`fastmcp`) exposing 4 tools -
 clause-library search, playbook rule lookup, precedent-clause search, and
 contract-metadata fetch - backed by real business logic
 (`PolicyRepository`, `EnhancedPrecedentMatcherTool`,
-`Neo4jContractRepository`). Runs standalone over stdio
-(`python backend/mcp_server.py`) for external MCP clients, exactly as
-before.
+`Neo4jContractRepository`). Standalone stdio execution has no external
+principal-to-tenant authentication and is therefore limited to explicit
+local-development opt-in; production startup fails closed. See ADR-002.
 
 **New: an in-process call path** (`backend/mcp/client_bridge.py`) lets
 FastAPI call these same 4 tools without a subprocess or socket, using
@@ -172,6 +172,12 @@ HTTP layer, the LLM's own tool-selection decision, the in-process MCP
 call, and the tool's real log/audit output. See `docs/CAPSTONE_SUMMARY.md`
 §19 for the full build/verification history, including a real
 `fastmcp`/pytest interaction bug found and fixed along the way.
+
+**Trust boundary:** the in-process bridge requires the authenticated tenant
+as a separate server-side parameter, removes any generic argument-bag tenant,
+and binds the authenticated principal for the MCP tool call. The local
+standalone operator may assert tenant scope only because the OS/process
+boundary is explicitly trusted. Correlation IDs never authorize access.
 
 ## Data Model
 

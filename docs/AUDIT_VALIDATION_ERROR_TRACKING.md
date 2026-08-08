@@ -1,5 +1,13 @@
 # Audit Trails, Content Validation & Error Tracking Implementation
 
+> Security correction, 2026-08-08: tenant-owned audit/error writes now require
+> explicit authenticated tenant context; genuine pre-auth/system events require
+> explicit system scope. Audit trails, recent errors, and statistics are queried
+> with tenant predicates. Prompt previews, tool arguments/results, unrestricted
+> exception messages, and full stack text are not persisted. Earlier examples
+> and historical claims below describe the original implementation and do not
+> override `AGENTS.md`, `docs/SYSTEM_MAP.md`, or current code/tests.
+
 ## Overview
 
 Implemented three critical production features using best practices, design patterns, and SOLID principles:

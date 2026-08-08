@@ -76,7 +76,7 @@ class BaseGuard(ABC):
 
     def _execute_validation(self, content: str, guard_name: str, context_metadata: Optional[Dict[str, Any]] = None) -> GuardResult:
         """Shared execution logic with logging and persistent auditing"""
-        logger.info(f"Executing {guard_name} for content: {content[:50]}...")
+        logger.info(f"Executing {guard_name} for content length {len(content)}")
         result = self.root_validator.validate_chain(content, context_metadata)
         
         if result.is_safe:
@@ -92,7 +92,6 @@ class BaseGuard(ABC):
                     audit_metadata = {
                         "guard": guard_name,
                         "violation_type": result.violation_type,
-                        "violation_message": result.message,
                         "correlation_id": corr_id,
                         **(context_metadata or {})
                     }
@@ -100,6 +99,8 @@ class BaseGuard(ABC):
                         event_type=AuditEventType.SECURITY_VIOLATION,
                         resource_id=corr_id or "unknown",
                         action=f"{guard_name}_denied",
+                        tenant_id=(context_metadata or {}).get("tenant_id"),
+                        user_id=(context_metadata or {}).get("user_id") or "authenticated_user",
                         status="violation",
                         metadata=audit_metadata
                     )

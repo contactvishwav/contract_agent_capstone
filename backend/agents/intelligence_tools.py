@@ -110,7 +110,7 @@ class ClauseDetectorTool(BaseTool):
             AuditLogger().log_event(
                 event_type=AuditEventType.AGENT_TOOL_CALL,
                 resource_id=contract_id or "unknown",
-                tenant_id=tenant_id or "demo_tenant_1",
+                tenant_id=tenant_id,
                 action="clause_extraction",
                 metadata={"clause_count": len(clauses), "ungrounded_count": ungrounded_count},
                 status="success",
@@ -122,7 +122,7 @@ class ClauseDetectorTool(BaseTool):
             AuditLogger().log_event(
                 event_type=AuditEventType.AGENT_TOOL_CALL,
                 resource_id=contract_id or "unknown",
-                tenant_id=tenant_id or "demo_tenant_1",
+                tenant_id=tenant_id,
                 action="clause_extraction",
                 status="failure",
                 error_details=str(e),
@@ -231,7 +231,7 @@ class PolicyCheckerTool(BaseTool):
             AuditLogger().log_event(
                 event_type=AuditEventType.AGENT_TOOL_CALL,
                 resource_id=contract_id or "unknown",
-                tenant_id=tenant_id or "demo_tenant_1",
+                tenant_id=tenant_id,
                 action="policy_check",
                 metadata={
                     "violation_count": len(violations),
@@ -252,7 +252,7 @@ class PolicyCheckerTool(BaseTool):
             AuditLogger().log_event(
                 event_type=AuditEventType.AGENT_TOOL_CALL,
                 resource_id=contract_id or "unknown",
-                tenant_id=tenant_id or "demo_tenant_1",
+                tenant_id=tenant_id,
                 action="policy_check",
                 status="failure",
                 error_details=str(e),
@@ -334,7 +334,7 @@ class RiskCalculatorTool(BaseTool):
             AuditLogger().log_event(
                 event_type=AuditEventType.AGENT_TOOL_CALL,
                 resource_id=contract_id or "unknown",
-                tenant_id=tenant_id or "demo_tenant_1",
+                tenant_id=tenant_id,
                 action="risk_calculation",
                 metadata={"risk_score": risk_score, "risk_level": risk_level},
                 status="success",
@@ -346,7 +346,7 @@ class RiskCalculatorTool(BaseTool):
             AuditLogger().log_event(
                 event_type=AuditEventType.AGENT_TOOL_CALL,
                 resource_id=contract_id or "unknown",
-                tenant_id=tenant_id or "demo_tenant_1",
+                tenant_id=tenant_id,
                 action="risk_calculation",
                 status="failure",
                 error_details=str(e),
@@ -400,7 +400,7 @@ class RedlineGeneratorTool(BaseTool):
             AuditLogger().log_event(
                 event_type=AuditEventType.AGENT_TOOL_CALL,
                 resource_id=contract_id or "unknown",
-                tenant_id=tenant_id or "demo_tenant_1",
+                tenant_id=tenant_id,
                 action="redline_generation",
                 metadata={"redline_count": len(redlines)},
                 status="success",
@@ -412,7 +412,7 @@ class RedlineGeneratorTool(BaseTool):
             AuditLogger().log_event(
                 event_type=AuditEventType.AGENT_TOOL_CALL,
                 resource_id=contract_id or "unknown",
-                tenant_id=tenant_id or "demo_tenant_1",
+                tenant_id=tenant_id,
                 action="redline_generation",
                 status="failure",
                 error_details=str(e),

@@ -10,8 +10,17 @@ class AgentAuditService:
     Provides methods to log specific agent lifecycle events.
     """
     
-    def __init__(self, audit_logger: Optional[AuditLogger] = None):
+    def __init__(
+        self,
+        audit_logger: Optional[AuditLogger] = None,
+        tenant_id: Optional[str] = None,
+        user_id: str = "authenticated_user",
+        correlation_id: Optional[str] = None,
+    ):
         self.audit_logger = audit_logger or AuditLogger()
+        self.tenant_id = tenant_id
+        self.user_id = user_id
+        self.correlation_id = correlation_id
 
     def log_user_interaction(self, user_id: str, prompt: str, session_id: str, metadata: Optional[Dict[str, Any]] = None):
         """Log the initial user prompt"""
@@ -19,9 +28,11 @@ class AgentAuditService:
             event_type=AuditEventType.USER_INTERACTION,
             resource_id=session_id,
             action="receive_prompt",
-            user_id=user_id,
+            user_id=user_id or self.user_id,
+            tenant_id=self.tenant_id,
             metadata={
-                "prompt_preview": prompt[:100] + ("..." if len(prompt) > 100 else ""),
+                "prompt_length": len(prompt),
+                "correlation_id": self.correlation_id,
                 **(metadata or {})
             }
         )
@@ -32,11 +43,14 @@ class AgentAuditService:
             event_type=AuditEventType.AGENT_TOOL_CALL,
             resource_id=session_id,
             action=f"execute_{tool_name}",
+            user_id=self.user_id,
+            tenant_id=self.tenant_id,
             status=status,
             metadata={
                 "tool_name": tool_name,
-                "arguments": args,
-                "result_preview": str(result)[:200] + ("..." if len(str(result)) > 200 else "")
+                "argument_names": sorted(args.keys()),
+                "result_length": len(str(result)),
+                "correlation_id": self.correlation_id,
             }
         )
 
@@ -46,8 +60,11 @@ class AgentAuditService:
             event_type=AuditEventType.AGENT_THOUGHT,
             resource_id=session_id,
             action="llm_decision",
+            user_id=self.user_id,
+            tenant_id=self.tenant_id,
             metadata={
-                "rationale": rationale,
+                "response_length": len(rationale),
+                "correlation_id": self.correlation_id,
                 **(metadata or {})
             }
         )
@@ -58,10 +75,13 @@ class AgentAuditService:
             event_type=AuditEventType.MODEL_GUARD_CHECK,
             resource_id=session_id,
             action=f"check_{guard_name.lower().replace(' ', '_')}",
+            user_id=self.user_id,
+            tenant_id=self.tenant_id,
             status="success" if is_safe else "violation",
             metadata={
                 "guard": guard_name,
                 "is_safe": is_safe,
-                "violation_type": violation_type
+                "violation_type": violation_type,
+                "correlation_id": self.correlation_id,
             }
         )

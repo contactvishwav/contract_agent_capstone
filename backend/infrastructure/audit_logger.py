@@ -39,6 +39,11 @@ class AuditEventType(Enum):
     # route - no new query endpoint needed.
     WORKFLOW_ESCALATION = "workflow_escalation"
 
+
+class AuditScope(Enum):
+    TENANT = "tenant"
+    SYSTEM = "system"
+
 class AuditLogger:
     """Centralized audit logging with Neo4j persistence"""
     
@@ -52,12 +57,23 @@ class AuditLogger:
         resource_id: str,
         action: str,
         user_id: Optional[str] = "system",
-        tenant_id: Optional[str] = "demo_tenant_1",
+        tenant_id: Optional[str] = None,
+        scope: AuditScope = AuditScope.TENANT,
         metadata: Optional[Dict[str, Any]] = None,
         status: str = "success",
         error_details: Optional[str] = None
     ) -> str:
-        """Log audit event to Neo4j"""
+        """Log an explicitly tenant-owned or explicitly system event.
+
+        Missing tenant context never falls back to a tenant-looking demo id.
+        It is rejected before persistence unless the caller deliberately marks
+        the event as system scoped.
+        """
+        if scope == AuditScope.TENANT and not tenant_id:
+            logger.error("Refusing to persist tenant audit event without tenant_id")
+            return ""
+        if scope == AuditScope.SYSTEM:
+            tenant_id = None
         try:
             audit_id = f"audit_{datetime.utcnow().timestamp()}"
             
@@ -68,6 +84,7 @@ class AuditLogger:
                 a.action = $action,
                 a.user_id = $user_id,
                 a.tenant_id = $tenant_id,
+                a.scope = $scope,
                 a.status = $status,
                 a.timestamp = datetime(),
                 a.metadata = $metadata,
@@ -82,23 +99,27 @@ class AuditLogger:
                 "action": action,
                 "user_id": user_id,
                 "tenant_id": tenant_id,
+                "scope": scope.value,
                 "status": status,
                 "metadata": json.dumps(metadata or {}),
-                "error_details": error_details
+                # Exception/provider payloads can contain document text,
+                # prompts, credentials, or raw upstream responses. Preserve
+                # the fact of an error without copying unrestricted content.
+                "error_details": "details_omitted" if error_details else None,
             })
             
             logger.info(f"Audit logged: {event_type.value} - {resource_id} - {status}")
             return result[0]["audit_id"] if result else audit_id
             
-        except Exception as e:
-            logger.error(f"Failed to log audit event: {e}")
+        except Exception as exc:
+            logger.error("Failed to log audit event: %s", type(exc).__name__)
             return ""
     
-    def get_audit_trail(self, resource_id: str, limit: int = 100) -> list:
+    def get_audit_trail(self, resource_id: str, tenant_id: str, limit: int = 100) -> list:
         """Retrieve audit trail for a resource"""
         try:
             query = """
-            MATCH (a:AuditLog {resource_id: $resource_id})
+            MATCH (a:AuditLog {resource_id: $resource_id, tenant_id: $tenant_id})
             RETURN a.audit_id as audit_id,
                    a.event_type as event_type,
                    a.action as action,
@@ -112,6 +133,7 @@ class AuditLogger:
             
             result = self.repository.graph.query(query, {
                 "resource_id": resource_id,
+                "tenant_id": tenant_id,
                 "limit": limit
             })
 
@@ -142,6 +164,9 @@ def audit_log(event_type: AuditEventType, action: str):
         async def async_wrapper(*args, **kwargs):
             audit_logger = AuditLogger()
             resource_id = kwargs.get('contract_id') or kwargs.get('file', {}).filename if 'file' in kwargs else 'unknown'
+            identity = kwargs.get("identity")
+            tenant_id = getattr(identity, "tenant_id", None)
+            user_id = getattr(identity, "username", None) or "authenticated_user"
             
             try:
                 result = await func(*args, **kwargs)
@@ -150,6 +175,8 @@ def audit_log(event_type: AuditEventType, action: str):
                     event_type=event_type,
                     resource_id=str(resource_id),
                     action=action,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
                     metadata={"function": func.__name__, "args_count": len(args)},
                     status="success"
                 )
@@ -161,6 +188,8 @@ def audit_log(event_type: AuditEventType, action: str):
                     event_type=event_type,
                     resource_id=str(resource_id),
                     action=action,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
                     metadata={"function": func.__name__},
                     status="failure",
                     error_details=str(e)
@@ -171,6 +200,9 @@ def audit_log(event_type: AuditEventType, action: str):
         def sync_wrapper(*args, **kwargs):
             audit_logger = AuditLogger()
             resource_id = kwargs.get('contract_id') or 'unknown'
+            identity = kwargs.get("identity")
+            tenant_id = getattr(identity, "tenant_id", None)
+            user_id = getattr(identity, "username", None) or "authenticated_user"
             
             try:
                 result = func(*args, **kwargs)
@@ -179,6 +211,8 @@ def audit_log(event_type: AuditEventType, action: str):
                     event_type=event_type,
                     resource_id=str(resource_id),
                     action=action,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
                     metadata={"function": func.__name__},
                     status="success"
                 )
@@ -190,6 +224,8 @@ def audit_log(event_type: AuditEventType, action: str):
                     event_type=event_type,
                     resource_id=str(resource_id),
                     action=action,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
                     metadata={"function": func.__name__},
                     status="failure",
                     error_details=str(e)

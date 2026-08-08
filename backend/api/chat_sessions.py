@@ -19,6 +19,25 @@ from backend.shared.utils.utils import serialize_neo4j_datetime
 router = APIRouter(prefix="/api/chat", tags=["chat-sessions"])
 repository = Neo4jChatSessionRepository()
 contract_repository = Neo4jContractRepository()
+ALL_CONTRACTS_SENTINEL = "__all_contracts__"
+
+
+def normalize_contract_scope(contract_id: Optional[str]) -> Optional[str]:
+    """Canonical wire/storage representation for an All-Contracts scope."""
+    if contract_id is None or contract_id == ALL_CONTRACTS_SENTINEL:
+        return None
+    normalized = contract_id.strip()
+    return normalized or None
+
+
+def contract_exists_for_tenant(contract_id: str, tenant_id: str) -> bool:
+    """Verify ownership inside the Neo4j predicate, never after retrieval."""
+    rows = contract_repository.graph.query(
+        "MATCH (c:Contract {file_id: $contract_id, tenant_id: $tenant_id}) "
+        "RETURN c.file_id AS file_id",
+        {"contract_id": contract_id, "tenant_id": tenant_id},
+    )
+    return bool(rows)
 
 
 class CreateSessionRequest(BaseModel):
@@ -72,7 +91,8 @@ async def create_session(
     payload: CreateSessionRequest,
     identity: TokenIdentity = Depends(requires_permission(Permission.ANALYZE)),
 ):
-    if payload.contract_id:
+    contract_id = normalize_contract_scope(payload.contract_id)
+    if contract_id:
         # Without this check, a client could scope a new session to a
         # contract_id belonging to a different tenant - it would then flow
         # into EnhancedContractSearchTool via config["configurable"][
@@ -80,14 +100,10 @@ async def create_session(
         # backend/main.py's runner()), scoping searches against another
         # tenant's contract. Same "always validate ownership server-side"
         # posture as everywhere else contract_id is accepted from a client.
-        owns = contract_repository.graph.query(
-            "MATCH (c:Contract {file_id: $contract_id, tenant_id: $tenant_id}) RETURN c.file_id AS file_id",
-            {"contract_id": payload.contract_id, "tenant_id": identity.tenant_id},
-        )
-        if not owns:
-            raise HTTPException(status_code=404, detail=f"Contract {payload.contract_id} not found")
+        if not contract_exists_for_tenant(contract_id, identity.tenant_id):
+            raise HTTPException(status_code=404, detail=f"Contract {contract_id} not found")
 
-    row = repository.create_session(identity.tenant_id, payload.contract_id, payload.title or "New chat")
+    row = repository.create_session(identity.tenant_id, contract_id, payload.title or "New chat")
     return _serialize_session(row)
 
 

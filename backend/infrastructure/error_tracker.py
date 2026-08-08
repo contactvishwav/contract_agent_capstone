@@ -41,13 +41,15 @@ class ErrorContext:
         operation: str,
         resource_id: Optional[str] = None,
         user_id: Optional[str] = "system",
-        tenant_id: Optional[str] = "demo_tenant_1",
+        tenant_id: Optional[str] = None,
+        system_event: bool = False,
         metadata: Optional[Dict[str, Any]] = None
     ):
         self.operation = operation
         self.resource_id = resource_id
         self.user_id = user_id
         self.tenant_id = tenant_id
+        self.scope = "system" if system_event else "tenant"
         self.metadata = metadata or {}
         self.start_time = datetime.utcnow()
         self.errors: List[Dict[str, Any]] = []
@@ -67,22 +69,31 @@ class ErrorTracker:
         context: ErrorContext,
         recovery_action: Optional[str] = None
     ) -> str:
-        """Track error with full context"""
+        """Track an error without unrestricted exception payload content."""
+        if context.scope == "tenant" and not context.tenant_id:
+            logger.error("Refusing to persist tenant error without tenant_id")
+            return ""
+        if context.scope == "system":
+            context.tenant_id = None
         try:
             error_id = f"error_{datetime.utcnow().timestamp()}"
             
             error_data = {
                 "error_id": error_id,
                 "error_type": type(error).__name__,
-                "error_message": str(error),
+                "error_message": type(error).__name__,
                 "category": category.value,
                 "severity": severity.value,
                 "operation": context.operation,
                 "resource_id": context.resource_id or "unknown",
                 "user_id": context.user_id,
                 "tenant_id": context.tenant_id,
+                "scope": context.scope,
                 "timestamp": datetime.utcnow().isoformat(),
-                "stack_trace": traceback.format_exc(),
+                "stack_trace": json.dumps([
+                    {"file": frame.filename, "line": frame.lineno, "function": frame.name}
+                    for frame in traceback.extract_tb(error.__traceback__)
+                ]),
                 "metadata": json.dumps(context.metadata),
                 "recovery_action": recovery_action
             }
@@ -98,6 +109,7 @@ class ErrorTracker:
                 e.resource_id = $resource_id,
                 e.user_id = $user_id,
                 e.tenant_id = $tenant_id,
+                e.scope = $scope,
                 e.timestamp = datetime($timestamp),
                 e.stack_trace = $stack_trace,
                 e.metadata = $metadata,
@@ -112,15 +124,15 @@ class ErrorTracker:
             
             return result[0]["error_id"] if result else error_id
             
-        except Exception as e:
-            logger.error(f"Failed to track error: {e}")
+        except Exception as exc:
+            logger.error("Failed to track error: %s", type(exc).__name__)
             return ""
     
-    def get_error_statistics(self, hours: int = 24) -> Dict[str, Any]:
+    def get_error_statistics(self, tenant_id: str, hours: int = 24) -> Dict[str, Any]:
         """Get error statistics for monitoring"""
         try:
             query = """
-            MATCH (e:ErrorLog)
+            MATCH (e:ErrorLog {tenant_id: $tenant_id})
             WHERE e.timestamp > datetime() - duration({hours: $hours})
             RETURN 
                 e.category as category,
@@ -129,7 +141,7 @@ class ErrorTracker:
             ORDER BY count DESC
             """
             
-            result = self.repository.graph.query(query, {"hours": hours})
+            result = self.repository.graph.query(query, {"hours": hours, "tenant_id": tenant_id})
             
             stats = {
                 "total_errors": sum(row["count"] for row in result),
@@ -147,15 +159,15 @@ class ErrorTracker:
             
             return stats
             
-        except Exception as e:
-            logger.error(f"Failed to get error statistics: {e}")
+        except Exception as exc:
+            logger.error("Failed to get error statistics: %s", type(exc).__name__)
             return {"total_errors": 0, "by_category": {}, "by_severity": {}}
     
-    def get_recent_errors(self, limit: int = 50) -> List[Dict[str, Any]]:
+    def get_recent_errors(self, tenant_id: str, limit: int = 50) -> List[Dict[str, Any]]:
         """Get recent errors for debugging"""
         try:
             query = """
-            MATCH (e:ErrorLog)
+            MATCH (e:ErrorLog {tenant_id: $tenant_id})
             RETURN e.error_id as error_id,
                    e.error_type as error_type,
                    e.error_message as error_message,
@@ -168,7 +180,7 @@ class ErrorTracker:
             LIMIT $limit
             """
             
-            result = self.repository.graph.query(query, {"limit": limit})
+            result = self.repository.graph.query(query, {"limit": limit, "tenant_id": tenant_id})
             errors = []
             for row in result:
                 error = dict(row)
@@ -180,8 +192,8 @@ class ErrorTracker:
                 errors.append(error)
             return errors
 
-        except Exception as e:
-            logger.error(f"Failed to get recent errors: {e}")
+        except Exception as exc:
+            logger.error("Failed to get recent errors: %s", type(exc).__name__)
             return []
 
 @contextmanager
@@ -191,7 +203,8 @@ def error_tracking_context(
     severity: ErrorSeverity = ErrorSeverity.MEDIUM,
     resource_id: Optional[str] = None,
     user_id: Optional[str] = "system",
-    tenant_id: Optional[str] = "demo_tenant_1",
+    tenant_id: Optional[str] = None,
+    system_event: bool = False,
     metadata: Optional[Dict[str, Any]] = None,
     raise_on_error: bool = True
 ):
@@ -201,6 +214,7 @@ def error_tracking_context(
         resource_id=resource_id,
         user_id=user_id,
         tenant_id=tenant_id,
+        system_event=system_event,
         metadata=metadata
     )
     

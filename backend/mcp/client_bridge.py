@@ -23,6 +23,7 @@ from typing import Any, Dict, Optional
 from fastmcp import Client
 
 from backend.mcp_server import mcp as mcp_server
+from backend.mcp.security import McpPrincipal, principal_var
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ async def call_mcp_tool(
     tool_name: str,
     arguments: Dict[str, Any],
     correlation_id: Optional[str] = None,
+    authenticated_tenant_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Call a real MCP tool in-process and return its parsed JSON payload.
 
@@ -41,16 +43,29 @@ async def call_mcp_tool(
     graceful-degradation convention used for reranking (reranker_service.py)
     and every other external-dependency call in this codebase.
     """
-    call_args = dict(arguments)
+    if not authenticated_tenant_id:
+        return {"success": False, "error": "Authenticated MCP tenant is required"}
+
+    # The bridge is a server-side boundary: discard any tenant assertion in
+    # the generic argument bag and inject the JWT-derived value explicitly.
+    call_args = {key: value for key, value in arguments.items() if key != "tenant_id"}
+    call_args["tenant_id"] = authenticated_tenant_id
     if correlation_id:
         call_args["correlation_id"] = correlation_id
 
+    token = principal_var.set(McpPrincipal(authenticated_tenant_id, "authenticated_in_process"))
     try:
         async with Client(mcp_server) as client:
             result = await client.call_tool(tool_name, call_args, raise_on_error=False)
     except Exception as e:
-        logger.error(f"MCP in-process call failed for tool '{tool_name}': {e}")
-        return {"success": False, "error": str(e)}
+        logger.error(
+            "MCP in-process call failed for tool '%s': %s",
+            tool_name,
+            type(e).__name__,
+        )
+        return {"success": False, "error": "MCP tool call unavailable"}
+    finally:
+        principal_var.reset(token)
 
     raw = result.data
     if raw is None and result.content:
@@ -83,6 +98,7 @@ def call_mcp_tool_sync(
     tool_name: str,
     arguments: Dict[str, Any],
     correlation_id: Optional[str] = None,
+    authenticated_tenant_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Sync entry point for call sites that can't await directly (LangChain
     tools' `_run` - see contract_chat_agent.py's execute_tools, which calls
@@ -98,7 +114,12 @@ def call_mcp_tool_sync(
     thread with its own fresh loop, and this call blocks on that thread's
     result rather than nesting event loops.
     """
-    coro = call_mcp_tool(tool_name, arguments, correlation_id)
+    coro = call_mcp_tool(
+        tool_name,
+        arguments,
+        correlation_id,
+        authenticated_tenant_id=authenticated_tenant_id,
+    )
     try:
         asyncio.get_running_loop()
     except RuntimeError:

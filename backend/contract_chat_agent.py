@@ -46,7 +46,10 @@ def get_agent(llm):
         # execute_tools below - this only ever reads what main.py's
         # runner() put there from the authenticated request, never
         # anything the model itself could have supplied.
-        contract_id = (config.get("configurable") or {}).get("contract_id") if config else None
+        configurable = (config.get("configurable") or {}) if config else {}
+        contract_id = configurable.get("contract_id")
+        tenant_id = configurable.get("tenant_id")
+        correlation_id = configurable.get("correlation_id")
         if contract_id:
             sys_msg = SystemMessage(content=(
                 BASE_SYSTEM_PROMPT
@@ -66,7 +69,9 @@ def get_agent(llm):
         from backend.infrastructure.agent_audit_service import AgentAuditService
         from backend.shared.utils.logger import correlation_id_var
         
-        audit_service = AgentAuditService()
+        audit_service = AgentAuditService(
+            tenant_id=tenant_id, correlation_id=correlation_id
+        )
         session_id = correlation_id_var.get() or "unknown_session"
         
         # Log textual rationale if present
@@ -123,7 +128,9 @@ def get_agent(llm):
             from backend.infrastructure.agent_audit_service import AgentAuditService
             from backend.shared.utils.logger import correlation_id_var
 
-            audit_service = AgentAuditService()
+            audit_service = AgentAuditService(
+                tenant_id=tenant_id, correlation_id=correlation_id
+            )
             session_id = correlation_id_var.get() or "unknown_session"
 
             for tool_call in last_message.tool_calls:

@@ -40,6 +40,7 @@ class _McpBridgeTool(BaseTool):
             self.mcp_tool_name,
             {**kwargs, "tenant_id": tenant_id},
             correlation_id=correlation_id,
+            authenticated_tenant_id=tenant_id,
         )
         return json.dumps(payload)
 
@@ -48,6 +49,7 @@ class _McpBridgeTool(BaseTool):
             self.mcp_tool_name,
             {**kwargs, "tenant_id": tenant_id},
             correlation_id=correlation_id,
+            authenticated_tenant_id=tenant_id,
         )
         return json.dumps(payload)
 

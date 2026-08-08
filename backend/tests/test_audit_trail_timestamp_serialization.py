@@ -46,7 +46,7 @@ class AuditTrailTimestampSerializationTests(unittest.TestCase):
             audit_logger = AuditLogger()
         audit_logger.repository.graph = FakeGraphWithRealDateTime(fixed)
 
-        trail = audit_logger.get_audit_trail("resource_1")
+        trail = audit_logger.get_audit_trail("resource_1", "tenant_a")
 
         self.assertEqual(len(trail), 1)
         timestamp = trail[0]["timestamp"]
@@ -67,7 +67,7 @@ class AuditTrailTimestampSerializationTests(unittest.TestCase):
             audit_logger = AuditLogger()
         audit_logger.repository.graph = FakeGraphWithRealDateTime(fixed)
 
-        trail = audit_logger.get_audit_trail("resource_1")
+        trail = audit_logger.get_audit_trail("resource_1", "tenant_a")
 
         # This would raise TypeError("Object of type DateTime is not JSON
         # serializable") before the fix, since json.dumps has no built-in
@@ -85,7 +85,7 @@ class AuditTrailTimestampSerializationTests(unittest.TestCase):
             audit_logger = AuditLogger()
         audit_logger.repository.graph = FakeGraphWithRealDateTime("audit_1_plain_string_stand_in")
 
-        trail = audit_logger.get_audit_trail("resource_1")
+        trail = audit_logger.get_audit_trail("resource_1", "tenant_a")
 
         self.assertEqual(trail[0]["timestamp"], "audit_1_plain_string_stand_in")
 

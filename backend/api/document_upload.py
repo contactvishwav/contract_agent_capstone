@@ -61,6 +61,7 @@ async def upload_pdf(
         category=ErrorCategory.FILE_ERROR,
         severity=ErrorSeverity.HIGH,
         resource_id=file.filename if file else "unknown",
+        tenant_id=tenant_id,
         metadata={"model": model}
     ) as error_context:
         try:
@@ -92,6 +93,7 @@ async def upload_pdf(
                     event_type=AuditEventType.VALIDATION_FAILURE,
                     resource_id=file.filename,
                     action="file_validation",
+                    tenant_id=tenant_id,
                     status="failure",
                     error_details=json.dumps(validation_result)
                 )
@@ -200,6 +202,7 @@ async def upload_pdf(
                         event_type=AuditEventType.VALIDATION_FAILURE,
                         resource_id=file.filename,
                         action="content_validation",
+                        tenant_id=tenant_id,
                         status="failure",
                         error_details=json.dumps(content_validation)
                     )
@@ -402,6 +405,7 @@ async def upload_pdf(
                     event_type=AuditEventType.PROCESSING_ERROR,
                     resource_id=file.filename,
                     action="document_processing",
+                    tenant_id=tenant_id,
                     status="failure",
                     error_details=str(proc_error)
                 )
@@ -442,6 +446,7 @@ async def upload_pdf(
                 event_type=AuditEventType.DOCUMENT_UPLOAD,
                 resource_id=contract_id or file.filename,
                 action="upload_completed",
+                tenant_id=tenant_id,
                 status="success",
                 metadata={"filename": file.filename, "model": model}
             )

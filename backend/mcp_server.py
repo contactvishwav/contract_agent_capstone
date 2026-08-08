@@ -56,8 +56,8 @@ async def search_clause_library(query: str, tenant_id: str, correlation_id: Opti
             "results_count": len(results),
             "clauses": results
         })
-    except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+    except Exception:
+        return json.dumps({"success": False, "error": "Clause library search failed"})
 
 @mcp.tool()
 @mcp_tool_wrapper
@@ -87,8 +87,8 @@ async def get_playbook_rule(tenant_id: str, contract_type: str = "general", corr
                 } for r in rules
             ]
         })
-    except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+    except Exception:
+        return json.dumps({"success": False, "error": "Playbook lookup failed"})
 
 @mcp.tool()
 @mcp_tool_wrapper
@@ -114,8 +114,8 @@ async def search_prior_approved_clauses(clause_text: str, tenant_id: str, correl
             "tenant_id": tenant_id,
             "precedent_matches": results
         })
-    except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+    except Exception:
+        return json.dumps({"success": False, "error": "Precedent search failed"})
 
 @mcp.tool()
 @mcp_tool_wrapper
@@ -133,15 +133,20 @@ async def fetch_contract_metadata(contract_id: str, tenant_id: str, correlation_
     try:
         metadata = await get_contract_repo().get_contract_by_id(contract_id, tenant_id=tenant_id)
         if not metadata:
-            return json.dumps({"success": False, "error": f"Contract {contract_id} not found for tenant {tenant_id}"})
+            return json.dumps({"success": False, "error": "Contract not found"})
             
         return json.dumps({
             "success": True,
             "metadata": metadata
         })
-    except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+    except Exception:
+        return json.dumps({"success": False, "error": "Contract metadata lookup failed"})
 
 if __name__ == "__main__":
-    # Run server via stdio (MCP default)
+    from backend.mcp.security import assert_standalone_server_allowed
+
+    # The stdio client is the local OS principal and may assert tenant only
+    # under explicit local-development opt-in. There is no external
+    # principal mapping here, so production startup fails closed.
+    assert_standalone_server_allowed()
     mcp.run()

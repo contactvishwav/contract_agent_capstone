@@ -30,11 +30,11 @@ See blog for more: [Agentic GraphRAG for Commercial Contracts](https://towardsda
 - **Autonomous Planning**: Dynamically generates and adopts execution strategies based on query complexity.
 - **Multi-Level Semantic Search**: Contextual retrieval at document, section, clause, and relationship levels.
 - **Policy Compliance Engine**: Automated violation detection against custom policy playbooks.
-- **Model Context Protocol (MCP)**: Standardized interface for AI models to access the contract intelligence library with full data isolation and tracing.
+- **Model Context Protocol (MCP)**: Authenticated in-process tools for Contract Chat, plus an explicitly local-only standalone development server. External production MCP authentication is not implemented.
 
 ## 🔗 Model Context Protocol (MCP)
 
-This repository includes a standalone **MCP Server** that exposes our contract intelligence capabilities to any MCP-compatible AI client (like Claude Desktop).
+This repository includes the same MCP tools in Contract Chat through an authenticated in-process bridge. A standalone stdio server is available only for explicitly opted-in local development; it is disabled in production until external principal-to-tenant authentication exists.
 
 ### Available Tools:
 - **`search_clause_library`**: Semantic search across ingested contract clauses for legal research.
@@ -43,8 +43,8 @@ This repository includes a standalone **MCP Server** that exposes our contract i
 - **`fetch_contract_metadata`**: Retrieve structured contract-level data (Parties, Dates, Law).
 
 ### Security & Best Practices:
-- **Hardened Multi-Tenancy**: `tenant_id` is a mandatory parameter on every MCP tool, enforced at the database query level (calling a tool without it returns an explicit error, not a default/broadest-scope result).
-- **Request Tracing**: every MCP tool call generates a real `trace_id`, logged server-side for that call's full lifecycle. This is a capability, not yet an automatic end-to-end wire-up: all 4 tools also accept an optional `correlation_id` so a caller's own trace id can be threaded through, but nothing in this codebase currently calls from FastAPI into the MCP server in-process, so there's no existing call chain that does this automatically today (`docs/CAPSTONE_SUMMARY.md` §4 item 15, §8).
+- **Tenant boundary**: Contract Chat binds the JWT-derived tenant outside the generic tool argument bag and discards caller/model overrides. A mandatory `tenant_id` alone is not authentication; local standalone callers are trusted as OS/process operators and production standalone startup fails closed.
+- **Request tracing**: the HTTP correlation ID is carried through the real in-process MCP call. Correlation IDs support traceability and never grant tenant access.
 - **Privacy**: Zero integration with browser `console.log`; all logs are handled server-side for maximum security.
 
 ## 🧠 Advanced AI Patterns
@@ -124,9 +124,9 @@ The [Contract Understanding Atticus Dataset (CUAD)](https://www.atticusprojectai
    python scripts/update_contract_types.py
    ```
 
-6. **Run the MCP Server**:
+6. **Run the local-only MCP Server** (the caller is a trusted local operator; do not expose this as production authentication):
    ```bash
-   PYTHONPATH=. python3 backend/mcp_server.py
+   ENVIRONMENT=development MCP_STANDALONE_LOCAL_ONLY=true PYTHONPATH=. python3 backend/mcp_server.py
    ```
 
 7. **Verify Installation**:

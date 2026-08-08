@@ -43,7 +43,10 @@ class FakeGraph:
             self.audit_logs.append(dict(params))
             return [{"audit_id": params["audit_id"]}]
         if "MATCH (a:AuditLog" in cypher:
-            matches = [r for r in self.audit_logs if r["resource_id"] == params["resource_id"]]
+            matches = [
+                r for r in self.audit_logs
+                if r["resource_id"] == params["resource_id"] and r["tenant_id"] == params["tenant_id"]
+            ]
             matches = matches[-params.get("limit", 100):][::-1]
             return [
                 {
@@ -102,7 +105,7 @@ class ClauseDetectorAuditTests(unittest.TestCase):
             tool = ClauseDetectorTool(llm=FakeLLM())
             tool._run("Some contract text.", contract_id="contract_1", tenant_id="tenant_1")
 
-            trail = fake_logger.get_audit_trail("contract_1")
+            trail = fake_logger.get_audit_trail("contract_1", "tenant_1")
             self.assertEqual(len(trail), 1)
             self.assertEqual(trail[0]["action"], "clause_extraction")
             self.assertEqual(trail[0]["status"], "success")
@@ -119,7 +122,7 @@ class ClauseDetectorAuditTests(unittest.TestCase):
             tool = ClauseDetectorTool(llm=BrokenLLM())
             tool._run("Some contract text.", contract_id="contract_2", tenant_id="tenant_1")
 
-            trail = fake_logger.get_audit_trail("contract_2")
+            trail = fake_logger.get_audit_trail("contract_2", "tenant_1")
             self.assertEqual(len(trail), 1)
             self.assertEqual(trail[0]["status"], "failure")
         finally:
@@ -140,7 +143,7 @@ class OtherToolsAuditTests(unittest.TestCase):
             clauses = [{"clause_type": "Non-Compete", "content": "Employee shall not compete for 5 years."}]
             PolicyCheckerTool()._run(json.dumps(clauses), contract_id="contract_3", tenant_id="tenant_1")
 
-            trail = fake_logger.get_audit_trail("contract_3")
+            trail = fake_logger.get_audit_trail("contract_3", "tenant_1")
             self.assertEqual(len(trail), 1)
             self.assertEqual(trail[0]["action"], "policy_check")
             self.assertEqual(trail[0]["status"], "success")
@@ -153,7 +156,7 @@ class OtherToolsAuditTests(unittest.TestCase):
         try:
             RiskCalculatorTool()._run("[]", "[]", contract_id="contract_4", tenant_id="tenant_1")
 
-            trail = fake_logger.get_audit_trail("contract_4")
+            trail = fake_logger.get_audit_trail("contract_4", "tenant_1")
             self.assertEqual(len(trail), 1)
             self.assertEqual(trail[0]["action"], "risk_calculation")
         finally:
@@ -164,7 +167,7 @@ class OtherToolsAuditTests(unittest.TestCase):
         try:
             RedlineGeneratorTool()._run("[]", contract_id="contract_5", tenant_id="tenant_1")
 
-            trail = fake_logger.get_audit_trail("contract_5")
+            trail = fake_logger.get_audit_trail("contract_5", "tenant_1")
             self.assertEqual(len(trail), 1)
             self.assertEqual(trail[0]["action"], "redline_generation")
         finally:

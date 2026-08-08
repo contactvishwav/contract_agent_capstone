@@ -62,7 +62,7 @@ class PolicyAuditService:
             metadata={
                 "violations_found": compliance_result.get('violations_found', 0),
                 "policies_checked": compliance_result.get('policies_checked', 0),
-                "violations": compliance_result.get('violations', []),
+                "violation_count": len(compliance_result.get('violations', [])),
                 "compliance_score": self._calculate_compliance_score(compliance_result)
             },
             status="success"
