@@ -8,6 +8,7 @@ import { AccountPage } from './pages/AccountPage';
 import { AcceptInvitePage } from './pages/AcceptInvitePage';
 import { ErrorBoundary } from './components/shared/ErrorBoundary';
 import { ContractHistoryProvider } from './contexts/ContractHistoryContext';
+import { ChatSessionProvider } from './contexts/ChatSessionContext';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { LoginScreen } from './components/features/auth/LoginScreen';
 import { useRouter } from './lib/useRouter';
@@ -82,9 +83,11 @@ function App() {
   return (
     <AuthProvider>
       <ContractHistoryProvider>
-        <ThemeProvider defaultTheme="light" storageKey="vite-ui-theme">
-          <Gate />
-        </ThemeProvider>
+        <ChatSessionProvider>
+          <ThemeProvider defaultTheme="light" storageKey="vite-ui-theme">
+            <Gate />
+          </ThemeProvider>
+        </ChatSessionProvider>
       </ContractHistoryProvider>
     </AuthProvider>
   );

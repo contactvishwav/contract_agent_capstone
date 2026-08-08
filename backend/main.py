@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Depends, Request, Response
+from fastapi import FastAPI, Depends, Request, Response, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -32,6 +32,7 @@ from backend.governance.output_guard import OutputGuard
 from backend.governance.rbac import Permission, requires_permission
 from backend.governance.auth import TokenIdentity
 from backend.infrastructure.audit_logger import AuditLogger, AuditEventType
+from backend.infrastructure.chat_session_repository import Neo4jChatSessionRepository
 
 logger = get_logger(__name__)
 
@@ -159,6 +160,11 @@ app.include_router(policy_router)
 from backend.api.supervisor_api import router as supervisor_router
 app.include_router(supervisor_router)
 
+# Persistent Contract Chat sessions (list/create/detail) - /api/run/ below
+# is where messages actually get appended as a conversation happens.
+from backend.api.chat_sessions import router as chat_sessions_router
+app.include_router(chat_sessions_router)
+
 # Debug routes (development only)
 debug_router = create_debug_router()
 conditionally_include_router(app, debug_router, is_development())
@@ -211,7 +217,11 @@ async def metrics():
 class RunPayload(BaseModel):
     model: str
     prompt: str
-    history: str
+    # Optional now, defaulting to "[]": the frontend no longer populates
+    # this once every real turn goes through a persistent session_id (see
+    # below) - kept for backward compatibility with any caller that still
+    # only wants today's ephemeral, client-managed-history behavior.
+    history: Optional[str] = "[]"
     # Optional: which contract the user has selected in the Chat UI, if
     # any. Real, confirmed bug this closes: Contract Chat had no way to
     # know which contract "this"/"it" referred to in a question like
@@ -221,6 +231,15 @@ class RunPayload(BaseModel):
     # agent.py's execute_tools) - never exposed to the LLM as a tool-call
     # argument it could guess or override.
     contract_id: Optional[str] = None
+    # Optional: which persistent chat session (backend/infrastructure/
+    # chat_session_repository.py) this message belongs to. When present,
+    # runner() loads conversation history from Neo4j (server-authoritative,
+    # matching contract_id/tenant_id's trust boundary - can't be spoofed
+    # via the client-supplied `history` string either) instead of trusting
+    # `history`, and persists every turn as it happens. Ownership (this
+    # session belongs to the caller's tenant) is checked in the /api/run/
+    # route itself, before streaming starts - see run() below.
+    session_id: Optional[str] = None
 
 def rebuild_history(history):
     history = json.loads(history)
@@ -239,6 +258,32 @@ def rebuild_history(history):
             # use pydantic BaseClass method to rebuild message model from json string dumped by model_dump_json
             messages.append(item_class.model_validate_json(item_json_str))
 
+    return messages
+
+
+def _messages_from_stored(stored_messages):
+    """Rebuilds LangChain history for the LLM from persisted ChatMessage
+    rows (Neo4jChatSessionRepository.list_messages), used instead of
+    rebuild_history() whenever a session_id is present.
+
+    Deliberately uses only "user_message"/"ai_message" rows, converted to
+    plain HumanMessage/AIMessage(content=...) - "tool_call"/"tool_message"
+    rows are persisted (for UI replay - see runner() below) but not
+    replayed back into the model's own context here. Restoring a session's
+    own prior tool-call JSON/results into the model's context would need a
+    fully-formed AIMessage(tool_calls=[...]) + matching
+    ToolMessage(tool_call_id=...) pair sequence; ChatMessage.tool_call_id
+    exists specifically so that's possible as a fast-follow without another
+    migration, but isn't done here. Practical effect: a restored session's
+    model sees its own prior natural-language answers, not its own prior
+    raw tool arguments/results, in later turns of that same session.
+    """
+    role_to_class = {"user_message": HumanMessage, "ai_message": AIMessage}
+    messages = []
+    for row in stored_messages:
+        message_class = role_to_class.get(row.get("role"))
+        if message_class:
+            messages.append(message_class(content=row.get("content") or ""))
     return messages
 
 
@@ -276,16 +321,25 @@ def _normalize_ai_message_content(content):
     return str(content) if content else ""
 
 
-async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, tenant_id: str, user_role: str = "unknown", contract_id: Optional[str] = None):
+async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, tenant_id: str, user_role: str = "unknown", contract_id: Optional[str] = None, chat_session_id: Optional[str] = None):
     logger.info(f"Processing LLM request for model '{model}' for user_role '{user_role}'")
-    
+
     # Initialize AuditLogger and AgentAuditService for Guard persistence
     from backend.infrastructure.agent_audit_service import AgentAuditService
-    
+
     audit_logger = AuditLogger()
     agent_audit = AgentAuditService(audit_logger)
     session_id = correlation_id_var.get() or "unknown_session"
     context_metadata = {"user_role": user_role}
+
+    # Persistent Contract Chat session (backend/infrastructure/
+    # chat_session_repository.py) - deliberately a distinct name from the
+    # `session_id` local above, which is this request's audit/correlation
+    # id, an unrelated concept. Ownership of chat_session_id (belongs to
+    # this tenant) is already checked in the /api/run/ route before
+    # streaming starts, so no ownership check is repeated here - only a
+    # None-safe repository instantiation.
+    chat_session_repo = Neo4jChatSessionRepository() if chat_session_id else None
     
     # 0. Log User Interaction
     agent_audit.log_user_interaction(user_id="user", prompt=prompt, session_id=session_id)
@@ -304,12 +358,27 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
 
     if not guard_result.is_safe:
         logger.error(f"Prompt blocked by Guard: {guard_result.violation_type}")
+        if chat_session_repo:
+            # Still visible on reopen - a declined prompt shouldn't vanish
+            # from a restored session just because it never reached the LLM.
+            chat_session_repo.append_message(chat_session_id, tenant_id, role="user_message", content=prompt)
+            chat_session_repo.append_message(chat_session_id, tenant_id, role="ai_message", content=guard_result.message)
         yield f"data: {json.dumps({'content': guard_result.message, 'type': 'error'})}\n\n"
         yield f"data: {json.dumps({'content': '', 'type': 'end'})}\n\n"
         return
 
-    # history comes in from FE as stringified list of dumped model messages
-    if history != "[]":
+    if chat_session_repo:
+        # Server-authoritative: history is loaded from Neo4j, not trusted
+        # from the client's `history` string, matching contract_id/
+        # tenant_id's existing trust boundary. The incoming prompt is
+        # persisted immediately, before the LLM is even invoked, so it
+        # survives a refresh/navigation-away even if the response itself
+        # never completes.
+        stored_messages = chat_session_repo.list_messages(chat_session_id, tenant_id)
+        previous_messages = _messages_from_stored(stored_messages)
+        chat_session_repo.append_message(chat_session_id, tenant_id, role="user_message", content=prompt)
+    elif history != "[]":
+        # history comes in from FE as stringified list of dumped model messages
         previous_messages = rebuild_history(history)
     else:
         previous_messages = []
@@ -370,12 +439,31 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
             if "assistant" in message[1]:
                 for history_message in message[1]["assistant"]["messages"]:
                     context.append(history_message.model_dump_json())
+                    if chat_session_repo:
+                        # These are the real, final AIMessage.tool_calls -
+                        # the authoritative source (not re-parsed SSE
+                        # strings), same reason the "messages"-stream yield
+                        # above exists separately for the live token
+                        # stream. The turn's own natural-language content
+                        # (if any) is persisted once, after the Output
+                        # Guard resolves below - not duplicated here.
+                        for tc in (getattr(history_message, "tool_calls", None) or []):
+                            chat_session_repo.append_message(
+                                chat_session_id, tenant_id, role="tool_call",
+                                content=json.dumps(tc), tool_name=tc.get("name"), tool_call_id=tc.get("id"),
+                            )
             elif "tools" in message[1]:
                 for tool_message in message[1]["tools"]["messages"]:
                     if hasattr(tool_message, 'model_dump_json'):
                         context.append(tool_message.model_dump_json())
                     else:
                         context.append(json.dumps(tool_message))
+                    if chat_session_repo and hasattr(tool_message, "content"):
+                        chat_session_repo.append_message(
+                            chat_session_id, tenant_id, role="tool_message",
+                            content=_normalize_ai_message_content(tool_message.content),
+                            tool_call_id=getattr(tool_message, "tool_call_id", None),
+                        )
         
         # Capture AI content for post-check
         if message[0] == "messages":
@@ -443,6 +531,18 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
                     context[i] = json.dumps(msg_data)
                     break
 
+    if chat_session_repo:
+        # Exactly one final "ai_message" row per request, persisted with
+        # the same content the user actually saw - safety-blocked or
+        # PII-redacted, not the raw ai_full_content - so a restored
+        # session never shows something the live response didn't.
+        if not post_check_result.is_safe:
+            final_ai_content = ' [CONTENT REMOVED DUE TO SAFETY POLICY] ' + post_check_result.message
+        else:
+            redacted_content = post_check_result.metadata.get("redacted_content")
+            final_ai_content = redacted_content if (redacted_content and redacted_content != ai_full_content) else ai_full_content
+        chat_session_repo.append_message(chat_session_id, tenant_id, role="ai_message", content=final_ai_content, model=model)
+
     yield f"data: {json.dumps({'content': context, 'type': 'history'})}\n\n"
     yield f"data: {json.dumps({'content': '', 'type': 'end'})}\n\n"
 
@@ -453,15 +553,25 @@ async def run(
     llm_mgr: LLMManager = Depends(get_llm_manager),
     identity: TokenIdentity = Depends(requires_permission(Permission.ANALYZE)),
 ):
+    if payload.session_id:
+        # Ownership check happens here, not inside runner(): runner() is an
+        # async generator feeding StreamingResponse, and by the time it
+        # could raise, response headers (200, text/event-stream) may
+        # already be committed, so a clean HTTPException(404) isn't
+        # reliably achievable from inside it. This is a plain coroutine.
+        if not Neo4jChatSessionRepository().get_session(payload.session_id, identity.tenant_id):
+            raise HTTPException(status_code=404, detail=f"Chat session {payload.session_id} not found")
+
     return StreamingResponse(
         runner(
             model=payload.model,
             prompt=payload.prompt,
-            history=payload.history,
+            history=payload.history or "[]",
             llm_mgr=llm_mgr,
             tenant_id=identity.tenant_id,
             user_role=identity.role,
             contract_id=payload.contract_id,
+            chat_session_id=payload.session_id,
         ),
         media_type="text/event-stream",
     )

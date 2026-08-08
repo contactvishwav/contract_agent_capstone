@@ -24,6 +24,10 @@ type ChatProviderState = {
     addMessagePart: (id: string, part: MessagePart) => void;
     updateMessageGenerating: (id: string, generating: boolean) => void;
     reset: () => void;
+    // Loads a persisted chat session's full history in one shot - used
+    // when the user opens a prior session from the switcher, distinct
+    // from reset() (which clears to empty for a brand new conversation).
+    replaceMessages: (messages: Message[]) => void;
 };
 
 const initialState: ChatProviderState = {
@@ -31,7 +35,8 @@ const initialState: ChatProviderState = {
     addMessage: () => null,
     addMessagePart: () => null,
     updateMessageGenerating: () => null,
-    reset: () => null
+    reset: () => null,
+    replaceMessages: () => null
 };
 
 const ChatProviderContext = createContext<ChatProviderState>(initialState);
@@ -67,12 +72,17 @@ export function ChatProvider({ children }: ChatProviderProps) {
         setMessages([]);
     };
 
+    const replaceMessages = useCallback((newMessages: Message[]) => {
+        setMessages(newMessages);
+    }, []);
+
     const value = {
         messages,
         addMessage,
         addMessagePart,
         updateMessageGenerating,
-        reset
+        reset,
+        replaceMessages
     };
 
     return (

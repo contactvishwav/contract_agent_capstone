@@ -15,6 +15,7 @@ import { SendHorizontal } from "lucide-react";
 import { Message, MessagePart, useChat } from "./provider";
 import { authHeader, clearSession } from "../../../lib/authStore";
 import { useContractHistory } from "../../../contexts/ContractHistoryContext";
+import { useChatSession } from "../../../contexts/ChatSessionContext";
 
 // Real, confirmed bug this closes: Contract Chat had no way to know
 // which contract a question like "Analyze this contract" referred to -
@@ -26,18 +27,22 @@ import { useContractHistory } from "../../../contexts/ContractHistoryContext";
 const ALL_CONTRACTS_VALUE = "__all_contracts__";
 
 export function ChatInput() {
-    const history = useRef<string[]>([])
     const [submiting, setSubmiting] = React.useState(false);
     const { addMessage, addMessagePart, updateMessageGenerating, reset } = useChat();
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const { contracts, selectedContractId, setSelectedContract } = useContractHistory();
+    const { activeSession, createSession } = useChatSession();
 
-    // Defaults to whatever contract is already selected elsewhere in the
-    // app (e.g. just uploaded or opened on the Intelligence page) - "tied
-    // to whatever contract they're viewing", not just an empty dropdown -
-    // falling back to the most recently uploaded contract if nothing is
-    // selected yet, and to "all contracts" only if there's no history at all.
-    const effectiveContractId = selectedContractId || contracts[0]?.contract_id || ALL_CONTRACTS_VALUE;
+    // Whenever a session is active, its own contract_id is authoritative
+    // (including an explicit null for an All-Contracts session) - it must
+    // not be overridden by ContractHistoryContext's "most recently
+    // uploaded contract" fallback, or reopening an explicit All-Contracts
+    // session would silently snap the dropdown back to some other
+    // contract. That fallback only applies in the true blank-slate case,
+    // before any session has been created or selected yet.
+    const effectiveContractId = activeSession
+        ? (activeSession.contract_id ?? ALL_CONTRACTS_VALUE)
+        : (selectedContractId || contracts[0]?.contract_id || ALL_CONTRACTS_VALUE);
 
     const handleSubmit = async (event: any) => {
         event.preventDefault();
@@ -49,6 +54,14 @@ export function ChatInput() {
 
         if (!prompt.trim()) {
             return;
+        }
+
+        // Lazy session creation: "New chat" doesn't POST until the first
+        // real message actually sends, so an unused click never leaves an
+        // empty thread in the switcher.
+        let session = activeSession;
+        if (!session) {
+            session = await createSession(contract_id);
         }
 
         const userMessage: Message = {
@@ -79,14 +92,17 @@ export function ChatInput() {
                 'Content-Type': 'application/json',
                 ...(auth ? { Authorization: auth } : {}),
             },
-            body: JSON.stringify({ model, prompt, history: JSON.stringify(history.current), contract_id }),
+            body: JSON.stringify({ model, prompt, contract_id, session_id: session.session_id }),
             onmessage(event) {
                 const data: MessagePart = JSON.parse(event.data);
 
                 if (data.type === "end") {
                     updateMessageGenerating(aiMessage.id, false);
                 } else if (data.type === "history") {
-                    history.current = [...history.current, ...data.content]
+                    // No longer needed client-side - the backend persists
+                    // every turn to the session itself (backend/main.py's
+                    // runner()) once session_id is present, so there is
+                    // nothing left for the client to round-trip.
                 } else {
                     addMessagePart(aiMessage.id, data);
                 }
@@ -117,7 +133,6 @@ export function ChatInput() {
     const handleClear = (event: MouseEvent) => {
         event.preventDefault();
         reset();
-        history.current = [];
         if (textareaRef.current) {
             textareaRef.current.value = "";
         }

@@ -147,8 +147,12 @@ class MigrationRunnerVersioningTests(unittest.TestCase):
             names.index("vector_indexes"), names.index("embedding_range_index_fix"),
             "embedding_range_index_fix drops stale RANGE indexes only once the replacement vector index exists",
         )
-        self.assertEqual(len(names), 11)
-        self.assertEqual(len(set(names)), 11, "No duplicate migration names")
+        self.assertIn(
+            "chat_session_schema", names,
+            "persistent Contract Chat sessions (backend/infrastructure/chat_session_repository.py)",
+        )
+        self.assertEqual(len(names), 12)
+        self.assertEqual(len(set(names)), 12, "No duplicate migration names")
 
 
 if __name__ == "__main__":
