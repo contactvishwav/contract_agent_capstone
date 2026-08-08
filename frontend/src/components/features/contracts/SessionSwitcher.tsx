@@ -58,7 +58,16 @@ export function SessionSwitcher() {
     }, [replaceMessages, selectSession, setSelectedContract]);
 
     React.useEffect(() => {
-        if (activeSession && loadedSessionId.current !== activeSession.session_id) {
+        // A just-created session is intentionally empty until ChatInput's
+        // first SSE request persists its turn. Fetching that empty detail
+        // here races the optimistic user/AI messages and can clear them
+        // mid-stream. Restored sessions have a server message_count and do
+        // need detail bootstrap; explicit row clicks always reload below.
+        if (
+            activeSession &&
+            activeSession.message_count > 0 &&
+            loadedSessionId.current !== activeSession.session_id
+        ) {
             loadSession(activeSession);
         }
     }, [activeSession, loadSession]);

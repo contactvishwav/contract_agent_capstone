@@ -49,7 +49,15 @@ vi.mock('../../../services/chatSessionApi', async () => {
 describe('SessionSwitcher', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    active.message_count = 2;
     mocks.getSessionDetail.mockResolvedValue({ ...active, messages: [] });
+  });
+
+  it('does not replace a newly-created empty session while its first turn streams', () => {
+    active.message_count = 0;
+    render(<SessionSwitcher />);
+    expect(mocks.getSessionDetail).not.toHaveBeenCalled();
+    expect(mocks.replaceMessages).not.toHaveBeenCalled();
   });
 
   it('restores persisted messages and lets the already-active row retry', async () => {
