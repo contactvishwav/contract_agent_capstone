@@ -99,3 +99,42 @@ guard latency, terminal-outcome metrics, and a real grounded turn before release
 If validation becomes unavailable, disable Contract Chat or roll back to the
 last known fail-closed implementation; do not restore the fail-open exception
 path. Nothing in this ADR authorizes production deployment.
+
+## Addendum (found live, independent audit, 2026-08-09): Prompt Guard's
+## `TopicValidator` deny-list is a cost optimization, not a safety control
+
+An audit pass flagged an apparent non-determinism in `PromptGuard`: the same
+off-topic request ("a cookie recipe") was rejected pre-Guard on one run and
+reached the model on another. Direct, repeated invocation of
+`TopicValidator.validate()` in isolation proved it is fully deterministic -
+pure Python substring matching against a static `OFF_TOPIC_PHRASES` list, zero
+randomness, zero model call. The two runs differed only in exact phrasing:
+"recipe for chocolate chip cookies" contains the deny-listed phrase
+`"recipe for"`; "chocolate chip cookie recipe" does not. This is a real, if
+mundane, phrase-matching gap in a deny-list that (per `topic.py`'s own
+docstring) already accepts it cannot enumerate every paraphrasing of an
+off-topic request - not a reliability defect in the Guard chain.
+
+That gap matters only for what it implies about the chain's cost-control
+story. `PromptGuard`'s stated purpose for `TopicValidator` is catching
+obviously off-topic prompts *cheaply*, before any retrieval or model spend.
+When a phrasing slips past the deny-list, the request does not become unsafe:
+it proceeds through `IntentValidator` (scoped to malicious/security-bypass
+intent only, not off-topic small talk, so it correctly also does not catch
+this class of request) and then to the real agent and Output Guard, whose
+fail-closed grounding check (`UNGROUNDED_OUTPUT`, item 7 above) rejects it
+regardless, because an off-topic request has no supporting contract evidence
+to ground an answer in. Both paths already fail safe; the only real difference
+is that a deny-list miss costs one extra retrieval-and-generation cycle
+instead of a free, immediate rejection.
+
+**Decision: do not expand `OFF_TOPIC_PHRASES` to chase this.** A deny-list is
+inherently brittle against arbitrary paraphrasing - closing "cookie recipe"
+today only leaves the next unlisted phrasing open tomorrow, for marginal,
+unbounded engineering cost chasing a cost-optimization path whose safety
+outcome does not depend on it. Output Guard's grounding check is, and remains,
+the actual backstop for off-topic requests; `TopicValidator` is intentionally
+scoped as a best-effort latency/cost shortcut in front of it, not a second
+safety gate. If off-topic-request cost becomes a measured problem (not just a
+theoretical one), the correct fix is a cheap classifier with real recall
+guarantees, not a growing ad hoc phrase list.

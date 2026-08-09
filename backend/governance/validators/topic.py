@@ -24,6 +24,19 @@ class TopicValidator(IGuardValidator):
     contract data. Genuine malicious/security-bypass intent is IntentValidator's
     job (also fixed in this pass - see intent.py's docstring for the real
     bug that made it silently no-op on every real call), not this one's.
+
+    Independent-audit finding (2026-08-09): this deny-list is a cost/latency
+    optimization only, not a safety control, and is deliberately not chased
+    to full coverage. It is a pure, deterministic substring match with no
+    model call - two runs of the same *exact* phrasing always agree - but any
+    fixed phrase list necessarily misses paraphrasings ("cookie recipe" vs.
+    "recipe for cookies"). A miss is not unsafe: the request still passes
+    through IntentValidator (scoped to malicious intent, not off-topic small
+    talk) to the real agent, and Output Guard's fail-closed grounding check
+    (ADR-004) rejects it there instead, since an off-topic prompt has no
+    contract evidence to ground on. A miss only costs one extra retrieval/
+    generation cycle instead of a free early rejection - see ADR-004's
+    addendum for the full finding and the decision not to expand this list.
     """
 
     OFF_TOPIC_PHRASES = [
