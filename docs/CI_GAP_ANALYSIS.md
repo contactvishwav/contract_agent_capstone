@@ -8,7 +8,7 @@ Current workflow evidence: `.github/workflows/ci.yml` provides a real Neo4j 5.26
 | Python syntax/undefined names | Present, blocking | **Blocking now** |
 | Persistent-session focused tests | Collected by backend suite; largely mocked repositories | **Blocking now** plus future real Neo4j integration |
 | Frontend TypeScript/build | Local script exists, absent from CI; current build passes with one CSS minifier warning | **Blocking now** after recording/triaging that warning |
-| Frontend ESLint | Script exists, absent from CI; 2026-08-08 baseline is 32 errors and 7 warnings, including pre-existing and session-slice findings | **Report-only** until triaged, then blocking |
+| Frontend ESLint | Script exists, absent from CI; 2026-08-09 baseline is 17 errors and 7 warnings (re-measured during the independent audit fix pass - the previously-cited 2026-08-08 figure of 32 errors/7 warnings had gone stale across several intervening commits and was corrected here), including pre-existing and session-slice findings | **Report-only** until triaged, then blocking |
 | Frontend component/unit tests | No test runner/script | **Report-only roadmap**, then blocking for state/session reducers and API adapters |
 | Redis/Celery integration | Mocked ownership/status tests now cover tenant denial and fail-closed behavior; no CI Redis service/worker journey | **Report-only initially**, then blocking for real enqueue/status/tenant/TTL/idempotency contracts |
 | Migrations/schema validation | Unit coverage; migrations not run against CI Neo4j | **Blocking now** for idempotent migration smoke on an empty disposable DB after baseline review; destructive legacy migrations require explicit safeguards |

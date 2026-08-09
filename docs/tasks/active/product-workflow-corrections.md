@@ -95,7 +95,7 @@ the connected selector/composer interactions with real browser verification.
 
 ## Failing checks
 
-- Global frontend lint remains a pre-existing report-only baseline: 27 errors and 8 warnings in unrelated and earlier files. Current task-final touched Chat files have zero lint errors and two Fast Refresh warnings.
+- Global frontend lint remains a pre-existing report-only baseline: 27 errors and 8 warnings in unrelated and earlier files, as measured at this task's checkpoint. Current task-final touched Chat files have zero lint errors and two Fast Refresh warnings. (Corrected 2026-08-09: this figure had gone stale by several intervening commits; the current repo-wide baseline is 17 errors, 7 warnings - see `docs/CI_GAP_ANALYSIS.md`.)
 
 ## Checks not run
 

@@ -120,7 +120,9 @@ provider/model boundary without silent legal-workflow fallback.
 - Live Gemini 2.5 Pro: provider HTTP 404 before completion. This was surfaced as an
   explicit terminal failure and preserved on restoration.
 - Full frontend lint baseline remains 27 errors and 8 warnings outside this task's
-  touched-file gate.
+  touched-file gate, as measured at this task's checkpoint. (Corrected 2026-08-09:
+  stale by several intervening commits; current repo-wide baseline is 17 errors,
+  7 warnings - see `docs/CI_GAP_ANALYSIS.md`.)
 - `npm install` reports 14 dependency findings: 3 low, 1 moderate, 9 high,
   1 critical. No automatic audit fix was applied.
 

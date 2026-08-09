@@ -185,7 +185,10 @@ with real local services.
 - `npm test`: **6 passed** across 3 files after the stream-race regression.
 - `npm run build`: **passed**, 1,729 modules. Existing Tailwind/CSS minifier
   warning: `Unexpected ")"` in a generated `:has(:is())` selector.
-- `npm run lint`: **failed existing baseline**, 26 errors and 7 warnings. The
+- `npm run lint`: **failed existing baseline**, 26 errors and 7 warnings as
+  measured at this task's checkpoint (corrected 2026-08-09: stale by several
+  intervening commits; current repo-wide baseline is 17 errors, 7 warnings -
+  see `docs/CI_GAP_ANALYSIS.md`). The
   failures are pre-existing broad `no-explicit-any`, unused variable, hook, and
   fast-refresh findings; no new test file is listed. This task did not weaken or
   broadly rewrite the lint baseline.
@@ -224,7 +227,9 @@ with real local services.
 - Output-guard Safety/Hallucination LangGraph validators raise
   `InvalidUpdateError` and currently fail open. Sensitive exception content is
   no longer logged, but validator correctness requires a separate focused task.
-- Frontend ESLint has an established red baseline (26 errors/7 warnings).
+- Frontend ESLint has an established red baseline (26 errors/7 warnings as of
+  this task; corrected 2026-08-09 - current repo-wide baseline is 17 errors,
+  7 warnings, see `docs/CI_GAP_ANALYSIS.md`).
 - `npm install` reports 14 dependency advisories (3 low, 1 moderate, 9 high,
   1 critical); no unreviewed `npm audit fix` was run.
 - Local development uses intentionally insecure fallback JWT/encryption keys when
