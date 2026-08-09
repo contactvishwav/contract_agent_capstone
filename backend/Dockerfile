@@ -65,6 +65,8 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 RUN useradd --create-home --uid 1000 appuser
+RUN mkdir -p /var/lib/contract-agent/source-pdfs \
+    && chown -R appuser:appuser /var/lib/contract-agent
 
 COPY --from=production-build --chown=appuser:appuser /app/.venv /app/.venv
 COPY --from=production-build --chown=appuser:appuser /app/backend ./backend

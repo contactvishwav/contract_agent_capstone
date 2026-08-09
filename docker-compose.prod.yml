@@ -101,6 +101,12 @@ services:
       - GCP_PROJECT_ID=${GCP_PROJECT_ID-}
       - GCP_SECRET_ID=${GCP_SECRET_ID-ENCRYPTION_KEY}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:?Set CORS_ALLOWED_ORIGINS to your real frontend origin, e.g. https://your-domain.example}
+      - PDF_SOURCE_STORAGE_DIR=/var/lib/contract-agent/source-pdfs
+    volumes:
+      # Original PDFs are encrypted application data. This volume is
+      # intentionally backend-only: neither nginx nor the Celery worker can
+      # serve/read it, and no host path is exposed to clients.
+      - pdf_source_data:/var/lib/contract-agent/source-pdfs
     depends_on:
       redis:
         condition: service_healthy
@@ -247,6 +253,7 @@ services:
 
 volumes:
   redis_data:
+  pdf_source_data:
   # Caddy's ACME account + issued certificates/keys - persisted so a
   # container restart doesn't re-issue from Let's Encrypt every time
   # (their rate limits are generous but there's no reason to burn them).

@@ -152,8 +152,9 @@ class MigrationRunnerVersioningTests(unittest.TestCase):
             "persistent Contract Chat sessions (backend/infrastructure/chat_session_repository.py)",
         )
         self.assertIn("analysis_run_schema", names)
-        self.assertEqual(len(names), 13)
-        self.assertEqual(len(set(names)), 13, "No duplicate migration names")
+        self.assertIn("pdf_source_schema", names)
+        self.assertEqual(len(names), 14)
+        self.assertEqual(len(set(names)), 14, "No duplicate migration names")
 
 
 if __name__ == "__main__":

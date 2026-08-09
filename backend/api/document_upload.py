@@ -1,10 +1,11 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Query, Form, Depends, Request
 from backend.governance.rbac import Permission, requires_permission
 from backend.governance.auth import TokenIdentity, get_current_identity
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from backend.application.services.document_processing_service import DocumentServiceFactory
 from backend.domain.entities import DocumentProcessingRequest
 from backend.llm_manager import LLMManager
+from backend.model_registry import ModelSelectionError, validate_model
 from backend.infrastructure.audit_logger import AuditLogger, AuditEventType, audit_log
 from backend.infrastructure.content_validator import ContentValidationService
 from backend.infrastructure.error_tracker import ErrorTracker, ErrorCategory, ErrorSeverity, error_tracking_context
@@ -17,6 +18,7 @@ import json
 import logging
 import hashlib
 from typing import Optional
+from urllib.parse import quote
 
 from backend.shared.utils.logger import get_logger
 logger = get_logger(__name__)
@@ -96,6 +98,12 @@ async def upload_pdf(
     - Returns processing status
     """
     tenant_id = identity.tenant_id
+    try:
+        validate_model(model, "upload")
+    except ModelSelectionError as exc:
+        raise HTTPException(status_code=400, detail={"message": str(exc), "category": exc.category})
+    if model not in llm_mgr.raw_llms:
+        raise HTTPException(status_code=503, detail="Selected model is temporarily unavailable")
 
     logger.info(f"=== UPLOAD START: {file.filename if file else 'NO FILE'} ===")
     
@@ -195,6 +203,40 @@ async def upload_pdf(
                 # contract you already have" is a better outcome than a
                 # block.
                 existing_contract_id = existing[0]["file_id"]
+                # Exact-hash duplicate uploads are the only safe automatic
+                # backfill for legacy contracts whose original PDF was deleted
+                # by the historical temp-file cleanup. No graph content is
+                # reprocessed or replaced: the already-verified bytes are
+                # encrypted, page-extracted, and attached idempotently.
+                try:
+                    from backend.application.services.pdf_provenance_service import PdfProvenanceService
+                    from backend.infrastructure.text_extractors import (
+                        TextExtractionService,
+                        extract_pages_from_bytes_async,
+                    )
+
+                    provenance_service = PdfProvenanceService()
+                    if not provenance_service.source_record(existing_contract_id, tenant_id):
+                        duplicate_extraction = await extract_pages_from_bytes_async(
+                            TextExtractionService(), file_content
+                        )
+                        provenance_service.persist_source(
+                            contract_id=existing_contract_id,
+                            tenant_id=tenant_id,
+                            filename=file.filename,
+                            pdf_bytes=file_content,
+                            extraction=duplicate_extraction,
+                            source_hash=source_hash,
+                        )
+                except Exception as provenance_error:
+                    logger.error(
+                        "Source PDF duplicate backfill failed (%s)",
+                        type(provenance_error).__name__,
+                    )
+                    raise HTTPException(
+                        status_code=503,
+                        detail="The existing contract was found, but its source PDF could not be retained",
+                    )
                 return {
                     "message": f'"{file.filename}" was already uploaded',
                     "filename": file.filename,
@@ -222,7 +264,7 @@ async def upload_pdf(
             # Extract full text for storage
             logger.info("Step 5: Extracting text from PDF")
             try:
-                from backend.infrastructure.text_extractors import TextExtractionService, extract_text_async
+                from backend.infrastructure.text_extractors import TextExtractionService, extract_pages_async
                 text_extractor = TextExtractionService()
                 # extract_text_async, not extract_with_fallback directly -
                 # a real production incident (504 on upload, backend
@@ -230,7 +272,8 @@ async def upload_pdf(
                 # traced back to this synchronous, CPU-bound call blocking
                 # this process's single event loop. See text_extractors.py's
                 # docstring for the full incident/fix rationale.
-                full_text = await extract_text_async(text_extractor, temp_path)
+                page_extraction = await extract_pages_async(text_extractor, temp_path)
+                full_text = page_extraction.full_text
                 logger.info(f"Text extraction completed. Length: {len(full_text)} characters")
                 
                 # Validate content quality
@@ -368,7 +411,8 @@ async def upload_pdf(
                         storage_service = ChunkStorageService()
                         chunk_ids = storage_service.store_chunks(
                             contract_id=contract_id,
-                            chunks=chunking_result["chunks"]
+                            chunks=chunking_result["chunks"],
+                            tenant_id=tenant_id,
                         )
                         
                         logger.info(f"Sync chunking completed: {len(chunk_ids)} chunks, "
@@ -415,7 +459,9 @@ async def upload_pdf(
                 if enable_enhanced:
                     # Use enhanced processor with sections/clauses
                     from backend.factories.document_processor_factory import DocumentProcessorFactory
-                    processor = DocumentProcessorFactory.create_processor("full", llm_mgr.agents[model])
+                    processor = DocumentProcessorFactory.create_processor(
+                        "full", llm_mgr.get_raw_model_by_name(model)
+                    )
                     # Ensure tenant_id is passed in options
                     processing_request.processing_options["tenant_id"] = tenant_id
                     result = await processor.process_document(temp_path, processing_request.processing_options)
@@ -494,6 +540,20 @@ async def upload_pdf(
                 if not metadata_rows:
                     raise RuntimeError("Uploaded contract metadata could not be finalized")
 
+                # Retain the original only after the Contract row and exact
+                # source hash are durable. The storage service encrypts bytes
+                # with tenant/contract-bound AAD and exposes no filesystem path.
+                from backend.application.services.pdf_provenance_service import PdfProvenanceService
+
+                PdfProvenanceService().persist_source(
+                    contract_id=contract_id,
+                    tenant_id=tenant_id,
+                    filename=file.filename,
+                    pdf_bytes=file_content,
+                    extraction=page_extraction,
+                    source_hash=source_hash,
+                )
+
             # Log successful upload
             audit_logger.log_event(
                 event_type=AuditEventType.DOCUMENT_UPLOAD,
@@ -540,6 +600,46 @@ async def upload_pdf(
                 except Exception as cleanup_error:
                     logger.error(f"Failed to cleanup temp file: {cleanup_error}")
             logger.info(f"=== UPLOAD END: {file.filename if file else 'unknown'} ===")
+
+
+@router.get("/{contract_id}/source")
+async def get_contract_source_pdf(
+    contract_id: str,
+    identity: TokenIdentity = Depends(requires_permission(Permission.ANALYZE)),
+):
+    """Return one active tenant-owned original PDF without exposing its path."""
+    from backend.application.services.pdf_provenance_service import PdfProvenanceService
+    from backend.infrastructure.pdf_source_storage import PdfSourceUnavailable
+
+    service = PdfProvenanceService()
+    source = service.source_record(contract_id, identity.tenant_id)
+    if not source:
+        # Missing, archived, cross-tenant, and legacy-without-source are
+        # deliberately indistinguishable.
+        raise HTTPException(status_code=404, detail="Source PDF not found")
+    try:
+        content = service.storage.read(
+            identity.tenant_id,
+            contract_id,
+            source["storage_key"],
+        )
+    except PdfSourceUnavailable:
+        raise HTTPException(status_code=404, detail="Source PDF not found")
+
+    filename = str(source.get("filename") or "contract.pdf")
+    if not filename.lower().endswith(".pdf"):
+        filename = f"{filename}.pdf"
+    disposition = f"inline; filename*=UTF-8''{quote(filename, safe='')}"
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": disposition,
+            "Cache-Control": "private, no-store, max-age=0",
+            "Pragma": "no-cache",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.delete("/{contract_id}")

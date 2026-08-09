@@ -38,6 +38,28 @@ describe('ChatMessage', () => {
     expect(screen.getByRole('complementary', { name: 'Sources' })).not.toHaveTextContent('page');
   });
 
+  it('renders a verified page as a compact accessible source button', () => {
+    render(<ChatMessage message={{
+      id: 'verified', type: 'ai', generating: false,
+      parts: [
+        { type: 'ai_message', content: 'Payment is due within 90 days.' },
+        { type: 'citations', content: JSON.stringify([{
+          citation_id: 'CIT_VERIFIED', contract_id: 'CONTRACT_A', filename: 'Clean_MSA.pdf',
+          source_type: 'chunk', page: 4, section_id: null, section_title: null,
+          clause_id: null, clause_type: null, chunk_id: 'CHUNK_1', chunk_index: 2,
+          start_offset: 10, end_offset: 40, excerpt: 'Payment is due within 90 days.',
+          highlight_text: 'Payment is due within 90 days.', source_available: true,
+          provenance_status: 'exact', tool_name: 'EnhancedContractSearch',
+          tool_call_id: 'call_1', validation_status: 'tenant_active',
+        }]) },
+      ],
+    }} />);
+
+    expect(screen.getByText('Sources · 1')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open source Clean_MSA.pdf · p. 4' })).toBeInTheDocument();
+    expect(screen.getByText('Source excerpts')).toBeInTheDocument();
+  });
+
   it('labels a completed answer that has no verified evidence', () => {
     render(<ChatMessage message={{
       id: 'c', type: 'ai', generating: false,

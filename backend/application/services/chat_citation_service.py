@@ -15,6 +15,10 @@ from collections.abc import Iterable, Mapping
 from typing import Any, Optional
 
 from backend.shared.utils.contract_search_tool import graph
+from backend.application.services.pdf_provenance_service import (
+    PdfProvenanceService,
+    enrich_citations_with_provenance,
+)
 
 MAX_EXCERPT_LENGTH = 500
 
@@ -22,9 +26,35 @@ MAX_EXCERPT_LENGTH = 500
 def _citation_source_identity(citation: Mapping[str, Any]) -> str:
     source = {
         key: value for key, value in citation.items()
-        if key not in {"citation_id", "tool_name", "tool_call_id", "validation_status"}
+        if key not in {
+            "citation_id", "tool_name", "tool_call_id", "validation_status",
+            # Derived from currently-authorized source metadata on every read;
+            # never part of the caller/stored identity and never trusted on replay.
+            "page", "highlight_text", "page_start_offset", "page_end_offset",
+            "source_available", "provenance_status",
+        }
     }
     return json.dumps(source, sort_keys=True, default=str)
+
+
+def _citation_id(citation: Mapping[str, Any]) -> str:
+    identity = _citation_source_identity(citation)
+    return f"CIT_{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:16].upper()}"
+
+
+def _legacy_citation_id(citation: Mapping[str, Any]) -> str:
+    """Reproduce the pre-provenance identity for safe history migration.
+
+    Older persisted citations included their (usually null) page in the hash.
+    Accepting that exact historical hash preserves authorized chat history; all
+    page/highlight data is still discarded and recomputed from SourcePage.
+    """
+    source = {
+        key: value for key, value in citation.items()
+        if key not in {"citation_id", "tool_name", "tool_call_id", "validation_status"}
+    }
+    identity = json.dumps(source, sort_keys=True, default=str)
+    return f"CIT_{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:16].upper()}"
 
 
 def _parse_tool_content(content: Any) -> Any:
@@ -106,7 +136,9 @@ def build_validated_citations(
                     "contract_id": str(contract_id),
                     "filename": item.get("filename"),
                     "source_type": source_type,
-                    "page": item.get("page") or item.get("page_number"),
+                    # Tool-returned page hints are not trusted. Page and exact
+                    # highlight are resolved from tenant-owned SourcePage data.
+                    "page": None,
                     "section_id": item.get("section_id"),
                     "section_title": item.get("section_title") or item.get("section_type"),
                     "clause_id": item.get("clause_id"),
@@ -134,13 +166,16 @@ def build_validated_citations(
         # one answer.  Tool-call identity remains useful metadata on the
         # retained citation, but it is not source identity and must not
         # produce duplicate evidence cards.
-        identity = _citation_source_identity(candidate)
-        citation_id = f"CIT_{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:16].upper()}"
+        citation_id = _citation_id(candidate)
         if citation_id in seen:
             continue
         seen.add(citation_id)
         citations.append({"citation_id": citation_id, **candidate})
-    return citations
+    return enrich_citations_with_provenance(
+        citations,
+        tenant_id,
+        service=PdfProvenanceService(graph_client=graph_client),
+    )
 
 
 def revalidate_stored_citations(
@@ -168,9 +203,18 @@ def revalidate_stored_citations(
         safe = dict(citation)
         safe["filename"] = active[contract_id]
         safe["validation_status"] = "tenant_active"
+        if safe.get("citation_id") not in {_citation_id(safe), _legacy_citation_id(safe)}:
+            # Any manipulated contract/source/excerpt identifier invalidates
+            # the stored citation. Derived page/highlight fields are excluded
+            # above because they are discarded and recomputed below.
+            continue
         identity = _citation_source_identity(safe)
         if identity in seen:
             continue
         seen.add(identity)
         validated.append(safe)
-    return validated
+    return enrich_citations_with_provenance(
+        validated,
+        tenant_id,
+        service=PdfProvenanceService(graph_client=graph_client),
+    )

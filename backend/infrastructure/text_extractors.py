@@ -1,6 +1,9 @@
 import asyncio
+import io
 import os
 import logging
+from dataclasses import dataclass
+from typing import List
 
 from starlette.concurrency import run_in_threadpool
 
@@ -30,37 +33,99 @@ EXTRACTION_TIMEOUT_SECONDS = float(os.getenv("EXTRACTION_TIMEOUT_SECONDS", "45.0
 class ExtractionTimeoutError(Exception):
     """Raised when text extraction exceeds EXTRACTION_TIMEOUT_SECONDS."""
 
+
+@dataclass(frozen=True)
+class ExtractedPage:
+    """One PDF page with offsets into the legacy concatenated text."""
+
+    page_number: int
+    text: str
+    global_start: int
+    global_end: int
+    has_text_layer: bool
+
+
+@dataclass(frozen=True)
+class PageAwareExtraction:
+    """Page-preserving extraction without changing the historical text shape."""
+
+    full_text: str
+    pages: List[ExtractedPage]
+    extraction_method: str
+
+
+def _page_aware_result(page_texts: List[str], extraction_method: str) -> PageAwareExtraction:
+    # Preserve the exact historical join contract: every non-empty page had a
+    # trailing newline and the final aggregate was stripped.  Offsets therefore
+    # remain compatible with existing whole-document chunking strategies.
+    pieces: List[str] = []
+    pages: List[ExtractedPage] = []
+    cursor = 0
+    for page_number, raw_text in enumerate(page_texts, start=1):
+        text = raw_text or ""
+        piece = f"{text}\n" if text else ""
+        pages.append(
+            ExtractedPage(
+                page_number=page_number,
+                text=text,
+                global_start=cursor,
+                global_end=cursor + len(text),
+                has_text_layer=bool(text.strip()),
+            )
+        )
+        pieces.append(piece)
+        cursor += len(piece)
+    return PageAwareExtraction(
+        full_text="".join(pieces).strip(),
+        pages=pages,
+        extraction_method=extraction_method,
+    )
+
 class PyPDFExtractor(ITextExtractor):
     """PDF text extraction using pypdf - Strategy Pattern implementation"""
     
     def extract_text(self, file_path: str) -> str:
+        return self.extract_pages(file_path).full_text
+
+    def extract_pages(self, file_path: str) -> PageAwareExtraction:
         try:
             import pypdf
             with open(file_path, 'rb') as file:
                 reader = pypdf.PdfReader(file)
-                text = ""
-                for page in reader.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += page_text + "\n"
-                return text.strip()
+                return _page_aware_result(
+                    [page.extract_text() or "" for page in reader.pages],
+                    "pypdf-text-layer-v1",
+                )
         except Exception as e:
             logger.error(f"PyPDF extraction failed: {e}")
+            raise
+
+    def extract_pages_from_bytes(self, content: bytes) -> PageAwareExtraction:
+        try:
+            import pypdf
+            reader = pypdf.PdfReader(io.BytesIO(content))
+            return _page_aware_result(
+                [page.extract_text() or "" for page in reader.pages],
+                "pypdf-text-layer-v1",
+            )
+        except Exception as e:
+            logger.error(f"PyPDF byte extraction failed: {e}")
             raise
 
 class PDFPlumberExtractor(ITextExtractor):
     """Alternative PDF extraction using pdfplumber - Fallback strategy"""
     
     def extract_text(self, file_path: str) -> str:
+        return self.extract_pages(file_path).full_text
+
+    def extract_pages(self, file_path: str) -> PageAwareExtraction:
         try:
             import pdfplumber
             with pdfplumber.open(file_path) as pdf:
-                text = ""
-                for page in pdf.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += page_text + "\n"
-                return text.strip()
+                return _page_aware_result(
+                    [page.extract_text() or "" for page in pdf.pages],
+                    "pdfplumber-text-layer-v1",
+                )
         except Exception as e:
             logger.error(f"PDFPlumber extraction failed: {e}")
             raise
@@ -90,6 +155,29 @@ class TextExtractionService:
                 continue
 
         raise Exception(f"All text extraction methods failed. Last error: {last_error}")
+
+    def extract_pages_with_fallback(self, file_path: str) -> PageAwareExtraction:
+        last_error = None
+        for extractor in self.extractors:
+            try:
+                result = extractor.extract_pages(file_path)
+                if result.full_text and len(result.full_text.strip()) > 50:
+                    logger.info(
+                        "Successfully extracted page-aware text using %s",
+                        extractor.__class__.__name__,
+                    )
+                    return result
+            except Exception as e:
+                last_error = e
+                logger.warning("%s page extraction failed: %s", extractor.__class__.__name__, e)
+        raise Exception(f"All page-aware text extraction methods failed. Last error: {last_error}")
+
+    def extract_pages_from_bytes(self, content: bytes) -> PageAwareExtraction:
+        # Byte extraction is used only for exact-hash duplicate backfill.  Keep
+        # the same primary extractor as normal uploads so page/global offsets
+        # remain reproducible.  pdfplumber's BytesIO fallback is intentionally
+        # omitted until it is needed and covered; failure remains explicit.
+        return PyPDFExtractor().extract_pages_from_bytes(content)
 
 
 async def extract_text_async(service: "TextExtractionService", file_path: str) -> str:
@@ -121,4 +209,40 @@ async def extract_text_async(service: "TextExtractionService", file_path: str) -
         )
         raise ExtractionTimeoutError(
             f"PDF text extraction exceeded {EXTRACTION_TIMEOUT_SECONDS}s for {file_path}"
+        )
+
+
+async def extract_pages_async(
+    service: "TextExtractionService", file_path: str
+) -> PageAwareExtraction:
+    """Bounded, thread-offloaded page-aware counterpart to extract_text_async."""
+    try:
+        return await asyncio.wait_for(
+            run_in_threadpool(service.extract_pages_with_fallback, file_path),
+            timeout=EXTRACTION_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            "Page-aware PDF extraction exceeded %ss for %s",
+            EXTRACTION_TIMEOUT_SECONDS,
+            file_path,
+        )
+        raise ExtractionTimeoutError(
+            f"PDF text extraction exceeded {EXTRACTION_TIMEOUT_SECONDS}s for {file_path}"
+        )
+
+
+async def extract_pages_from_bytes_async(
+    service: "TextExtractionService", content: bytes
+) -> PageAwareExtraction:
+    """Bounded page extraction for an exact-hash duplicate upload backfill."""
+    try:
+        return await asyncio.wait_for(
+            run_in_threadpool(service.extract_pages_from_bytes, content),
+            timeout=EXTRACTION_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.error("Page-aware PDF byte extraction exceeded %ss", EXTRACTION_TIMEOUT_SECONDS)
+        raise ExtractionTimeoutError(
+            f"PDF text extraction exceeded {EXTRACTION_TIMEOUT_SECONDS}s"
         )

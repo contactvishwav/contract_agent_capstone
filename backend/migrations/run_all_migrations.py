@@ -95,6 +95,11 @@ def _run_analysis_run_schema():
     AnalysisRunSchemaMigration().migrate()
 
 
+def _run_pdf_source_schema():
+    from backend.migrations.pdf_source_schema_migration import PdfSourceSchemaMigration
+    PdfSourceSchemaMigration().migrate()
+
+
 # Ordered: the new Contract constraint first (safe to run anytime, no
 # dependencies), then the base schema pieces, then fix_enterprise_
 # relationships (depends on enterprise_schema's sample data existing
@@ -123,6 +128,7 @@ MIGRATIONS = [
     ("user_schema", _run_user_schema),
     ("chat_session_schema", _run_chat_session_schema),
     ("analysis_run_schema", _run_analysis_run_schema),
+    ("pdf_source_schema", _run_pdf_source_schema),
 ]
 
 

@@ -7,6 +7,8 @@ with patch("langchain_neo4j.Neo4jGraph"), \
     from backend.application.services.chat_citation_service import (
         build_validated_citations,
         revalidate_stored_citations,
+        _citation_id,
+        _legacy_citation_id,
     )
 
 
@@ -16,6 +18,12 @@ class ChatCitationTests(unittest.TestCase):
         self.graph.query.return_value = [
             {"contract_id": "CONTRACT_A", "filename": "Clean_MSA.pdf"},
         ]
+        self.provenance = patch(
+            "backend.application.services.chat_citation_service.enrich_citations_with_provenance",
+            side_effect=lambda citations, *_args, **_kwargs: citations,
+        )
+        self.provenance.start()
+        self.addCleanup(self.provenance.stop)
 
     def test_derives_source_only_from_tool_evidence_and_validates_tenant(self):
         evidence = [{
@@ -64,23 +72,50 @@ class ChatCitationTests(unittest.TestCase):
         self.assertEqual(len(citations), 1)
 
     def test_restore_drops_archived_or_cross_tenant_sources(self):
+        active = {"contract_id": "CONTRACT_A", "filename": "Clean_MSA.pdf", "validation_status": "tenant_active"}
+        archived = {"contract_id": "ARCHIVED", "filename": "archived.pdf", "validation_status": "tenant_active"}
         stored = [
-            {"citation_id": "CIT_A", "contract_id": "CONTRACT_A", "filename": "old-name.pdf", "validation_status": "tenant_active"},
-            {"citation_id": "CIT_B", "contract_id": "ARCHIVED", "filename": "archived.pdf", "validation_status": "tenant_active"},
+            {"citation_id": _citation_id(active), **active},
+            {"citation_id": _citation_id(archived), **archived},
         ]
         citations = revalidate_stored_citations(stored, "tenant_a", graph_client=self.graph)
-        self.assertEqual([citation["citation_id"] for citation in citations], ["CIT_A"])
+        self.assertEqual([citation["citation_id"] for citation in citations], [_citation_id(active)])
         self.assertEqual(citations[0]["filename"], "Clean_MSA.pdf")
 
     def test_restore_deduplicates_same_saved_source_from_multiple_calls(self):
-        source = {
-            "citation_id": "CIT_A", "contract_id": "CONTRACT_A", "filename": "Clean_MSA.pdf",
+        source_data = {
+            "contract_id": "CONTRACT_A", "filename": "Clean_MSA.pdf",
             "source_type": "chunk", "chunk_id": "CHUNK_1", "excerpt": "Payment terms",
             "validation_status": "tenant_active", "tool_call_id": "call_1",
         }
-        duplicate = {**source, "citation_id": "CIT_B", "tool_call_id": "call_2"}
+        source = {"citation_id": _citation_id(source_data), **source_data}
+        duplicate_data = {**source_data, "tool_call_id": "call_2"}
+        duplicate = {"citation_id": _citation_id(duplicate_data), **duplicate_data}
         citations = revalidate_stored_citations([source, duplicate], "tenant_a", graph_client=self.graph)
         self.assertEqual(len(citations), 1)
+
+    def test_restore_drops_manipulated_source_identity(self):
+        source = {
+            "contract_id": "CONTRACT_A", "filename": "Clean_MSA.pdf",
+            "source_type": "chunk", "chunk_id": "CHUNK_1", "excerpt": "Payment terms",
+            "validation_status": "tenant_active",
+        }
+        stored = {"citation_id": _citation_id(source), **source, "excerpt": "Manipulated"}
+        self.assertEqual(
+            revalidate_stored_citations([stored], "tenant_a", graph_client=self.graph),
+            [],
+        )
+
+    def test_restore_accepts_pre_provenance_identity_but_revalidates_it(self):
+        source = {
+            "contract_id": "CONTRACT_A", "filename": "Clean_MSA.pdf",
+            "source_type": "chunk", "chunk_id": "CHUNK_1", "page": None,
+            "excerpt": "Payment terms", "validation_status": "tenant_active",
+        }
+        stored = {"citation_id": _legacy_citation_id(source), **source}
+        restored = revalidate_stored_citations([stored], "tenant_a", graph_client=self.graph)
+        self.assertEqual(len(restored), 1)
+        self.assertEqual(restored[0]["contract_id"], "CONTRACT_A")
 
 
 if __name__ == "__main__":

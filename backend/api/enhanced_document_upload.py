@@ -5,8 +5,10 @@ from backend.application.services.enhanced_document_processing_service import En
 from backend.domain.entities import DocumentProcessingRequest
 from backend.infrastructure.content_validator import ContentValidationService
 from backend.llm_manager import LLMManager
+from backend.model_registry import ModelSelectionError, validate_model
 import os
 import uuid
+import hashlib
 import logging
 from typing import Optional
 
@@ -36,6 +38,12 @@ async def upload_pdf_enhanced(
     - Returns processing status with embedding details
     """
     tenant_id = identity.tenant_id
+    try:
+        validate_model(model, "upload")
+    except ModelSelectionError as exc:
+        raise HTTPException(status_code=400, detail={"message": str(exc), "category": exc.category})
+    if model not in llm_mgr.raw_llms:
+        raise HTTPException(status_code=503, detail="Selected model is temporarily unavailable")
 
     logger.info(f"=== ENHANCED UPLOAD START: {file.filename if file else 'NO FILE'} ===")
     
@@ -53,32 +61,63 @@ async def upload_pdf_enhanced(
         # Check file size (50MB limit)
         logger.info("Step 2: Reading file content")
         file_content = await file.read()
+        source_hash = hashlib.sha256(file_content).hexdigest()
         logger.info(f"File size: {len(file_content)} bytes")
         if len(file_content) > 50 * 1024 * 1024:
             logger.error(f"File too large: {len(file_content)} bytes")
             raise HTTPException(status_code=400, detail="File too large (max 50MB)")
 
-        # Check for duplicate by filename
+        # Duplicate identity is exact content within the authenticated tenant.
+        # A filename is neither unique nor a security boundary.
         logger.info("Step 3: Checking for duplicates")
         try:
             from backend.infrastructure.contract_repository import Neo4jContractRepository
             repo = Neo4jContractRepository()
             
-            existing_query = "MATCH (c:Contract) WHERE c.file_id CONTAINS $filename RETURN c.file_id LIMIT 1"
-            existing = repo.graph.query(existing_query, {"filename": file.filename.replace(".pdf", "")})
+            existing_query = """
+            MATCH (c:Contract {tenant_id: $tenant_id, source_hash: $source_hash})
+            WHERE coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE'
+            RETURN c.file_id AS file_id LIMIT 1
+            """
+            existing = repo.graph.query(
+                existing_query,
+                {"tenant_id": tenant_id, "source_hash": source_hash},
+            )
             logger.info(f"Duplicate check completed. Found: {len(existing) if existing else 0} matches")
         except Exception as query_error:
             logger.error(f"Duplicate check query failed: {query_error}")
             existing = []
         
         if existing:
+            contract_id = existing[0]["file_id"]
+            from backend.application.services.pdf_provenance_service import PdfProvenanceService
+            provenance = PdfProvenanceService()
+            if not provenance.source_record(contract_id, tenant_id):
+                from backend.infrastructure.text_extractors import (
+                    TextExtractionService,
+                    extract_pages_from_bytes_async,
+                )
+                extraction = await extract_pages_from_bytes_async(
+                    TextExtractionService(), file_content
+                )
+                provenance.persist_source(
+                    contract_id=contract_id,
+                    tenant_id=tenant_id,
+                    filename=file.filename,
+                    pdf_bytes=file_content,
+                    extraction=extraction,
+                    source_hash=source_hash,
+                )
             return {
                 "message": "Duplicate file detected",
                 "filename": file.filename,
                 "status": "duplicate",
-                "existing_contract_id": existing[0]["file_id"],
+                "contract_id": contract_id,
+                "existing_contract_id": contract_id,
                 "action": "skipped",
-                "enhanced_embeddings": False
+                "details": "Identical tenant-owned contract already exists; source provenance is available.",
+                "model_used": model,
+                "enhanced_embeddings": False,
             }
 
         # Save file temporarily
@@ -97,7 +136,7 @@ async def upload_pdf_enhanced(
         # Extract full text for storage
         logger.info("Step 5: Extracting text from PDF")
         try:
-            from backend.infrastructure.text_extractors import TextExtractionService, extract_text_async
+            from backend.infrastructure.text_extractors import TextExtractionService, extract_pages_async
             text_extractor = TextExtractionService()
             # extract_text_async, not extract_with_fallback directly - see
             # text_extractors.py's docstring: a real production incident
@@ -106,7 +145,8 @@ async def upload_pdf_enhanced(
             # synchronous, CPU-bound call blocking the single-worker
             # event loop for the /api/documents/upload route; this route
             # has the identical shape and the identical risk.
-            full_text = await extract_text_async(text_extractor, temp_path)
+            page_extraction = await extract_pages_async(text_extractor, temp_path)
+            full_text = page_extraction.full_text
             logger.info(f"Text extraction completed. Length: {len(full_text)} characters")
 
             # Content/PII validation (P3 item 21) - this endpoint previously
@@ -150,7 +190,7 @@ async def upload_pdf_enhanced(
                 # Fallback to regular processing
                 from backend.application.services.document_processing_service import DocumentServiceFactory
                 regular_service = DocumentServiceFactory.create_service(llm_mgr)
-                result = regular_service.process_pdf_upload(processing_request)
+                result = await regular_service.process_pdf_upload(processing_request)
                 result["enhanced_embeddings"] = False
             
             logger.info(f"Enhanced document processing completed successfully: {result}")
@@ -176,6 +216,29 @@ async def upload_pdf_enhanced(
         contract_id = result.get("contract_id")
         if not contract_id and "SUCCESS: Contract stored with ID:" in result.get("final_result", ""):
             contract_id = result["final_result"].split("SUCCESS: Contract stored with ID:")[-1].strip()
+
+        if contract_id and result.get("status") != "error":
+            finalized = repo.graph.query(
+                "MATCH (c:Contract {file_id: $contract_id, tenant_id: $tenant_id}) "
+                "WHERE coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE' "
+                "SET c.source_hash = $source_hash RETURN c.file_id AS contract_id",
+                {
+                    "contract_id": contract_id,
+                    "tenant_id": tenant_id,
+                    "source_hash": source_hash,
+                },
+            )
+            if not finalized:
+                raise RuntimeError("Uploaded contract metadata could not be finalized")
+            from backend.application.services.pdf_provenance_service import PdfProvenanceService
+            PdfProvenanceService().persist_source(
+                contract_id=contract_id,
+                tenant_id=tenant_id,
+                filename=file.filename,
+                pdf_bytes=file_content,
+                extraction=page_extraction,
+                source_hash=source_hash,
+            )
         
         return {
             "message": "Enhanced PDF processing completed",
@@ -211,16 +274,20 @@ async def upload_pdf_enhanced(
         logger.info(f"=== ENHANCED UPLOAD END: {file.filename if file else 'unknown'} ===")
 
 @router.get("/embedding-status/{contract_id}")
-async def get_embedding_status(contract_id: str):
+async def get_embedding_status(
+    contract_id: str,
+    identity: TokenIdentity = Depends(requires_permission(Permission.ANALYZE)),
+):
     """Get embedding status for a specific contract"""
     try:
         from backend.shared.utils.contract_search_tool import graph
 
         # Check embedding status
         query = """
-        MATCH (c:Contract {file_id: $contract_id})
-        OPTIONAL MATCH (c)-[:HAS_SECTION]->(s:Section)
-        OPTIONAL MATCH (c)-[:CONTAINS_CLAUSE]->(cl:Clause)
+        MATCH (c:Contract {file_id: $contract_id, tenant_id: $tenant_id})
+        WHERE coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE'
+        OPTIONAL MATCH (c)-[:HAS_SECTION]->(s:Section {tenant_id: $tenant_id})
+        OPTIONAL MATCH (c)-[:CONTAINS_CLAUSE]->(cl:Clause {tenant_id: $tenant_id})
         OPTIONAL MATCH (c)<-[r:PARTY_TO]-()
         RETURN 
             c.document_embedding IS NOT NULL as has_document_embedding,
@@ -231,7 +298,10 @@ async def get_embedding_status(contract_id: str):
             count(DISTINCT CASE WHEN r.embedding IS NOT NULL THEN r END) as relationship_embeddings
         """
         
-        result = graph.query(query, {"contract_id": contract_id})
+        result = graph.query(
+            query,
+            {"contract_id": contract_id, "tenant_id": identity.tenant_id},
+        )
         
         if not result:
             raise HTTPException(status_code=404, detail="Contract not found")

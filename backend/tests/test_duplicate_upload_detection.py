@@ -122,6 +122,7 @@ class DocumentUploadDuplicateQueryTests(unittest.IsolatedAsyncioTestCase):
         fake_identity = TokenIdentity(tenant_id=tenant_id, role="ADMIN", username="tester")
         fake_llm_mgr = MagicMock()
         fake_llm_mgr.agents = {"gemini-2.5-flash": MagicMock()}
+        fake_llm_mgr.raw_llms = {"gemini-2.5-flash": MagicMock()}
 
         fake_repo = MagicMock()
         captured_calls = []
@@ -132,8 +133,14 @@ class DocumentUploadDuplicateQueryTests(unittest.IsolatedAsyncioTestCase):
 
         fake_repo.graph.query.side_effect = fake_query
 
+        provenance = MagicMock()
+        provenance.source_record.return_value = {"storage_key": "already-retained"}
         with patch("backend.infrastructure.audit_logger.AuditLogger.log_event"), \
-             patch("backend.infrastructure.contract_repository.Neo4jContractRepository", return_value=fake_repo):
+             patch("backend.infrastructure.contract_repository.Neo4jContractRepository", return_value=fake_repo), \
+             patch(
+                 "backend.application.services.pdf_provenance_service.PdfProvenanceService",
+                 return_value=provenance,
+             ):
             try:
                 result = await upload_pdf(
                     background_tasks=BackgroundTasks(),

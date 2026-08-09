@@ -1,10 +1,11 @@
-import { Fragment, ReactNode } from "react";
+import { Fragment, ReactNode, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import { Loader } from "../../shared/ui/loader";
 import { ChatCitation } from "../../../services/chatSessionApi";
 import { Message, MessagePart } from "./provider";
+import { PdfCitationViewer } from "./PdfCitationViewer";
 
 interface Props {
     message: Message;
@@ -42,25 +43,61 @@ function parseCitations(content: string): ChatCitation[] {
 
 function CitationPanel({ content }: { content: string }) {
     const citations = parseCitations(content);
+    const [openCitation, setOpenCitation] = useState<ChatCitation | null>(null);
     if (!citations.length) return null;
     return (
-        <aside className="mt-3 rounded-md border bg-muted/40 p-3" aria-label="Sources">
-            <div className="text-xs font-semibold uppercase tracking-wide">Sources</div>
-            <ol className="mt-2 space-y-2 text-sm">
-                {citations.map((citation) => (
-                    <li key={citation.citation_id} className="rounded border bg-background p-2">
-                        <div className="font-medium">
-                            {citation.filename} · {citation.source_type}
-                            {citation.page != null ? ` · page ${citation.page}` : ""}
-                        </div>
-                        {citation.excerpt && <p className="mt-1 text-muted-foreground">{citation.excerpt}</p>}
-                        <div className="mt-1 text-xs text-muted-foreground">
-                            {[citation.section_title, citation.clause_type, citation.chunk_index != null ? `chunk ${citation.chunk_index}` : null]
-                                .filter(Boolean).join(" · ")}
-                        </div>
-                    </li>
-                ))}
-            </ol>
+        <aside className="mt-3" aria-label="Sources">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="font-semibold uppercase tracking-wide">Sources · {citations.length}</span>
+                {citations.map((citation) => {
+                    const bestLocator = citation.page != null
+                        ? `p. ${citation.page}`
+                        : citation.section_title
+                            ? `§ ${citation.section_title}`
+                            : citation.clause_type
+                                ? `§ ${citation.clause_type}`
+                                : "excerpt";
+                    const canOpen = Boolean(
+                        citation.source_available &&
+                        citation.page != null &&
+                        (citation.provenance_status === "exact" || citation.provenance_status === "page_only")
+                    );
+                    const label = `${citation.filename} · ${bestLocator}`;
+                    return canOpen ? (
+                        <button
+                            key={citation.citation_id}
+                            type="button"
+                            className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 font-medium text-blue-800 hover:bg-blue-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+                            onClick={() => setOpenCitation(citation)}
+                            aria-label={`Open source ${label}`}
+                            title={citation.excerpt || label}
+                        >
+                            {label}
+                        </button>
+                    ) : (
+                        <span
+                            key={citation.citation_id}
+                            className="rounded-full border bg-muted px-2.5 py-1 text-muted-foreground"
+                            title={citation.excerpt || "No verified page locator is available"}
+                            aria-label={`${label}; source preview only`}
+                        >
+                            {label}
+                        </span>
+                    );
+                })}
+            </div>
+            <details className="mt-2 text-xs text-muted-foreground">
+                <summary className="cursor-pointer select-none">Source excerpts</summary>
+                <ol className="mt-2 space-y-2 border-l pl-3">
+                    {citations.map((citation) => (
+                        <li key={citation.citation_id}>
+                            <span className="font-medium text-foreground">{citation.filename}</span>
+                            {citation.excerpt ? ` — ${citation.excerpt}` : " — Excerpt unavailable"}
+                        </li>
+                    ))}
+                </ol>
+            </details>
+            {openCitation && <PdfCitationViewer citation={openCitation} onClose={() => setOpenCitation(null)} />}
         </aside>
     );
 }
@@ -110,11 +147,20 @@ export function ChatMessage({ message }: Props) {
     const { type, parts, generating } = message;
     const hasAnswer = parts.some((part) => part.type === "ai_message");
     const hasCitations = parts.some((part) => part.type === "citations" && parseCitations(part.content).length > 0);
+    const attribution = [...parts].reverse().find(
+        (part) => part.type === "ai_message" && (part.actual_model || part.actual_provider),
+    );
     return (
         <div className={`py-3 gap-0 ${type === "ai" ? "opacity-100" : "opacity-60"}`}>
             <strong className="text-xs">{type === "ai" ? "AI" : "USER"}</strong>
             <div>
                 {groupParts(parts).map(renderPart)}
+                {type === "ai" && attribution?.actual_model && (
+                    <p className="mt-2 text-xs text-muted-foreground">
+                        Actual model: {attribution.actual_provider ? `${attribution.actual_provider} · ` : ""}{attribution.actual_model}
+                        {attribution.fallback_occurred ? ` · fallback${attribution.fallback_reason ? ` (${attribution.fallback_reason})` : ""}` : ""}
+                    </p>
+                )}
                 {type === "ai" && hasAnswer && !generating && !hasCitations && (
                     <p className="mt-2 text-xs text-muted-foreground">No verified source citations were produced for this answer.</p>
                 )}

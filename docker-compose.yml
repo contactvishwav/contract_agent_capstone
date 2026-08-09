@@ -50,6 +50,9 @@ services:
       # link is on the host, same as it is for GOOGLE_OAUTH_REDIRECT_URI
       # above, not the Docker-internal network.
       - FRONTEND_BASE_URL=${FRONTEND_BASE_URL-http://localhost:3000}
+      - PDF_SOURCE_STORAGE_DIR=/var/lib/contract-agent/source-pdfs
+    volumes:
+      - pdf_source_data:/var/lib/contract-agent/source-pdfs
     depends_on:
       neo4j:
         condition: service_healthy
@@ -189,6 +192,7 @@ services:
 volumes:
   neo4j_data:
   redis_data:
+  pdf_source_data:
 
 networks:
   net:
