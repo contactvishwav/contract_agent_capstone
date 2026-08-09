@@ -7,6 +7,7 @@ import hashlib
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Optional
 
+from backend.application.services.citation_highlight_selector import select_claim_highlight
 from backend.infrastructure.encryption import DecryptionError, field_encryptor
 from backend.infrastructure.pdf_source_storage import (
     PDF_SOURCE_STORAGE_VERSION,
@@ -303,8 +304,18 @@ def enrich_citations_with_provenance(
     tenant_id: str,
     *,
     service: Optional[PdfProvenanceService] = None,
+    answer_text: Optional[str] = None,
 ) -> list[dict[str, Any]]:
-    """Replace untrusted locator hints with verified source/page evidence."""
+    """Replace untrusted locator hints with verified source/page evidence.
+
+    answer_text: the real, final validated answer shown to the user (or,
+    on restore, the persisted message's own content) - optional and
+    backward compatible. When present, it's used to narrow highlight_text
+    down to the specific sentence(s) of the excerpt that actually support
+    the claim (see citation_highlight_selector.py). When absent, behavior
+    is unchanged: the full excerpt is the highlight target, exactly as
+    before this fix.
+    """
     provenance = service or PdfProvenanceService()
     by_contract: dict[str, list[dict[str, Any]]] = {}
     for citation in citations:
@@ -331,12 +342,30 @@ def enrich_citations_with_provenance(
                 citation["provenance_status"] = "unsupported_image_only"
                 continue
             excerpt = citation.get("excerpt")
-            exact = locate_unique_page_match(excerpt, pages) if isinstance(excerpt, str) else None
+            if not isinstance(excerpt, str):
+                exact = None
+                highlight_candidate = None
+            else:
+                # Try the claim-narrowed span first - real, confident lexical
+                # support only (see citation_highlight_selector.py); None
+                # when nothing qualifies, in which case the full excerpt is
+                # tried next, preserving today's behavior as the fallback
+                # rather than a first choice.
+                narrowed = select_claim_highlight(excerpt, answer_text)
+                highlight_candidate = narrowed or excerpt
+                exact = locate_unique_page_match(highlight_candidate, pages)
+                if not exact and narrowed:
+                    # The narrowed span didn't survive as a unique exact
+                    # match (e.g. a sentence-splitting artifact) - fall back
+                    # to the untouched full excerpt rather than losing the
+                    # exact tier entirely.
+                    highlight_candidate = excerpt
+                    exact = locate_unique_page_match(excerpt, pages)
             if exact:
                 citation.update(
                     {
                         "page": exact.page_number,
-                        "highlight_text": excerpt,
+                        "highlight_text": highlight_candidate,
                         "page_start_offset": exact.start_offset,
                         "page_end_offset": exact.end_offset,
                         "provenance_status": "exact",

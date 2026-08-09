@@ -125,8 +125,16 @@ def build_validated_citations(
     tenant_id: str,
     *,
     graph_client: Any = graph,
+    answer_text: Optional[str] = None,
 ) -> list[dict[str, Any]]:
-    """Build citations from this turn's tool evidence and validate ownership."""
+    """Build citations from this turn's tool evidence and validate ownership.
+
+    answer_text: the real, final validated answer text for this turn -
+    passed through to provenance enrichment so highlight_text can be
+    narrowed to the sentence(s) that actually support the claim, instead
+    of defaulting to the full retrieved excerpt. Optional; omitting it
+    preserves the pre-narrowing (full-excerpt) highlight behavior.
+    """
     candidates: list[dict[str, Any]] = []
     for tool_message in tool_messages:
         parsed = (
@@ -220,6 +228,7 @@ def build_validated_citations(
         citations,
         tenant_id,
         service=PdfProvenanceService(graph_client=graph_client),
+        answer_text=answer_text,
     )
 
 
@@ -228,8 +237,14 @@ def revalidate_stored_citations(
     tenant_id: str,
     *,
     graph_client: Any = graph,
+    answer_text: Optional[str] = None,
 ) -> list[dict[str, Any]]:
-    """Re-check stored citations; never trust their saved validation flag."""
+    """Re-check stored citations; never trust their saved validation flag.
+
+    answer_text: the persisted message's own content, threaded through so
+    a restored session's highlight is narrowed the same way it was (or
+    would have been) at generation time - see build_validated_citations.
+    """
     if not isinstance(citations, list):
         return []
     active = _active_contracts(
@@ -281,4 +296,5 @@ def revalidate_stored_citations(
         validated,
         tenant_id,
         service=PdfProvenanceService(graph_client=graph_client),
+        answer_text=answer_text,
     )

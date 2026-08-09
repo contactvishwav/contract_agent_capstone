@@ -180,7 +180,9 @@ async def get_session_detail(
                 fallback_occurred=bool(m.get("fallback_occurred")), fallback_reason=m.get("fallback_reason"),
                 prompt_version=m.get("prompt_version"), execution_path=m.get("execution_path"),
                 tool_call_id=m.get("tool_call_id"),
-                citations=revalidate_stored_citations(m.get("citations"), identity.tenant_id),
+                citations=revalidate_stored_citations(
+                    m.get("citations"), identity.tenant_id, answer_text=m.get("content"),
+                ),
                 terminal_status=m.get("terminal_status"),
                 terminal_reason=m.get("terminal_reason"),
                 sequence=m["sequence"],

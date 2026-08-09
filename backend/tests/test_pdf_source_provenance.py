@@ -23,6 +23,7 @@ with patch("langchain_neo4j.Neo4jGraph"), patch(
     from backend.infrastructure.text_extractors import ExtractedPage, PageAwareExtraction
 
 from backend.tests.conftest import auth_headers
+from backend.tests.test_citation_highlight_selector import REAL_ANSWER, REAL_MSA_EXCERPT
 
 
 class StaticKeyProvider:
@@ -85,6 +86,38 @@ def test_citation_provenance_uses_truthful_exact_page_and_fallback_tiers():
     assert enriched[1]["highlight_text"] is None
     assert enriched[2]["provenance_status"] == "source_excerpt_only"
     assert enriched[2]["page"] is None
+
+
+def test_highlight_is_narrowed_to_the_claim_when_answer_text_is_given():
+    """Independent-audit finding #1 regression: without answer_text,
+    highlight_text must stay exactly the full excerpt (unchanged, backward
+    compatible - the pre-fix behavior). With the real final answer text,
+    it must narrow to the specific sentence(s) that support the claim, not
+    the whole ~1200-char retrieved chunk."""
+    service = MagicMock()
+    service.source_record.return_value = {"storage_key": "opaque"}
+    service.load_pages.return_value = [ExtractedPage(1, REAL_MSA_EXCERPT, 0, len(REAL_MSA_EXCERPT), True)]
+    service.mapped_chunk_pages.return_value = {}
+    citation = {"contract_id": "C1", "chunk_id": "CHUNK_MSA", "excerpt": REAL_MSA_EXCERPT}
+
+    unchanged = enrich_citations_with_provenance([dict(citation)], "tenant_a", service=service)[0]
+    assert unchanged["provenance_status"] == "exact"
+    assert unchanged["highlight_text"] == REAL_MSA_EXCERPT
+
+    narrowed = enrich_citations_with_provenance(
+        [dict(citation)], "tenant_a", service=service, answer_text=REAL_ANSWER,
+    )[0]
+    assert narrowed["provenance_status"] == "exact"
+    assert narrowed["page"] == 1
+    assert narrowed["highlight_text"] is not None
+    assert narrowed["highlight_text"] != REAL_MSA_EXCERPT
+    assert len(narrowed["highlight_text"]) < len(REAL_MSA_EXCERPT) * 0.35
+    assert narrowed["highlight_text"] in REAL_MSA_EXCERPT
+    assert "ninety (90) days" in narrowed["highlight_text"]
+    assert "Indemnification" not in narrowed["highlight_text"]
+    # excerpt itself (the grounding/"Cited passage" text) must be untouched
+    # by narrowing - only highlight_text changes.
+    assert narrowed["excerpt"] == REAL_MSA_EXCERPT
 
 
 def test_image_only_pdf_never_claims_a_page_or_highlight():

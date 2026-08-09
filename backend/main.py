@@ -834,7 +834,7 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
     citations = []
     if output_status == GuardStatus.PASSED and evidence_envelope.get("evidence"):
         try:
-            citations = build_validated_citations([evidence_envelope], tenant_id)
+            citations = build_validated_citations([evidence_envelope], tenant_id, answer_text=final_ai_content)
         except Exception as exc:
             logger.error(f"Contract Chat citation validation failed ({type(exc).__name__})")
 
