@@ -34,12 +34,13 @@ class ChatStreamTerminalStateTests(unittest.IsolatedAsyncioTestCase):
             content="Generation stopped",
             model="gemini-2.5-flash",
             terminal_status="cancelled",
+            terminal_reason="cancelled",
             requested_model="gemini-2.5-flash",
             actual_model="gemini-2.5-flash",
             requested_provider=None,
             actual_provider=None,
             fallback_occurred=False,
-            prompt_version="contract-chat-v1",
+            prompt_version="contract-chat-v2-evidence",
             execution_path="contract_chat_langgraph",
         )
 
@@ -79,12 +80,13 @@ class ChatStreamTerminalStateTests(unittest.IsolatedAsyncioTestCase):
             content="Response failed before completion. Please retry.",
             model="gemini-2.5-flash",
             terminal_status="generation_failed",
+            terminal_reason="generation_failed",
             requested_model="gemini-2.5-flash",
             actual_model="gemini-2.5-flash",
             requested_provider=None,
             actual_provider=None,
             fallback_occurred=False,
-            prompt_version="contract-chat-v1",
+            prompt_version="contract-chat-v2-evidence",
             execution_path="contract_chat_langgraph",
         )
         self.assertIn('"type": "error"', events[0])

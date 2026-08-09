@@ -73,6 +73,7 @@ class FakeChatSessionGraph:
                 "model": params.get("model"), "tool_name": params.get("tool_name"),
                 "tool_call_id": params.get("tool_call_id"), "citations": params.get("citations"),
                 "terminal_status": params.get("terminal_status"),
+                "terminal_reason": params.get("terminal_reason"),
                 "created_at": _FakeNeo4jDateTime(self._clock), "sequence": seq,
             }
             self.messages[params["session_id"]].append(message)
@@ -244,11 +245,13 @@ class AppendMessageAndListMessagesTests(unittest.TestCase):
             content="Response validation failed. Please retry.",
             model="gemini-2.5-flash",
             terminal_status="validation_failed",
+            terminal_reason="infrastructure",
         )
 
         message = repo.list_messages(session["session_id"], "tenant_a")[0]
         self.assertEqual(message["role"], "ai_message")
         self.assertEqual(message["terminal_status"], "validation_failed")
+        self.assertEqual(message["terminal_reason"], "infrastructure")
 
     def test_content_is_encrypted_at_rest_and_decrypted_on_read(self):
         """Same assertion style as test_chunk_encryption_at_rest.py: the

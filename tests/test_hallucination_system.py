@@ -23,7 +23,7 @@ def test_hallucination_detection():
     mock_model = MagicMock()
     validator._llm_mgr.get_raw_model_by_name.return_value = mock_model
     
-    mock_model.invoke.return_value.content = '{"is_hallucination": false, "reason": "Consistent with source", "confidence": 0.95}'
+    mock_model.invoke.return_value.content = '{"decision":"supported","reason_category":"supported","unsupported_material_claims":0,"confidence":0.95}'
     
     result = validator.validate(safe_output, source_context)
     print(f"Safe Output Result: is_safe={result.is_safe}")
@@ -31,7 +31,7 @@ def test_hallucination_detection():
 
     # 2. Test hallucinated content
     hallucinated_output = "The agreement includes a $50,000 termination fee for Gamma LLC."
-    mock_model.invoke.return_value.content = '{"is_hallucination": true, "reason": "Termination fee and Gamma LLC are not in source text", "confidence": 0.98}'
+    mock_model.invoke.return_value.content = '{"decision":"unsupported","reason_category":"unsupported_claim","unsupported_material_claims":2,"confidence":0.98}'
     
     result = validator.validate(hallucinated_output, source_context)
     print(f"Hallucinated Output Result: is_safe={result.is_safe}, violation={result.violation_type}")

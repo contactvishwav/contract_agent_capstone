@@ -96,13 +96,15 @@ class ContractChatMcpEndToEndTests(unittest.TestCase):
         # PlaybookRuleInput).
         mock_repo.get_applicable_policies.assert_called_once_with("real_tenant_chat", "MSA")
 
-        # The ToolMessage content is the bridge's JSON payload - prove the
-        # real call actually succeeded end-to-end, not just that the tool
-        # was invoked.
+        # Tool results are normalized at the Contract Chat boundary. Prove
+        # the real MCP call succeeded without expecting the raw bridge
+        # payload to cross the canonical evidence boundary.
         tool_messages = [m for m in result_state["messages"] if getattr(m, "name", None) == "PlaybookRuleLookup" or hasattr(m, "tool_call_id")]
         self.assertTrue(tool_messages, "expected a ToolMessage from the PlaybookRuleLookup call")
         payload = json.loads(tool_messages[0].content)
-        self.assertTrue(payload["success"])
+        self.assertEqual(payload["schema_version"], "chat-evidence-v1")
+        self.assertEqual(payload["tool_name"], "PlaybookRuleLookup")
+        self.assertEqual(payload["tool_status"], "success")
 
     def test_llm_supplied_tenant_id_and_correlation_id_are_ignored_for_mcp_tools_too(self):
         """Same isolation guarantee test_chat_tenant_isolation.py proves for
@@ -157,8 +159,10 @@ class ContractChatMcpEndToEndTests(unittest.TestCase):
         tool_messages = [m for m in result_state["messages"] if hasattr(m, "tool_call_id")]
         self.assertTrue(tool_messages)
         payload = json.loads(tool_messages[0].content)
-        self.assertFalse(payload["success"])
-        self.assertIn("error", payload)
+        self.assertEqual(payload["schema_version"], "chat-evidence-v1")
+        self.assertEqual(payload["tool_status"], "failure")
+        self.assertEqual(payload["tool_error_category"], "tool_execution_failed")
+        self.assertNotIn("mcp session unavailable", str(payload))
 
 
 if __name__ == "__main__":

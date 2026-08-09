@@ -10,6 +10,7 @@ with patch("langchain_neo4j.Neo4jGraph"), \
         _citation_id,
         _legacy_citation_id,
     )
+    from backend.application.services.chat_evidence_service import evidence_id
 
 
 class ChatCitationTests(unittest.TestCase):
@@ -55,6 +56,28 @@ class ChatCitationTests(unittest.TestCase):
         )
         self.assertEqual(citations, [])
         self.graph.query.assert_not_called()
+
+    def test_canonical_evidence_id_is_the_citation_identity_and_restores(self):
+        item = {
+            "source_type": "chunk", "contract_id": "CONTRACT_A",
+            "filename": "Clean_MSA.pdf", "facts": {},
+            "excerpt": "Payment is due within 90 days.",
+            "locator": {"chunk_id": "CHUNK_1", "chunk_index": 3},
+            "tool_name": "EnhancedContractSearch", "tool_call_id": "call_1",
+            "retrieval_score": 0.9, "verification_status": "tenant_active",
+        }
+        item["evidence_id"] = evidence_id(item, "tenant_a")
+        envelope = {
+            "schema_version": "chat-evidence-v1", "tenant_id": "tenant_a",
+            "tool_name": "EnhancedContractSearch", "tool_call_id": "call_1",
+            "evidence": [item],
+        }
+
+        citations = build_validated_citations([envelope], "tenant_a", graph_client=self.graph)
+        restored = revalidate_stored_citations(citations, "tenant_a", graph_client=self.graph)
+
+        self.assertEqual(citations[0]["citation_id"], item["evidence_id"])
+        self.assertEqual(restored[0]["citation_id"], item["evidence_id"])
 
     def test_same_source_from_multiple_tool_calls_is_deduplicated(self):
         content = json.dumps({"chunks": [{

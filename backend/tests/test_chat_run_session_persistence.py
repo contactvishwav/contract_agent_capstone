@@ -19,6 +19,7 @@ with patch("langchain_neo4j.Neo4jGraph"), \
     from backend.main import ChatRunRegistry, cancellable_chat_stream, resilient_runner, runner
 
 from backend.governance.base import GuardResult, GuardStatus
+from backend.application.services.chat_evidence_service import evidence_id
 
 from backend.tests.test_chat_session_repository import FakeChatSessionGraph
 
@@ -98,7 +99,26 @@ class RunnerSessionPersistenceTests(unittest.IsolatedAsyncioTestCase):
         authoritative source the persistence hooks read from."""
         tool_call = {"name": "EnhancedContractSearch", "args": {"summary_search": "payment terms"}, "id": "call_1"}
         assistant_with_tool_call = AIMessage(content="", tool_calls=[tool_call])
-        tool_result = ToolMessage(content="Payment due within 90 days.", tool_call_id="call_1")
+        evidence = {
+            "source_type": "chunk",
+            "contract_id": "UPLOADED_MSA_1",
+            "filename": "Clean_MSA.pdf",
+            "facts": {},
+            "excerpt": "Payment due within 90 days.",
+            "locator": {"chunk_id": "CHUNK_1", "chunk_index": 1},
+            "tool_name": "EnhancedContractSearch",
+            "tool_call_id": "call_1",
+            "retrieval_score": 0.9,
+            "verification_status": "tenant_active",
+        }
+        evidence["evidence_id"] = evidence_id(evidence, "tenant_a")
+        tool_result = ToolMessage(content=json.dumps({
+            "schema_version": "chat-evidence-v1",
+            "tenant_id": "tenant_a",
+            "tool_name": "EnhancedContractSearch",
+            "tool_call_id": "call_1",
+            "evidence": [evidence],
+        }), tool_call_id="call_1")
         final_chunk = AIMessageChunk(content="Payment is due within 90 days.")
         final_assistant = AIMessage(content="Payment is due within 90 days.", tool_calls=[])
 
@@ -154,7 +174,7 @@ class RunnerSessionPersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(messages[0]["content"], "What are the payment terms?")
         self.assertEqual(messages[1]["tool_name"], "EnhancedContractSearch")
         self.assertEqual(messages[1]["tool_call_id"], "call_1")
-        self.assertEqual(messages[2]["content"], "Payment due within 90 days.")
+        self.assertEqual(json.loads(messages[2]["content"])["evidence"][0]["excerpt"], "Payment due within 90 days.")
         self.assertEqual(messages[2]["tool_call_id"], "call_1")
         self.assertEqual(messages[3]["content"], "Payment is due within 90 days.")
         self.assertEqual(messages[3]["model"], "gemini-2.5-flash")
@@ -240,7 +260,10 @@ class RunnerSessionPersistenceTests(unittest.IsolatedAsyncioTestCase):
 
         messages = session_repo.list_messages(sid, "tenant_a")
         self.assertEqual([m["role"] for m in messages], ["user_message", "ai_message"])
-        self.assertEqual(messages[1]["content"], "I can't help with that.")
+        self.assertEqual(
+            messages[1]["content"],
+            "This request was blocked by the Contract Chat safety policy. Please revise it and retry.",
+        )
 
     async def test_no_session_id_means_zero_persistence_calls(self):
         """Explicit regression guard for the legacy path: omitting
@@ -331,7 +354,10 @@ class RunnerSessionPersistenceTests(unittest.IsolatedAsyncioTestCase):
         payloads = [json.loads(event.removeprefix("data: ").strip()) for event in events]
         self.assertEqual(payloads[-2]["type"], "error")
         self.assertEqual(payloads[-2]["status"], "rejected")
-        self.assertEqual(payloads[-1], {"content": "", "type": "end", "status": "rejected"})
+        self.assertEqual(payloads[-1]["content"], "")
+        self.assertEqual(payloads[-1]["type"], "end")
+        self.assertEqual(payloads[-1]["status"], "rejected")
+        self.assertEqual(payloads[-1]["reason_category"], "unsafe_output")
         persisted = session_repo.list_messages(session["session_id"], "tenant_a")[-1]
         self.assertNotIn(raw_answer, persisted["content"])
         self.assertEqual(persisted["terminal_status"], "rejected")
@@ -394,7 +420,10 @@ class RunnerSessionPersistenceTests(unittest.IsolatedAsyncioTestCase):
 
         payloads = [json.loads(event.removeprefix("data: ").strip()) for event in events]
         self.assertEqual(payloads[-2]["status"], "persistence_failed")
-        self.assertEqual(payloads[-1], {"content": "", "type": "end", "status": "persistence_failed"})
+        self.assertEqual(payloads[-1]["content"], "")
+        self.assertEqual(payloads[-1]["type"], "end")
+        self.assertEqual(payloads[-1]["status"], "persistence_failed")
+        self.assertEqual(payloads[-1]["reason_category"], "persistence_failed")
 
     async def test_cancellation_persists_distinct_terminal_status_and_propagates(self):
         async def cancelled_runner(**kwargs):

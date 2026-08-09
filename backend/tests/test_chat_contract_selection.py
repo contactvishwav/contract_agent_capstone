@@ -214,5 +214,84 @@ class AssistantTellsTheModelAContractIsSelectedTests(unittest.TestCase):
         self.assertNotIn("selected", content.lower())
 
 
+class EvidenceAcquisitionFallbackTests(unittest.TestCase):
+    def test_factual_answer_without_tool_is_forced_through_tenant_scoped_metadata(self):
+        with patch("langchain_neo4j.Neo4jGraph"), \
+             patch("backend.shared.utils.gemini_embedding_service.embedding"):
+            from backend.contract_chat_agent import get_agent
+        from langchain_core.messages import AIMessage
+
+        fake_llm = MagicMock()
+        fake_llm.bind_tools.return_value = fake_llm
+        fake_llm.invoke.return_value = AIMessage(content="Two contracts are available.")
+        envelope = {
+            "schema_version": "chat-evidence-v1", "tenant_id": "tenant_a",
+            "tool_name": "EnhancedContractSearch", "tool_call_id": "forced_test",
+            "evidence": [{"evidence_id": "EVID_TEST"}],
+        }
+
+        with patch(
+            "backend.shared.utils.enhanced_contract_search_tool.EnhancedContractSearchTool._run",
+            return_value={"result": {"total_count": 2, "contracts": []}},
+        ) as fake_run, patch(
+            "backend.contract_chat_agent.build_evidence_envelope",
+            return_value=envelope,
+        ):
+            graph = get_agent(fake_llm)
+            result = graph.invoke(
+                {"messages": [("human", "What agreements are available?")]},
+                config={"configurable": {"tenant_id": "tenant_a"}},
+            )
+
+        self.assertEqual(result["messages"][-1].content, "Two contracts are available.")
+        self.assertEqual(fake_run.call_count, 1)
+        _, kwargs = fake_run.call_args
+        self.assertEqual(kwargs["tenant_id"], "tenant_a")
+        self.assertEqual(kwargs["search_level"], "document")
+        self.assertEqual(fake_llm.invoke.call_count, 1)
+
+    def test_model_authored_cypher_is_not_forwarded_by_contract_chat(self):
+        with patch("langchain_neo4j.Neo4jGraph"), \
+             patch("backend.shared.utils.gemini_embedding_service.embedding"):
+            from backend.contract_chat_agent import get_agent
+        from langchain_core.messages import AIMessage
+
+        fake_llm = MagicMock()
+        fake_llm.bind_tools.return_value = fake_llm
+        fake_llm.invoke.side_effect = [
+            AIMessage(content="", tool_calls=[{
+                "name": "ContractSearch",
+                "args": {
+                    "summary_search": "material differences",
+                    "cypher_aggregation": "MATCH (c) DETACH DELETE c",
+                },
+                "id": "call_unsafe",
+            }]),
+            AIMessage(content="Evidence-based comparison."),
+        ]
+        envelope = {
+            "schema_version": "chat-evidence-v1", "tenant_id": "tenant_a",
+            "tool_name": "ContractSearch", "tool_call_id": "call_unsafe",
+            "evidence": [{"evidence_id": "EVID_TEST"}],
+        }
+
+        with patch(
+            "backend.shared.utils.contract_search_tool.ContractSearchTool._run",
+            return_value={"result": {"total_count": 0, "contracts": []}},
+        ) as fake_run, patch(
+            "backend.contract_chat_agent.build_evidence_envelope",
+            return_value=envelope,
+        ):
+            graph = get_agent(fake_llm)
+            graph.invoke(
+                {"messages": [("human", "Compare material differences")]},
+                config={"configurable": {"tenant_id": "tenant_a"}},
+            )
+
+        _, kwargs = fake_run.call_args
+        self.assertNotIn("cypher_aggregation", kwargs)
+        self.assertEqual(kwargs["tenant_id"], "tenant_a")
+
+
 if __name__ == "__main__":
     unittest.main()

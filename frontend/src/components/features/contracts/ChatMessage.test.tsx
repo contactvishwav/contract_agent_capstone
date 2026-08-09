@@ -74,6 +74,7 @@ describe('ChatMessage', () => {
       content: 'Response validation failed. Please retry.',
       model: 'gemini-2.5-flash', tool_name: null, tool_call_id: null,
       citations: [], terminal_status: 'validation_failed', sequence: 2,
+      terminal_reason: 'infrastructure',
       created_at: '2026-08-08T00:00:00Z',
     }]);
 
@@ -81,6 +82,7 @@ describe('ChatMessage', () => {
 
     expect(screen.getByRole('alert')).toHaveTextContent('Response validation failed');
     expect(screen.queryByText('No verified source citations were produced for this answer.')).not.toBeInTheDocument();
+    expect(restored[0].parts[0].reason_category).toBe('infrastructure');
   });
 
   it('restores cancellation as a restrained terminal state, not a system failure', () => {
