@@ -95,6 +95,7 @@ class ExecuteWorkflowEndpointTests(unittest.IsolatedAsyncioTestCase):
         fake_analyze_task.apply_async.return_value = fake_task
 
         with patch("backend.tasks.analyze_contract_task", fake_analyze_task, create=True), \
+             patch.object(supervisor_api._repository, "get_contract_by_id", new=AsyncMock(return_value={"file_id": "c1"})), \
              patch.object(supervisor_api.task_ownership_store, "enqueue", return_value=fake_task) as mock_enqueue:
             response = await supervisor_api.execute_workflow(request, identity=identity)
 

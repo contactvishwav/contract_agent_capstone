@@ -258,11 +258,11 @@ def _upload_route_function(module_path, function_name):
     raise AssertionError(f"function {function_name} not found in {module_path}")
 
 
-def _try_node_in(function_node):
+def _cleanup_try_node_in(function_node):
     for node in ast.walk(function_node):
-        if isinstance(node, ast.Try):
+        if isinstance(node, ast.Try) and _calls_os_remove(node.finalbody):
             return node
-    raise AssertionError("no try/except/finally block found")
+    raise AssertionError("no try/except/finally cleanup block found")
 
 
 def _calls_os_remove(nodes):
@@ -291,7 +291,7 @@ class UploadTempFileCleanupRegressionTests(unittest.TestCase):
         node = _upload_route_function(
             os.path.join(BACKEND_DIR, "api", "document_upload.py"), "upload_pdf"
         )
-        try_node = _try_node_in(node)
+        try_node = _cleanup_try_node_in(node)
         self.assertTrue(
             _calls_os_remove(try_node.finalbody),
             "temp file cleanup must run in the `finally` block, not only on exception",
@@ -301,7 +301,7 @@ class UploadTempFileCleanupRegressionTests(unittest.TestCase):
         node = _upload_route_function(
             os.path.join(BACKEND_DIR, "api", "enhanced_document_upload.py"), "upload_pdf_enhanced"
         )
-        try_node = _try_node_in(node)
+        try_node = _cleanup_try_node_in(node)
         self.assertTrue(
             _calls_os_remove(try_node.finalbody),
             "temp file cleanup must run in the `finally` block, not only on exception",

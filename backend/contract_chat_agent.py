@@ -18,6 +18,7 @@ import json
 # way, plus also get a server-injected correlation_id - see the
 # MCP_CHAT_TOOL_NAMES branch below.
 _TENANT_SCOPED_TOOL_NAMES = {"ContractSearch", "EnhancedContractSearch"} | MCP_CHAT_TOOL_NAMES
+CHAT_PROMPT_VERSION = "contract-chat-v1"
 
 
 def get_agent(llm):

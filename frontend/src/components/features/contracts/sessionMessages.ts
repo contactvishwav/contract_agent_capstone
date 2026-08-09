@@ -33,6 +33,14 @@ export function groupStoredMessagesIntoUiMessages(stored: ChatSessionMessage[]):
                 : row.role,
             content: row.content,
             ...(row.terminal_status ? { status: row.terminal_status } : {}),
+            requested_model: row.requested_model,
+            actual_model: row.actual_model || row.model,
+            requested_provider: row.requested_provider,
+            actual_provider: row.actual_provider,
+            fallback_occurred: row.fallback_occurred,
+            fallback_reason: row.fallback_reason,
+            prompt_version: row.prompt_version,
+            execution_path: row.execution_path,
         });
         if (row.role === "ai_message" && row.citations?.length) {
             current.parts.push({ type: "citations", content: JSON.stringify(row.citations) });

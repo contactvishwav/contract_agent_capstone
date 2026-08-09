@@ -57,28 +57,8 @@ class EnhancedDocumentProcessingService:
             raise
     
     def _get_llm_for_model(self, model_name: str):
-        """Get LLM instance"""
-        if model_name == "gpt-4o":
-            from langchain_openai import ChatOpenAI
-            return ChatOpenAI(model="gpt-4o", temperature=0)
-        elif model_name in ["gemini-1.5-pro", "gemini-2.5-flash-exp", "gemini-2.5-flash", "gemini-2.5-flash"]:
-            from langchain_google_genai import ChatGoogleGenerativeAI
-            model_mapping = {
-                "gemini-2.5-flash-exp": "gemini-2.5-flash",
-                "gemini-2.5-flash": "gemini-2.5-flash",
-                "gemini-2.5-flash": "gemini-2.5-flash",
-                "gemini-1.5-pro": "gemini-1.5-pro"
-            }
-            actual_model = model_mapping.get(model_name, "gemini-2.5-flash")
-            # request_timeout/max_retries: see llm_extraction_service.py's
-            # get_default_llm - without these this client has no timeout at
-            # all and retries a 429 up to 6 times with growing backoff.
-            return ChatGoogleGenerativeAI(model=actual_model, temperature=0, request_timeout=120, max_retries=1)
-        elif model_name == "sonnet-3.5":
-            from langchain_anthropic import ChatAnthropic
-            return ChatAnthropic(model="claude-3-5-sonnet-latest", temperature=0)
-        else:
-            raise ValueError(f"Unknown model: {model_name}")
+        """Resolve the exact server-registry client; never normalize/fallback."""
+        return self.agent_manager.get_raw_model_by_name(model_name)
     
     async def _process_with_enhanced_embeddings(self, pdf_agent, request: DocumentProcessingRequest) -> dict:
         """Process document with enhanced embeddings"""
@@ -94,9 +74,12 @@ class EnhancedDocumentProcessingService:
         )
         
         # Create initial state
+        if not request.tenant_id:
+            raise ValueError("Authenticated tenant context is required")
+
         initial_state = {
             "file_path": request.file_path,
-            "tenant_id": request.tenant_id or "default-tenant",
+            "tenant_id": request.tenant_id,
             "extracted_text": None,
             "contract_data": None,
             "processing_result": None,
@@ -133,7 +116,8 @@ class EnhancedDocumentProcessingService:
             embedding_success = self._process_enhanced_embeddings(
                 processing_result.contract_id, 
                 extracted_text,
-                request.filename
+                request.filename,
+                request.tenant_id,
             )
             
             workflow_tracker.complete_workflow()
@@ -159,7 +143,13 @@ class EnhancedDocumentProcessingService:
                 "contract_id": None
             }
     
-    def _process_enhanced_embeddings(self, contract_id: str, extracted_text: str, filename: str) -> bool:
+    def _process_enhanced_embeddings(
+        self,
+        contract_id: str,
+        extracted_text: str,
+        filename: str,
+        tenant_id: str,
+    ) -> bool:
         """Process multi-level embeddings for uploaded contract"""
         
         # Track embedding processing
@@ -179,7 +169,12 @@ class EnhancedDocumentProcessingService:
             # Process with orchestrator
             processing_result = self.embedding_orchestrator.process_document(
                 content=extracted_text,
-                metadata={"file_id": contract_id, "source": "upload", "filename": filename}
+                metadata={
+                    "file_id": contract_id,
+                    "tenant_id": tenant_id,
+                    "source": "upload",
+                    "filename": filename,
+                }
             )
             
             # Validate results
@@ -200,7 +195,7 @@ class EnhancedDocumentProcessingService:
                 return False
             
             # Store embeddings in Neo4j
-            self._store_enhanced_embeddings(contract_id, processing_result)
+            self._store_enhanced_embeddings(contract_id, tenant_id, processing_result)
             
             workflow_tracker.complete_agent(
                 embedding_execution, 
@@ -215,26 +210,27 @@ class EnhancedDocumentProcessingService:
             logger.error(f"Enhanced embedding processing failed for {contract_id}: {e}")
             return False
     
-    def _store_enhanced_embeddings(self, contract_id: str, processing_result):
+    def _store_enhanced_embeddings(self, contract_id: str, tenant_id: str, processing_result):
         """Store enhanced embeddings in Neo4j"""
         
         # Store document embeddings
         for doc_embedding in processing_result.document_embeddings:
             if doc_embedding.metadata.get("level") == "document":
                 self.graph.query("""
-                    MATCH (c:Contract {file_id: $file_id})
+                    MATCH (c:Contract {file_id: $file_id, tenant_id: $tenant_id})
                     SET c.document_embedding = $embedding,
                         c.summary_embedding = $embedding
                 """, {
                     "file_id": contract_id,
+                    "tenant_id": tenant_id,
                     "embedding": doc_embedding.embedding
                 })
             
             elif doc_embedding.metadata.get("level") == "section":
                 section_id = f"{contract_id}_section_{doc_embedding.metadata.get('section_index', 0)}"
                 self.graph.query("""
-                    MATCH (c:Contract {file_id: $file_id})
-                    MERGE (s:Section {id: $section_id})
+                    MATCH (c:Contract {file_id: $file_id, tenant_id: $tenant_id})
+                    MERGE (s:Section {id: $section_id, tenant_id: $tenant_id})
                     SET s.section_type = $section_type,
                         s.content = $content,
                         s.embedding = $embedding,
@@ -242,6 +238,7 @@ class EnhancedDocumentProcessingService:
                     MERGE (c)-[:HAS_SECTION]->(s)
                 """, {
                     "file_id": contract_id,
+                    "tenant_id": tenant_id,
                     "section_id": section_id,
                     "section_type": doc_embedding.metadata.get("section_type", "general"),
                     "content": doc_embedding.content,
@@ -253,8 +250,8 @@ class EnhancedDocumentProcessingService:
         for clause_embedding in processing_result.clause_embeddings:
             clause_id = f"{contract_id}_clause_{clause_embedding.metadata.get('start_position', 0)}"
             self.graph.query("""
-                MATCH (c:Contract {file_id: $file_id})
-                MERGE (cl:Clause {id: $clause_id})
+                MATCH (c:Contract {file_id: $file_id, tenant_id: $tenant_id})
+                MERGE (cl:Clause {id: $clause_id, tenant_id: $tenant_id})
                 SET cl.clause_type = $clause_type,
                     cl.content = $content,
                     cl.embedding = $embedding,
@@ -264,6 +261,7 @@ class EnhancedDocumentProcessingService:
                 MERGE (c)-[:CONTAINS_CLAUSE]->(cl)
             """, {
                 "file_id": contract_id,
+                "tenant_id": tenant_id,
                 "clause_id": clause_id,
                 "clause_type": clause_embedding.metadata.get("clause_type", "unknown"),
                 "content": clause_embedding.content,
@@ -279,12 +277,13 @@ class EnhancedDocumentProcessingService:
                 party_name = rel_embedding.metadata.get("party_name", "")
                 if party_name:
                     self.graph.query("""
-                        MATCH (c:Contract {file_id: $file_id})
-                        MATCH (c)<-[r:PARTY_TO]-(p:Party {name: $party_name})
+                        MATCH (c:Contract {file_id: $file_id, tenant_id: $tenant_id})
+                        MATCH (c)<-[r:PARTY_TO]-(p:Party {name: $party_name, tenant_id: $tenant_id})
                         SET r.embedding = $embedding,
                             r.context = $context
                     """, {
                         "file_id": contract_id,
+                        "tenant_id": tenant_id,
                         "party_name": party_name,
                         "embedding": rel_embedding.embedding,
                         "context": rel_embedding.content

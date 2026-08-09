@@ -25,6 +25,16 @@ vi.mock('../../../lib/authStore', () => ({ authHeader: () => 'Bearer test', clea
 vi.mock('@microsoft/fetch-event-source', () => ({
   fetchEventSource: mocks.fetchEventSource,
 }));
+vi.mock('../../../services/modelRegistryApi', () => ({
+  getWorkflowModels: () => Promise.resolve({
+    workflow: 'chat',
+    default_model: 'gemini-2.5-flash',
+    models: [{
+      id: 'gemini-2.5-flash', provider: 'google',
+      display_label: 'Google · Gemini 2.5 Flash',
+    }],
+  }),
+}));
 
 describe('Contract Chat suggestions', () => {
   beforeEach(() => {

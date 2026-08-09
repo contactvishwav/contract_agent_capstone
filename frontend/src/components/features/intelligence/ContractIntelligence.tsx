@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '../../shared/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../../shared/ui/card';
 import { Badge } from '../../shared/ui/badge';
@@ -10,6 +10,7 @@ import { RiskDetail } from './RiskDetail';
 import { useModal } from '../../../lib/useModal';
 import { apiFetch } from '../../../lib/apiClient';
 import { getLatestContractAnalysis } from '../../../services/contractApi';
+import type { WorkflowStatus } from '../agents/AgentWorkflowTracker';
 
 interface ContractClause {
   clause_type: string;
@@ -34,18 +35,31 @@ interface RiskAssessment {
   recommendations: string[];
 }
 
-interface IntelligenceResults {
+export interface IntelligenceResults {
   clauses: ContractClause[];
   violations: PolicyViolation[];
   risk_assessment: RiskAssessment;
-  redlines: any[];
+  redlines: unknown[];
+}
+
+interface AnalysisEnvelope {
+  results: IntelligenceResults;
+  execution_path?: string;
+  planned_execution?: boolean | null;
+  model_used?: string;
+  requested_model?: string;
+  actual_provider?: string;
+  fallback_occurred?: boolean;
+  fallback_reason?: string | null;
+  analysis_complete?: boolean;
+  summary_counts?: { clauses: number; violations: number; redlines: number } | null;
 }
 
 interface ContractIntelligenceProps {
   contractId: string;
   filename: string;
   model?: string;
-  onWorkflowUpdate?: (status: any) => void;
+  onWorkflowUpdate?: (status: WorkflowStatus) => void;
   onAnalysisComplete?: (contractId: string, riskScore?: number, riskLevel?: string, results?: IntelligenceResults) => void;
 }
 
@@ -53,12 +67,16 @@ interface ExecutionIdentity {
   executionPath: string;
   plannedExecution: boolean | null;
   modelUsed: string;
+  requestedModel?: string;
+  actualProvider?: string;
+  fallbackOccurred?: boolean;
+  fallbackReason?: string | null;
 }
 
 const TASK_POLL_INTERVAL_MS = 1500;
 const TASK_POLL_TIMEOUT_MS = 5 * 60 * 1000;
 
-async function pollTaskStatus(statusUrl: string, signal?: AbortSignal): Promise<any> {
+async function pollTaskStatus(statusUrl: string, signal?: AbortSignal): Promise<AnalysisEnvelope> {
   const deadline = Date.now() + TASK_POLL_TIMEOUT_MS;
 
   while (Date.now() < deadline) {
@@ -106,13 +124,17 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
   const activeController = useRef<AbortController | null>(null);
   const { openModal, closeModal, isOpen } = useModal();
 
-  const applyAnalysis = (data: any, version: number) => {
+  const applyAnalysis = useCallback((data: AnalysisEnvelope, version: number) => {
     if (requestVersion.current !== version || !data?.results) return;
     setResults(data.results);
     setExecutionIdentity({
       executionPath: data.execution_path || 'unknown',
       plannedExecution: data.planned_execution ?? null,
       modelUsed: data.model_used || model,
+      requestedModel: data.requested_model,
+      actualProvider: data.actual_provider,
+      fallbackOccurred: Boolean(data.fallback_occurred),
+      fallbackReason: data.fallback_reason,
     });
     setPersistedState(data.analysis_complete === false ? 'completed_with_errors' : 'completed');
     setSummaryCounts(data.summary_counts || null);
@@ -124,7 +146,7 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
         data.results,
       );
     }
-  };
+  }, [contractId, model, onAnalysisComplete]);
 
   useEffect(() => {
     requestVersion.current += 1;
@@ -146,7 +168,7 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
         if (controller.signal.aborted || requestVersion.current !== version) return;
         setLegacySummary(response.legacy_summary);
         if (response.analysis) {
-          applyAnalysis(response.analysis, version);
+          applyAnalysis(response.analysis as unknown as AnalysisEnvelope, version);
           setPersistedState(response.state === 'completed_with_errors' ? 'completed_with_errors' : 'completed');
           return;
         }
@@ -168,7 +190,7 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
       });
 
     return () => controller.abort();
-  }, [contractId]);
+  }, [applyAnalysis, contractId]);
 
   const analyzeContract = async () => {
     requestVersion.current += 1;
@@ -190,7 +212,7 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
           const workflowData = await workflowResponse.json();
           onWorkflowUpdate?.(workflowData);
         }
-      } catch (e) {
+      } catch {
         // Ignore workflow polling errors
       }
     }, 500);
@@ -233,7 +255,7 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
             const workflowData = await workflowResponse.json();
             onWorkflowUpdate?.(workflowData);
           }
-        } catch (e) {
+        } catch {
           // Ignore final workflow polling error
         }
       }, 1000);
@@ -328,7 +350,17 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
                   ? 'PlanExecutionEngine'
                   : executionIdentity.executionPath}
               </Badge>
-              <span>Model: {executionIdentity.modelUsed}</span>
+              <span>
+                Actual: {executionIdentity.actualProvider ? `${executionIdentity.actualProvider} · ` : ''}{executionIdentity.modelUsed}
+              </span>
+              {executionIdentity.requestedModel && executionIdentity.requestedModel !== executionIdentity.modelUsed && (
+                <span>Requested: {executionIdentity.requestedModel}</span>
+              )}
+              {executionIdentity.fallbackOccurred && (
+                <Badge className="bg-yellow-100 text-yellow-800">
+                  Provider fallback{executionIdentity.fallbackReason ? `: ${executionIdentity.fallbackReason}` : ''}
+                </Badge>
+              )}
               {executionIdentity.plannedExecution === false && (
                 <Badge className="bg-yellow-100 text-yellow-800">Fallback/traditional path</Badge>
               )}
@@ -337,7 +369,7 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
         </div>
         <Button 
           onClick={analyzeContract} 
-          disabled={loading || persistedState === 'loading'}
+          disabled={loading || persistedState === 'loading' || !model}
           className="flex items-center gap-2"
         >
           <Brain className="h-4 w-4" />

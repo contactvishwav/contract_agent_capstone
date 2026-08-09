@@ -6,6 +6,14 @@ export type MessagePart = {
     type: MessagePartType;
     content: string;
     status?: 'passed' | 'rejected' | 'validation_failed' | 'timed_out' | 'cancelled' | 'empty' | 'generation_failed' | 'persistence_failed';
+    requested_model?: string | null;
+    actual_model?: string | null;
+    requested_provider?: string | null;
+    actual_provider?: string | null;
+    fallback_occurred?: boolean;
+    fallback_reason?: string | null;
+    prompt_version?: string | null;
+    execution_path?: string | null;
 };
 
 export type Message = {

@@ -1,7 +1,7 @@
 import React from 'react';
 import { CheckCircle, Clock, XCircle, ArrowRight } from 'lucide-react';
 
-interface AgentExecution {
+export interface AgentExecution {
   agent_name: string;
   agent_role: string;
   status: 'processing' | 'completed' | 'error';
@@ -11,7 +11,7 @@ interface AgentExecution {
   error_message?: string;
 }
 
-interface WorkflowStatus {
+export interface WorkflowStatus {
   total_agents: number;
   completed_agents: number;
   failed_agents: number;

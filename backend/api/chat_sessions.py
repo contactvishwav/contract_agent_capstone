@@ -87,6 +87,14 @@ class MessageResponse(BaseModel):
     role: str
     content: str
     model: Optional[str] = None
+    requested_model: Optional[str] = None
+    actual_model: Optional[str] = None
+    requested_provider: Optional[str] = None
+    actual_provider: Optional[str] = None
+    fallback_occurred: bool = False
+    fallback_reason: Optional[str] = None
+    prompt_version: Optional[str] = None
+    execution_path: Optional[str] = None
     tool_name: Optional[str] = None
     tool_call_id: Optional[str] = None
     citations: List[dict] = Field(default_factory=list)
@@ -166,6 +174,10 @@ async def get_session_detail(
             MessageResponse(
                 message_id=m["message_id"], role=m["role"], content=m["content"],
                 model=m.get("model"), tool_name=m.get("tool_name"),
+                requested_model=m.get("requested_model"), actual_model=m.get("actual_model") or m.get("model"),
+                requested_provider=m.get("requested_provider"), actual_provider=m.get("actual_provider"),
+                fallback_occurred=bool(m.get("fallback_occurred")), fallback_reason=m.get("fallback_reason"),
+                prompt_version=m.get("prompt_version"), execution_path=m.get("execution_path"),
                 tool_call_id=m.get("tool_call_id"),
                 citations=revalidate_stored_citations(m.get("citations"), identity.tenant_id),
                 terminal_status=m.get("terminal_status"),

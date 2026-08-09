@@ -16,6 +16,7 @@ import { Message, MessagePart, useChat } from "./provider";
 import { authHeader, clearSession } from "../../../lib/authStore";
 import { useContractHistory } from "../../../contexts/ContractHistoryContext";
 import { useChatSession } from "../../../contexts/ChatSessionContext";
+import { getWorkflowModels, ModelOption } from "../../../services/modelRegistryApi";
 
 // Real, confirmed bug this closes: Contract Chat had no way to know
 // which contract a question like "Analyze this contract" referred to -
@@ -30,6 +31,10 @@ export function ChatInput() {
     const [submiting, setSubmiting] = React.useState(false);
     const [promptValue, setPromptValue] = React.useState('');
     const [pendingAutoSubmitId, setPendingAutoSubmitId] = React.useState<number | null>(null);
+    const [models, setModels] = React.useState<ModelOption[]>([]);
+    const [selectedModel, setSelectedModel] = React.useState("");
+    const [defaultModel, setDefaultModel] = React.useState("");
+    const [modelError, setModelError] = React.useState<string | null>(null);
     const {
         addMessage,
         addMessagePart,
@@ -48,6 +53,18 @@ export function ChatInput() {
     const { contracts, selectedContractId, setSelectedContract } = useContractHistory();
     const { activeSession, createSession } = useChatSession();
 
+    React.useEffect(() => {
+        getWorkflowModels("chat").then((registry) => {
+            setModels(registry.models);
+            setDefaultModel(registry.default_model || registry.models[0]?.id || "");
+            setModelError(registry.models.length ? null : "No compatible chat model is configured.");
+        }).catch(() => {
+            setModelError("Available chat models could not be loaded.");
+        });
+    }, []);
+
+    const effectiveModel = selectedModel || defaultModel;
+
     // Whenever a session is active, its own contract_id is authoritative
     // (including an explicit null for an All-Contracts session) - it must
     // not be overridden by ContractHistoryContext's "most recently
@@ -63,13 +80,12 @@ export function ChatInput() {
         event.preventDefault();
         if (submiting) return;
         const formData = new FormData(event.currentTarget);
-        const model = formData.get("model") as string;
+        const model = effectiveModel;
         const prompt = formData.get("prompt") as string;
-        const contractIdField = formData.get("contract_id") as string;
-        const selectedScope = contractIdField && contractIdField !== ALL_CONTRACTS_VALUE ? contractIdField : null;
+        const selectedScope = contractSelection !== ALL_CONTRACTS_VALUE ? contractSelection : null;
         const contract_id = activeSession ? activeSession.contract_id : selectedScope;
 
-        if (!prompt.trim()) {
+        if (!prompt.trim() || !model) {
             return;
         }
 
@@ -244,12 +260,13 @@ export function ChatInput() {
             pendingAutoSubmitId === null ||
             promptRequest?.id !== pendingAutoSubmitId ||
             promptValue !== promptRequest.prompt ||
-            submiting
+            submiting ||
+            !effectiveModel
         ) return;
         consumePromptRequest(pendingAutoSubmitId);
         setPendingAutoSubmitId(null);
         formRef.current?.requestSubmit();
-    }, [consumePromptRequest, pendingAutoSubmitId, promptRequest, promptValue, submiting]);
+    }, [consumePromptRequest, effectiveModel, pendingAutoSubmitId, promptRequest, promptValue, submiting]);
 
     React.useEffect(() => () => {
         void stopActiveRequest();
@@ -303,18 +320,20 @@ export function ChatInput() {
                     </div>
                     <div className="flex min-w-0 flex-col gap-1">
                         <span className="text-xs font-medium text-muted-foreground">Model</span>
-                        <Select name="model" defaultValue="gemini-2.5-flash" disabled={Boolean(activeRequest)}>
+                        <Select name="model" value={effectiveModel} onValueChange={setSelectedModel} disabled={Boolean(activeRequest) || !models.length}>
                             <SelectTrigger className="w-full text-foreground" aria-label="Model">
                                 <SelectValue />
                             </SelectTrigger>
                             <SelectContent position="popper" side="left" align="start" sideOffset={8} collisionPadding={12} className="max-h-[8rem] data-[side=left]:translate-y-2 data-[side=right]:translate-y-2">
                                 <SelectGroup>
-                                    <SelectItem value="gemini-2.5-flash">gemini-2.5-flash</SelectItem>
-                                    <SelectItem value="gpt-4o">gpt-4o</SelectItem>
+                                    {models.map((model) => (
+                                        <SelectItem key={model.id} value={model.id}>{model.display_label}</SelectItem>
+                                    ))}
                                 </SelectGroup>
                             </SelectContent>
                         </Select>
                     </div>
+                    {modelError && <p className="text-xs text-red-700" role="alert">{modelError}</p>}
                     <Button variant="outline" className="flex-0" onClick={handleClear} disabled={Boolean(activeRequest)}>
                         Reset
                     </Button>
@@ -334,7 +353,7 @@ export function ChatInput() {
                             <LoaderCircle className="animate-spin" aria-hidden="true" />
                         </Button>
                     ) : (
-                        <Button className="flex-0" type="submit" disabled={submiting}>
+                        <Button className="flex-0" type="submit" disabled={submiting || !effectiveModel}>
                             Send your prompt now!
                             <SendHorizontal aria-hidden="true" />
                         </Button>

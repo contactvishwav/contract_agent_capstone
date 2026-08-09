@@ -77,7 +77,7 @@ DEFAULT_TIMEOUT_SECONDS = 120.0
 
 GEMINI_MODEL = "gemini-2.5-flash"
 OPENAI_MODEL = "gpt-4o"
-ANTHROPIC_MODEL = "claude-3-5-sonnet-latest"
+ANTHROPIC_MODEL = "claude-sonnet-5"
 
 
 def _gemini_llm(timeout_seconds: float):

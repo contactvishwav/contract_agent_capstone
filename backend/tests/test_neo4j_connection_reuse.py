@@ -21,6 +21,7 @@ with patch("langchain_neo4j.Neo4jGraph"), \
      patch("backend.shared.utils.gemini_embedding_service.embedding"):
     from backend.shared.utils import contract_search_tool
     from backend.api.enhanced_document_upload import get_embedding_status
+    from backend.governance.auth import TokenIdentity
     from backend.application.services.enhanced_document_processing_service import (
         EnhancedDocumentProcessingService,
     )
@@ -31,6 +32,7 @@ class EmbeddingStatusRouteReusesSingletonGraphTests(unittest.TestCase):
     `graph = Neo4jGraph(...)` inline on every request."""
 
     def test_repeated_calls_use_the_same_graph_object(self):
+        identity = TokenIdentity(tenant_id="tenant_a", role="ADMIN", username="tester")
         fake_graph = MagicMock()
         fake_graph.query.return_value = [{
             "has_document_embedding": True,
@@ -42,15 +44,16 @@ class EmbeddingStatusRouteReusesSingletonGraphTests(unittest.TestCase):
         }]
 
         with patch.object(contract_search_tool, "graph", fake_graph):
-            asyncio.run(get_embedding_status("contract-1"))
-            asyncio.run(get_embedding_status("contract-2"))
-            asyncio.run(get_embedding_status("contract-3"))
+            asyncio.run(get_embedding_status("contract-1", identity))
+            asyncio.run(get_embedding_status("contract-2", identity))
+            asyncio.run(get_embedding_status("contract-3", identity))
 
         # Every call issued its query against the exact same driver
         # instance - none constructed a new one.
         self.assertEqual(fake_graph.query.call_count, 3)
 
     def test_route_never_constructs_a_new_neo4jgraph(self):
+        identity = TokenIdentity(tenant_id="tenant_a", role="ADMIN", username="tester")
         with patch("langchain_neo4j.Neo4jGraph") as ctor:
             with patch.object(contract_search_tool, "graph", MagicMock(
                 query=MagicMock(return_value=[{
@@ -59,7 +62,7 @@ class EmbeddingStatusRouteReusesSingletonGraphTests(unittest.TestCase):
                     "relationship_count": 0, "relationship_embeddings": 0,
                 }])
             )):
-                asyncio.run(get_embedding_status("contract-1"))
+                asyncio.run(get_embedding_status("contract-1", identity))
             ctor.assert_not_called()
 
 

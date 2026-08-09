@@ -288,11 +288,14 @@ class RunnerSessionPersistenceTests(unittest.IsolatedAsyncioTestCase):
 
         payloads = [json.loads(event.removeprefix("data: ").strip()) for event in events]
         answer_events = [p for p in payloads if p["type"] == "ai_message"]
-        self.assertEqual(answer_events, [{
-            "content": "Payment is due within 90 days.",
-            "type": "ai_message",
-            "status": "passed",
-        }])
+        self.assertEqual(len(answer_events), 1)
+        self.assertEqual(answer_events[0]["content"], "Payment is due within 90 days.")
+        self.assertEqual(answer_events[0]["status"], "passed")
+        self.assertEqual(answer_events[0]["requested_model"], "gemini-2.5-flash")
+        self.assertEqual(answer_events[0]["actual_model"], "gemini-2.5-flash")
+        self.assertEqual(answer_events[0]["actual_provider"], "google")
+        self.assertFalse(answer_events[0]["fallback_occurred"])
+        self.assertEqual(answer_events[0]["execution_path"], "contract_chat_langgraph")
         self.assertEqual(payloads[-1]["type"], "end")
         self.assertEqual(payloads[-1]["status"], "passed")
         persisted = session_repo.list_messages(session["session_id"], "tenant_a")[-1]
@@ -408,7 +411,7 @@ class RunnerSessionPersistenceTests(unittest.IsolatedAsyncioTestCase):
                     llm_mgr=MagicMock(), tenant_id="tenant_a", chat_session_id="SESSION_1",
                 ))
 
-        self.assertEqual(persist_terminal.call_args.args[-1], "cancelled")
+        self.assertEqual(persist_terminal.call_args.args[4], "cancelled")
         record_outcome.assert_called_once_with("cancelled", "client_cancellation")
         audit_outcome.assert_called_once()
 
@@ -427,7 +430,7 @@ class RunnerSessionPersistenceTests(unittest.IsolatedAsyncioTestCase):
                     llm_mgr=MagicMock(), tenant_id="tenant_a", chat_session_id="SESSION_1",
                 ))
 
-        self.assertEqual(persist_terminal.call_args.args[-1], "cancelled")
+        self.assertEqual(persist_terminal.call_args.args[4], "cancelled")
         record_outcome.assert_not_called()
         audit_outcome.assert_not_called()
 

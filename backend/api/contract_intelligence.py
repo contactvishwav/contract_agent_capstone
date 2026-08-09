@@ -4,6 +4,7 @@ from backend.governance.auth import TokenIdentity, get_current_identity
 from fastapi.responses import StreamingResponse
 from backend.application.services.contract_intelligence_service import ContractIntelligenceServiceFactory
 from backend.llm_manager import LLMManager
+from backend.model_registry import ModelSelectionError, available_models, validate_model
 from backend.infrastructure.contract_repository import Neo4jContractRepository
 from backend.infrastructure.encryption import field_encryptor
 from backend.infrastructure.task_ownership import TaskOwnershipUnavailable, task_ownership_store
@@ -48,6 +49,11 @@ async def analyze_contract_intelligence(
     """
     from backend.tasks import analyze_contract_task
 
+    try:
+        selected_spec = validate_model(model, "analysis")
+    except ModelSelectionError as exc:
+        raise HTTPException(status_code=400, detail={"message": str(exc), "category": exc.category})
+
     contract_rows = repository.graph.query(
         "MATCH (c:Contract {file_id: $contract_id, tenant_id: $tenant_id}) "
         "WHERE coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE' "
@@ -73,12 +79,14 @@ async def analyze_contract_intelligence(
         "WHERE coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE' "
         "SET c.intelligence_status = 'processing', c.analysis_task_id = $task_id, "
         "c.analysis_task_state = 'PENDING', "
-        "c.analysis_requested_at = datetime(), c.model_used = $model",
+        "c.analysis_requested_at = datetime(), c.analysis_requested_model = $model, "
+        "c.analysis_requested_provider = $provider",
         {
             "contract_id": contract_id,
             "tenant_id": identity.tenant_id,
             "task_id": task.id,
             "model": model,
+            "provider": selected_spec.provider,
         },
     )
     logger.info(f"Enqueued analysis task {task.id} for contract {contract_id} (tenant {identity.tenant_id})")
@@ -326,6 +334,10 @@ async def batch_analyze_contracts(
     """
 
     try:
+        try:
+            validate_model(model, "analysis")
+        except ModelSelectionError as exc:
+            raise HTTPException(status_code=400, detail={"message": str(exc), "category": exc.category})
         logger.info(f"Starting batch analysis for {len(contract_ids)} contracts")
 
         # For prototype, limit batch size
@@ -409,12 +421,12 @@ async def get_available_models(llm_mgr: LLMManager = Depends(get_llm_manager)):
     """Get list of available LLM models for intelligence analysis"""
     
     try:
-        available_models = list(llm_mgr.agents.keys())
+        models = available_models("analysis")
         
         return {
-            "available_models": available_models,
+            "available_models": [model.stable_id for model in models],
             "default_model": "gemini-2.5-flash",
-            "recommended_models": ["gemini-2.5-flash", "gemini-1.5-pro"]
+            "recommended_models": [model.stable_id for model in models],
         }
         
     except Exception as e:

@@ -138,12 +138,16 @@ class DocumentUploadChunkingWiringTests(unittest.IsolatedAsyncioTestCase):
                      upload_contract_id="UPLOADED_REAL_20260808"):
         import io
         from fastapi import BackgroundTasks, UploadFile
-        from backend.api.document_upload import upload_pdf
+        with patch("langchain_neo4j.Neo4jGraph"), patch(
+            "backend.shared.utils.gemini_embedding_service.embedding"
+        ):
+            from backend.api.document_upload import upload_pdf
         from backend.governance.auth import TokenIdentity
 
         fake_identity = TokenIdentity(tenant_id=tenant_id, role="ADMIN", username="tester")
         fake_llm_mgr = MagicMock()
         fake_llm_mgr.agents = {"gemini-2.5-flash": MagicMock()}
+        fake_llm_mgr.raw_llms = {"gemini-2.5-flash": MagicMock()}
 
         fake_repo = MagicMock()
         def fake_query(cypher, params=None):
@@ -181,7 +185,10 @@ class DocumentUploadChunkingWiringTests(unittest.IsolatedAsyncioTestCase):
 
         with patch("backend.infrastructure.audit_logger.AuditLogger.log_event"), \
              patch("backend.infrastructure.contract_repository.Neo4jContractRepository", return_value=fake_repo), \
-             patch("backend.infrastructure.text_extractors.extract_text_async", new=AsyncMock(return_value="Contract text " * 50)), \
+             patch("backend.infrastructure.text_extractors.extract_pages_async", new=AsyncMock(return_value=MagicMock(
+                 full_text="Contract text " * 50, pages=[], extraction_method="test"
+             ))), \
+             patch("backend.application.services.pdf_provenance_service.PdfProvenanceService"), \
              patch("backend.agents.chunking_agent.ChunkingAgent.process_document", new=AsyncMock(return_value=chunking_result)) as fake_process, \
              patch("backend.infrastructure.chunking.storage_service.ChunkingStorageService.link_document_to_contract", new=fake_link), \
              patch("backend.application.services.document_processing_service.DocumentServiceFactory.create_service") as fake_factory:

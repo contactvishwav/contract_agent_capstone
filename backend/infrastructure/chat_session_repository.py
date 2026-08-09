@@ -149,6 +149,10 @@ class Neo4jChatSessionRepository:
         MATCH (s:ChatSession {session_id: $session_id, tenant_id: $tenant_id})-[r:HAS_MESSAGE]->(m:ChatMessage)
         WHERE s.archived_at IS NULL
         RETURN m.message_id AS message_id, m.role AS role, m.content AS content, m.model AS model,
+               m.requested_model AS requested_model, m.actual_model AS actual_model,
+               m.requested_provider AS requested_provider, m.actual_provider AS actual_provider,
+               m.fallback_occurred AS fallback_occurred, m.fallback_reason AS fallback_reason,
+               m.prompt_version AS prompt_version, m.execution_path AS execution_path,
                m.tool_name AS tool_name, m.tool_call_id AS tool_call_id, m.citations AS citations,
                m.terminal_status AS terminal_status,
                m.created_at AS created_at,
@@ -180,6 +184,14 @@ class Neo4jChatSessionRepository:
         tool_call_id: Optional[str] = None,
         citations: Optional[List[Dict[str, Any]]] = None,
         terminal_status: Optional[str] = None,
+        requested_model: Optional[str] = None,
+        actual_model: Optional[str] = None,
+        requested_provider: Optional[str] = None,
+        actual_provider: Optional[str] = None,
+        fallback_occurred: bool = False,
+        fallback_reason: Optional[str] = None,
+        prompt_version: Optional[str] = None,
+        execution_path: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """MATCH is tenant_id-scoped, same as every other write path in this
         codebase - a caller can never append to another tenant's session
@@ -201,6 +213,10 @@ class Neo4jChatSessionRepository:
         CREATE (m:ChatMessage {
             message_id: $message_id, tenant_id: $tenant_id, role: $role, content: $content,
             model: $model, tool_name: $tool_name, tool_call_id: $tool_call_id,
+            requested_model: $requested_model, actual_model: $actual_model,
+            requested_provider: $requested_provider, actual_provider: $actual_provider,
+            fallback_occurred: $fallback_occurred, fallback_reason: $fallback_reason,
+            prompt_version: $prompt_version, execution_path: $execution_path,
             citations: $citations, terminal_status: $terminal_status,
             created_at: datetime()
         })
@@ -213,5 +229,13 @@ class Neo4jChatSessionRepository:
             "model": model, "tool_name": tool_name, "tool_call_id": tool_call_id,
             "citations": field_encryptor.encrypt(json.dumps(citations, default=str)) if citations else None,
             "terminal_status": terminal_status,
+            "requested_model": requested_model,
+            "actual_model": actual_model,
+            "requested_provider": requested_provider,
+            "actual_provider": actual_provider,
+            "fallback_occurred": fallback_occurred,
+            "fallback_reason": fallback_reason,
+            "prompt_version": prompt_version,
+            "execution_path": execution_path,
         })
         return result[0] if result else None

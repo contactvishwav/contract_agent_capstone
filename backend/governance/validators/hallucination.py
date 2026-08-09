@@ -12,9 +12,9 @@ class HallucinationValidator(IGuardValidator):
     Uses an LLM-based "Critic" to compare the output against provided source context.
     """
     
-    def __init__(self):
+    def __init__(self, llm_mgr=None):
         super().__init__()
-        self._llm_mgr = None
+        self._llm_mgr = llm_mgr
 
     @property
     def llm_mgr(self):
@@ -111,7 +111,8 @@ class HallucinationValidator(IGuardValidator):
         logger.info("Performing hallucination check against source context...")
 
         try:
-            model = self.llm_mgr.get_raw_model_by_name("gemini-2.5-flash")
+            model_id = (context or {}).get("model", "gemini-2.5-flash")
+            model = self.llm_mgr.get_raw_model_by_name(model_id)
             return self._result_from_response(
                 model.invoke(self._prompt(input_text, source_text))
             )
@@ -129,7 +130,8 @@ class HallucinationValidator(IGuardValidator):
         source_text = context["source_text"]
         logger.info("Performing hallucination check against source context...")
         try:
-            model = self.llm_mgr.get_raw_model_by_name("gemini-2.5-flash")
+            model_id = (context or {}).get("model", "gemini-2.5-flash")
+            model = self.llm_mgr.get_raw_model_by_name(model_id)
             return self._result_from_response(
                 await model.ainvoke(self._prompt(input_text, source_text))
             )

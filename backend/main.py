@@ -15,7 +15,10 @@ from prometheus_client import CONTENT_TYPE_LATEST
 
 from langchain_core.messages import HumanMessage, ToolMessage, AIMessage, AIMessageChunk
 from backend.llm_manager import LLMManager
+from backend.model_registry import ModelSelectionError, model_spec, validate_model
+from backend.contract_chat_agent import CHAT_PROMPT_VERSION
 from backend.api.document_upload import router as document_router
+from backend.api.model_registry_api import router as model_registry_router
 from backend.api.contract_intelligence import router as intelligence_router
 from backend.api.routes.debug import create_debug_router
 from backend.shared.utils.route_utils import is_development, is_production, conditionally_include_router
@@ -201,6 +204,7 @@ app.add_middleware(
 
 # Include routers based on environment
 app.include_router(document_router)
+app.include_router(model_registry_router)
 app.include_router(intelligence_router)
 app.include_router(enhanced_search_router, prefix="/api")
 app.include_router(enhanced_upload_router)
@@ -488,8 +492,10 @@ def _safe_terminal_message(status: GuardStatus, violation_type: Optional[str]) -
     return "Response validation failed. Please retry."
 
 
-async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, tenant_id: str, user_role: str = "unknown", user_id: str = "authenticated_user", contract_id: Optional[str] = None, chat_session_id: Optional[str] = None):
+async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, tenant_id: str, user_role: str = "unknown", user_id: str = "authenticated_user", contract_id: Optional[str] = None, chat_session_id: Optional[str] = None, requested_provider: Optional[str] = None, actual_provider: Optional[str] = None):
     logger.info(f"Processing LLM request for model '{model}' for user_role '{user_role}'")
+    requested_provider = requested_provider or model_spec(model).provider
+    actual_provider = actual_provider or requested_provider
 
     # Initialize AuditLogger and AgentAuditService for Guard persistence
     from backend.infrastructure.agent_audit_service import AgentAuditService
@@ -504,6 +510,10 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
         "user_id": user_id,
         "tenant_id": tenant_id,
         "correlation_id": session_id,
+        # The API validated this stable ID before runner entry. Output Guard
+        # uses the same exact provider boundary as generation, never a hidden
+        # Gemini validator or cross-provider substitute.
+        "model": model,
     }
 
     # Persistent Contract Chat session (backend/infrastructure/
@@ -546,7 +556,10 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
                 tenant_id,
                 role="ai_message",
                 content=guard_result.message,
-                model=model,
+                requested_model=model,
+                requested_provider=requested_provider,
+                prompt_version=CHAT_PROMPT_VERSION,
+                execution_path="contract_chat_langgraph",
                 terminal_status=prompt_guard_status.value,
             )
         yield f"data: {json.dumps({'content': guard_result.message, 'type': 'error', 'status': prompt_guard_status.value})}\n\n"
@@ -695,7 +708,7 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
     if tool_contents:
         context_metadata["source_text"] = "\n---\n".join(tool_contents)
 
-    output_guard = OutputGuard(audit_logger=audit_logger)
+    output_guard = OutputGuard(audit_logger=audit_logger, model_manager=llm_mgr)
     post_check_result = await _validate_output_guard(
         output_guard,
         ai_full_content,
@@ -768,13 +781,17 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
         citation_kwargs = {"citations": citations} if citations else {}
         persisted = chat_session_repo.append_message(
             chat_session_id, tenant_id, role="ai_message", content=final_ai_content,
-            model=model, terminal_status=output_status.value, **citation_kwargs,
+            model=model, terminal_status=output_status.value,
+            requested_model=model, actual_model=model,
+            requested_provider=requested_provider, actual_provider=actual_provider,
+            fallback_occurred=False, prompt_version=CHAT_PROMPT_VERSION,
+            execution_path="contract_chat_langgraph", **citation_kwargs,
         )
         if not persisted:
             raise ChatPersistenceError("chat terminal persistence failed")
 
     if output_status == GuardStatus.PASSED:
-        yield f"data: {json.dumps({'content': final_ai_content, 'type': 'ai_message', 'status': output_status.value})}\n\n"
+        yield f"data: {json.dumps({'content': final_ai_content, 'type': 'ai_message', 'status': output_status.value, 'requested_model': model, 'actual_model': model, 'requested_provider': requested_provider, 'actual_provider': actual_provider, 'fallback_occurred': False, 'prompt_version': CHAT_PROMPT_VERSION, 'execution_path': 'contract_chat_langgraph'})}\n\n"
     else:
         yield f"data: {json.dumps({'content': final_ai_content, 'type': 'error', 'status': output_status.value})}\n\n"
 
@@ -792,6 +809,7 @@ def _persist_chat_terminal_state(
     model: str,
     message: str,
     terminal_status: str,
+    provider: Optional[str] = None,
 ) -> Optional[bool]:
     """Close an interrupted turn if no assistant terminal already won.
 
@@ -815,6 +833,13 @@ def _persist_chat_terminal_state(
             content=message,
             model=model,
             terminal_status=terminal_status,
+            requested_model=model,
+            actual_model=model,
+            requested_provider=provider,
+            actual_provider=provider,
+            fallback_occurred=False,
+            prompt_version=CHAT_PROMPT_VERSION,
+            execution_path="contract_chat_langgraph",
         )
         return True if persisted else None
     except Exception as exc:
@@ -863,6 +888,7 @@ async def resilient_runner(
             kwargs["model"],
             "Generation stopped",
             GuardStatus.CANCELLED.value,
+            kwargs.get("actual_provider"),
         )
         if cancellation_observer:
             cancellation_observer(cancellation_won)
@@ -886,6 +912,7 @@ async def resilient_runner(
             kwargs["model"],
             message,
             terminal_status,
+            kwargs.get("actual_provider"),
         )
         _audit_chat_terminal_outcome(kwargs, terminal_status)
         yield f"data: {json.dumps({'content': message, 'type': 'error', 'status': terminal_status})}\n\n"
@@ -1016,6 +1043,15 @@ async def run(
     llm_mgr: LLMManager = Depends(get_llm_manager),
     identity: TokenIdentity = Depends(requires_permission(Permission.ANALYZE)),
 ):
+    try:
+        selected_spec = validate_model(payload.model, "chat")
+    except ModelSelectionError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": str(exc), "category": exc.category},
+        )
+    if payload.model not in llm_mgr.agents:
+        raise HTTPException(status_code=503, detail="Selected model is temporarily unavailable")
     if payload.run_id and not payload.session_id:
         raise HTTPException(status_code=400, detail="Cancellable chat runs require a session")
     effective_contract_id = normalize_contract_scope(payload.contract_id)
@@ -1053,6 +1089,8 @@ async def run(
         "user_id": identity.username or "authenticated_user",
         "contract_id": effective_contract_id,
         "chat_session_id": payload.session_id,
+        "requested_provider": selected_spec.provider,
+        "actual_provider": selected_spec.provider,
     }
     if payload.run_id and payload.session_id:
         try:

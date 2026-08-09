@@ -83,7 +83,7 @@ class InvokeWithFallbackTests(unittest.TestCase):
             [
                 {"name": "gemini", "model": "gemini-2.5-flash", "factory": lambda t: self._gemini_llm, "breaker": self.gemini_breaker},
                 {"name": "openai", "model": "gpt-4o", "factory": lambda t: self._openai_llm, "breaker": self.openai_breaker},
-                {"name": "anthropic", "model": "claude-3-5-sonnet-latest", "factory": lambda t: self._anthropic_llm, "breaker": self.anthropic_breaker},
+                {"name": "anthropic", "model": "claude-sonnet-5", "factory": lambda t: self._anthropic_llm, "breaker": self.anthropic_breaker},
             ],
         )
         self.call_log = []
@@ -99,7 +99,7 @@ class InvokeWithFallbackTests(unittest.TestCase):
     def _set_providers(self, gemini=None, openai=None, anthropic=None):
         self._gemini_llm = FakeChatModel(model="gemini-2.5-flash", outcomes=gemini, call_log=self.call_log, log_name="gemini") if gemini is not None else None
         self._openai_llm = FakeChatModel(model="gpt-4o", outcomes=openai, call_log=self.call_log, log_name="openai") if openai is not None else None
-        self._anthropic_llm = FakeChatModel(model="claude-3-5-sonnet-latest", outcomes=anthropic, call_log=self.call_log, log_name="anthropic") if anthropic is not None else None
+        self._anthropic_llm = FakeChatModel(model="claude-sonnet-5", outcomes=anthropic, call_log=self.call_log, log_name="anthropic") if anthropic is not None else None
         # Re-patch since setUp captured None placeholders before providers existed.
         self._chain_patcher.stop()
         self._chain_patcher = patch(
@@ -107,7 +107,7 @@ class InvokeWithFallbackTests(unittest.TestCase):
             [
                 {"name": "gemini", "model": "gemini-2.5-flash", "factory": lambda t: self._gemini_llm, "breaker": self.gemini_breaker},
                 {"name": "openai", "model": "gpt-4o", "factory": lambda t: self._openai_llm, "breaker": self.openai_breaker},
-                {"name": "anthropic", "model": "claude-3-5-sonnet-latest", "factory": lambda t: self._anthropic_llm, "breaker": self.anthropic_breaker},
+                {"name": "anthropic", "model": "claude-sonnet-5", "factory": lambda t: self._anthropic_llm, "breaker": self.anthropic_breaker},
             ],
         )
         self._chain_patcher.start()
@@ -221,7 +221,7 @@ class RealCallSiteFallbackIntegrationTests(unittest.TestCase):
         chain = [
             {"name": "gemini", "model": "gemini-2.5-flash", "factory": lambda t: gemini_llm, "breaker": self.gemini_breaker},
             {"name": "openai", "model": "gpt-4o", "factory": lambda t: openai_llm, "breaker": self.openai_breaker},
-            {"name": "anthropic", "model": "claude-3-5-sonnet-latest", "factory": lambda t: None, "breaker": self.anthropic_breaker},
+            {"name": "anthropic", "model": "claude-sonnet-5", "factory": lambda t: None, "breaker": self.anthropic_breaker},
         ]
 
         with patch("backend.agents.llm_fallback_service._EXTRACTION_CHAIN", chain), \
@@ -299,7 +299,7 @@ class RealCallSiteFallbackIntegrationTests(unittest.TestCase):
         chain = [
             {"name": "gemini", "model": "gemini-2.5-flash", "factory": lambda t: gemini_llm, "breaker": self.gemini_breaker},
             {"name": "openai", "model": "gpt-4o", "factory": lambda t: None, "breaker": self.openai_breaker},
-            {"name": "anthropic", "model": "claude-3-5-sonnet-latest", "factory": lambda t: None, "breaker": self.anthropic_breaker},
+            {"name": "anthropic", "model": "claude-sonnet-5", "factory": lambda t: None, "breaker": self.anthropic_breaker},
         ]
 
         with patch("backend.agents.llm_fallback_service._EXTRACTION_CHAIN", chain), \

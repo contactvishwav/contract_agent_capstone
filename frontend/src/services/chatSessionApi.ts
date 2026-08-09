@@ -19,6 +19,14 @@ export interface ChatSessionMessage {
   role: 'user_message' | 'ai_message' | 'tool_call' | 'tool_message';
   content: string;
   model: string | null;
+  requested_model?: string | null;
+  actual_model?: string | null;
+  requested_provider?: string | null;
+  actual_provider?: string | null;
+  fallback_occurred?: boolean;
+  fallback_reason?: string | null;
+  prompt_version?: string | null;
+  execution_path?: string | null;
   tool_name: string | null;
   tool_call_id: string | null;
   citations: ChatCitation[];
@@ -45,6 +53,11 @@ export interface ChatCitation {
   tool_name: string | null;
   tool_call_id: string | null;
   validation_status: 'tenant_active';
+  highlight_text?: string | null;
+  page_start_offset?: number | null;
+  page_end_offset?: number | null;
+  source_available?: boolean;
+  provenance_status?: 'exact' | 'page_only' | 'source_excerpt_only' | 'legacy_excerpt' | 'unsupported_image_only';
 }
 
 export interface ChatSessionDetail extends ChatSessionSummary {

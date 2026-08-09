@@ -34,6 +34,13 @@ class ChatStreamTerminalStateTests(unittest.IsolatedAsyncioTestCase):
             content="Generation stopped",
             model="gemini-2.5-flash",
             terminal_status="cancelled",
+            requested_model="gemini-2.5-flash",
+            actual_model="gemini-2.5-flash",
+            requested_provider=None,
+            actual_provider=None,
+            fallback_occurred=False,
+            prompt_version="contract-chat-v1",
+            execution_path="contract_chat_langgraph",
         )
 
         repository.reset_mock()
@@ -72,6 +79,13 @@ class ChatStreamTerminalStateTests(unittest.IsolatedAsyncioTestCase):
             content="Response failed before completion. Please retry.",
             model="gemini-2.5-flash",
             terminal_status="generation_failed",
+            requested_model="gemini-2.5-flash",
+            actual_model="gemini-2.5-flash",
+            requested_provider=None,
+            actual_provider=None,
+            fallback_occurred=False,
+            prompt_version="contract-chat-v1",
+            execution_path="contract_chat_langgraph",
         )
         self.assertIn('"type": "error"', events[0])
         self.assertIn('"status": "generation_failed"', events[0])

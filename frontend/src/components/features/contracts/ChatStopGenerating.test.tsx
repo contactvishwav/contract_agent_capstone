@@ -39,6 +39,17 @@ vi.mock('@microsoft/fetch-event-source', () => ({
   fetchEventSource: mocks.fetchEventSource,
 }));
 
+vi.mock('../../../services/modelRegistryApi', () => ({
+  getWorkflowModels: () => Promise.resolve({
+    workflow: 'chat',
+    default_model: 'gemini-2.5-flash',
+    models: [
+      { id: 'gemini-2.5-flash', provider: 'google', display_label: 'Google · Gemini 2.5 Flash' },
+      { id: 'gpt-4o', provider: 'openai', display_label: 'OpenAI · GPT-4o' },
+    ],
+  }),
+}));
+
 function renderChat() {
   return render(
     <ChatProvider>
@@ -48,7 +59,8 @@ function renderChat() {
   );
 }
 
-function submit(prompt = 'Compare the payment terms') {
+async function submit(prompt = 'Compare the payment terms') {
+  await waitFor(() => expect(screen.getByRole('button', { name: /Send your prompt now/i })).toBeEnabled());
   fireEvent.change(screen.getByRole('textbox'), { target: { value: prompt } });
   fireEvent.click(screen.getByRole('button', { name: /Send your prompt now/i }));
 }
@@ -73,7 +85,7 @@ describe('Contract Chat Stop generating', () => {
       });
     });
     renderChat();
-    submit();
+    await submit();
 
     const stop = await screen.findByRole('button', { name: 'Stop generating' });
     expect(screen.queryByRole('button', { name: /Send your prompt now/i })).not.toBeInTheDocument();
@@ -116,13 +128,13 @@ describe('Contract Chat Stop generating', () => {
         options.onclose?.();
       });
     renderChat();
-    submit('First request');
+    await submit('First request');
     fireEvent.click(await screen.findByRole('button', { name: 'Stop generating' }));
     await waitFor(() => expect(screen.getByRole('button', { name: /Send your prompt now/i })).toBeEnabled());
 
     fireEvent.click(screen.getByRole('combobox', { name: 'Model' }));
-    fireEvent.click(await screen.findByRole('option', { name: 'gpt-4o' }));
-    submit('Second request');
+    fireEvent.click(await screen.findByRole('option', { name: 'OpenAI · GPT-4o' }));
+    await submit('Second request');
     expect(await screen.findByText('Fresh request completed')).toBeInTheDocument();
     expect(signals).toHaveLength(2);
     expect(signals[0]).not.toBe(signals[1]);
@@ -145,7 +157,7 @@ describe('Contract Chat Stop generating', () => {
       });
     });
     renderChat();
-    submit();
+    await submit();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Stop generating' }));
     const stopping = screen.getByRole('button', { name: 'Stopping…' });
@@ -168,7 +180,7 @@ describe('Contract Chat Stop generating', () => {
       options.onmessage?.({ data: JSON.stringify({ type: 'end', status: 'passed', content: '' }) });
     });
     renderChat();
-    submit();
+    await submit();
 
     expect(await screen.findByText('Durably completed answer')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Stop generating' })).not.toBeInTheDocument();
@@ -187,7 +199,7 @@ describe('Contract Chat Stop generating', () => {
       });
     });
     const view = renderChat();
-    submit();
+    await submit();
     await screen.findByRole('button', { name: 'Stop generating' });
     view.unmount();
     await waitFor(() => expect(signal?.aborted).toBe(true));

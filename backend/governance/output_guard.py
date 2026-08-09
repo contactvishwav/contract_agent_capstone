@@ -8,14 +8,18 @@ class OutputGuard(BaseGuard):
     Orchestrates multiple validators to ensure AI generated output safety.
     """
     evaluate_all_validators = True
+    def __init__(self, validators=None, audit_logger=None, model_manager=None):
+        self.model_manager = model_manager
+        super().__init__(validators=validators, audit_logger=audit_logger)
+
     def _default_chain(self) -> IGuardValidator:
         """Provide a default sensible security chain for outputs"""
         from .validators import LlamaGuardValidator, DomainComplianceValidator, HallucinationValidator
         
         # Order matters: check for high-level safety first, then domain specific rules, then hallucinations
-        llama_guard = LlamaGuardValidator()
+        llama_guard = LlamaGuardValidator(self.model_manager)
         domain_compliance = DomainComplianceValidator()
-        hallucination_check = HallucinationValidator()
+        hallucination_check = HallucinationValidator(self.model_manager)
         
         llama_guard.set_next(domain_compliance)
         domain_compliance.set_next(hallucination_check)

@@ -23,6 +23,7 @@ from backend.infrastructure.contract_repository import Neo4jContractRepository
 from backend.infrastructure.task_ownership import TaskOwnershipUnavailable, task_ownership_store
 from backend.shared.reliability.circuit_breaker import GEMINI_CIRCUIT_BREAKER, NEO4J_CIRCUIT_BREAKER
 from backend.shared.utils.logger import get_logger
+from backend.model_registry import ModelSelectionError, validate_model
 
 logger = get_logger(__name__)
 
@@ -134,6 +135,20 @@ async def execute_workflow(
     (POST /api/documents/upload).
     """
     from backend.tasks import analyze_contract_task
+
+    try:
+        validate_model(request.model, "analysis")
+    except ModelSelectionError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": str(exc), "category": exc.category},
+        )
+
+    contract = await _repository.get_contract_by_id(
+        request.contract_id, identity.tenant_id
+    )
+    if not contract:
+        raise HTTPException(status_code=404, detail="Contract not found")
 
     try:
         task = task_ownership_store.enqueue(

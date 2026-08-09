@@ -21,6 +21,8 @@ class ChatRunContractScopeTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.identity = TokenIdentity(tenant_id="tenant_a", role="ADMIN")
         self.llm_mgr = MagicMock()
+        self.llm_mgr.agents = {"gemini-2.5-flash": MagicMock()}
+        self.llm_mgr.raw_llms = {"gemini-2.5-flash": MagicMock()}
 
     async def _run(self, session_contract, request_contract):
         session_repo = MagicMock()

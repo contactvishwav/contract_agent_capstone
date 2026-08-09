@@ -1,13 +1,15 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { DocumentUpload } from '../components/features/contracts/DocumentUpload';
 import { ContractIntelligence } from '../components/features/intelligence/ContractIntelligence';
 import { AgentWorkflowTracker } from '../components/features/agents/AgentWorkflowTracker';
+import type { WorkflowStatus } from '../components/features/agents/AgentWorkflowTracker';
 import { Card } from '../components/shared/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/shared/ui/select';
 import { useContractHistory } from '../contexts/ContractHistoryContext';
 import { useAuth } from '../contexts/AuthContext';
 import { archiveContract } from '../services/contractApi';
 import { Archive as ArchiveIcon } from 'lucide-react';
+import { getWorkflowModels, ModelOption } from '../services/modelRegistryApi';
 
 interface UploadResult {
   filename: string;
@@ -19,9 +21,11 @@ interface UploadResult {
 }
 
 export const IntelligencePage: React.FC = () => {
-  const [selectedModel, setSelectedModel] = useState('gemini-2.5-flash');
+  const [selectedModel, setSelectedModel] = useState('');
+  const [models, setModels] = useState<ModelOption[]>([]);
+  const [modelError, setModelError] = useState<string | null>(null);
   const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
-  const [workflowStatus, setWorkflowStatus] = useState<any>(null);
+  const [workflowStatus, setWorkflowStatus] = useState<WorkflowStatus | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [archiveTarget, setArchiveTarget] = useState<{ contract_id: string; filename: string } | null>(null);
   const [archiveError, setArchiveError] = useState<string | null>(null);
@@ -37,6 +41,19 @@ export const IntelligencePage: React.FC = () => {
     setSelectedContract,
   } = useContractHistory();
   const selectedContract = selectedContractId ? getContract(selectedContractId) : undefined;
+
+  useEffect(() => {
+    let active = true;
+    getWorkflowModels('analysis').then((registry) => {
+      if (!active) return;
+      setModels(registry.models);
+      setSelectedModel(registry.default_model || registry.models[0]?.id || '');
+      setModelError(registry.models.length ? null : 'No compatible analysis model is configured.');
+    }).catch(() => {
+      if (active) setModelError('Available analysis models could not be loaded.');
+    });
+    return () => { active = false; };
+  }, []);
 
   const handleUploadComplete = (result: UploadResult) => {
     setUploadResult(result);
@@ -74,18 +91,18 @@ export const IntelligencePage: React.FC = () => {
     setIsUploading(true);
   };
 
-  const handleWorkflowUpdate = (status: any) => {
+  const handleWorkflowUpdate = useCallback((status: WorkflowStatus) => {
     setWorkflowStatus(status);
-  };
+  }, []);
 
-  const handleAnalysisComplete = (contractId: string, riskScore?: number, riskLevel?: string, results?: any) => {
+  const handleAnalysisComplete = useCallback((contractId: string, riskScore?: number, riskLevel?: string, results?: unknown) => {
     updateContract(contractId, {
       analysis_completed: true,
       risk_score: riskScore,
       risk_level: riskLevel,
       analysis_results: results
     });
-  };
+  }, [updateContract]);
 
   const handleArchive = async () => {
     if (!archiveTarget) return;
@@ -119,28 +136,18 @@ export const IntelligencePage: React.FC = () => {
         <div className="bg-white rounded-lg p-4 shadow-sm border border-slate-200">
           <div className="flex items-center gap-3">
             <label className="text-sm font-semibold text-slate-700">AI Model:</label>
-            <Select value={selectedModel} onValueChange={setSelectedModel}>
+            <Select value={selectedModel} onValueChange={setSelectedModel} disabled={!models.length}>
               <SelectTrigger className="w-56 border-slate-300">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {/* Real, confirmed bug found live: this said "Gemini 2.0
-                Flash" while value="gemini-2.5-flash" - the label never
-                matched what was actually selected. gemini-1.5-pro (the
-                option below this comment previously) is now confirmed
-                dead (404 NOT_FOUND from the real API, not just
-                deprecated) - removed rather than relabeled, since there
-                is no live model to correctly point it at. Note: this
-                selector's value doesn't currently reach the real analysis
-                LLM choice at all (a separate, larger, already-flagged bug
-                in the upload/analyze wiring) - fixing the label/removing
-                the dead option here doesn't change that. */}
-                <SelectItem value="gemini-2.5-flash">Gemini 2.5 Flash</SelectItem>
-                <SelectItem value="gpt-4o">GPT-4o</SelectItem>
-                <SelectItem value="sonnet-3.5">Claude Sonnet 3.5</SelectItem>
+                {models.map((model) => (
+                  <SelectItem key={model.id} value={model.id}>{model.display_label}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
+          {modelError && <p className="mt-2 text-sm text-red-700" role="alert">{modelError}</p>}
         </div>
       </div>
 
@@ -223,7 +230,7 @@ export const IntelligencePage: React.FC = () => {
             />
             
             {/* PDF Processing Workflow */}
-            {(workflowStatus?.agent_executions?.length > 0 || isUploading || uploadResult) && (
+            {((workflowStatus?.agent_executions.length ?? 0) > 0 || isUploading || uploadResult) && (
               <div className="mt-4">
                 <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
                   <h4 className="text-sm font-semibold text-blue-800 mb-2">🤖 PDF Processing Agent</h4>
@@ -249,12 +256,12 @@ export const IntelligencePage: React.FC = () => {
             {selectedContract ? (
               <>
                 {/* Intelligence Analysis Workflow */}
-                {workflowStatus && workflowStatus.agent_executions?.length > 0 && (
+                {workflowStatus && workflowStatus.agent_executions.length > 0 && (
                   <div className="mb-4">
                     <AgentWorkflowTracker
                       workflowStatus={{
                         ...workflowStatus,
-                        agent_executions: workflowStatus.agent_executions.filter((e: any) => e.agent_name !== 'PDF Processing Agent')
+                        agent_executions: workflowStatus.agent_executions.filter((execution) => execution.agent_name !== 'PDF Processing Agent')
                       }}
                     />
                   </div>

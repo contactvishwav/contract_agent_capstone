@@ -56,28 +56,8 @@ class DocumentProcessingService:
             raise
     
     def _get_llm_for_model(self, model_name: str):
-        """Get LLM instance - DRY principle"""
-        if model_name == "gpt-4o":
-            from langchain_openai import ChatOpenAI
-            return ChatOpenAI(model="gpt-4o", temperature=0)
-        elif model_name in ["gemini-1.5-pro", "gemini-2.5-flash-exp", "gemini-2.5-flash", "gemini-2.5-flash"]:
-            from langchain_google_genai import ChatGoogleGenerativeAI
-            model_mapping = {
-                "gemini-2.5-flash-exp": "gemini-2.5-flash",
-                "gemini-2.5-flash": "gemini-2.5-flash",
-                "gemini-2.5-flash": "gemini-2.5-flash",
-                "gemini-1.5-pro": "gemini-1.5-pro"
-            }
-            actual_model = model_mapping.get(model_name, "gemini-2.5-flash")
-            # request_timeout/max_retries: see llm_extraction_service.py's
-            # get_default_llm - without these this client has no timeout at
-            # all and retries a 429 up to 6 times with growing backoff.
-            return ChatGoogleGenerativeAI(model=actual_model, temperature=0, request_timeout=120, max_retries=1)
-        elif model_name == "sonnet-3.5":
-            from langchain_anthropic import ChatAnthropic
-            return ChatAnthropic(model="claude-3-5-sonnet-latest", temperature=0)
-        else:
-            raise ValueError(f"Unknown model: {model_name}")
+        """Resolve the exact server-registry client; never normalize/fallback."""
+        return self.agent_manager.get_raw_model_by_name(model_name)
     
     async def _process_with_agent(self, pdf_agent, request: DocumentProcessingRequest) -> dict:
         """Process document using PDF agent with structured output"""

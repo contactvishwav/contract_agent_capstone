@@ -82,6 +82,7 @@ class UploadRouteModelFieldBindingTests(unittest.TestCase):
 
         fake_llm_mgr = MagicMock()
         fake_llm_mgr.agents = {"gemini-2.5-flash": MagicMock(), "gpt-4o": MagicMock()}
+        fake_llm_mgr.raw_llms = {"gemini-2.5-flash": MagicMock(), "gpt-4o": MagicMock()}
         app.state.llm_manager = fake_llm_mgr
 
         fake_repo = MagicMock()
@@ -98,9 +99,11 @@ class UploadRouteModelFieldBindingTests(unittest.TestCase):
                 "final_result": "Contract stored successfully",
             }
 
-        with patch("backend.infrastructure.audit_logger.AuditLogger.log_event"), \
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-only-placeholder"}), \
+             patch("backend.infrastructure.audit_logger.AuditLogger.log_event"), \
              patch("backend.infrastructure.contract_repository.Neo4jContractRepository", return_value=fake_repo), \
-             patch("backend.infrastructure.text_extractors.extract_text_async", new=AsyncMock(return_value="Contract text " * 50)), \
+             patch("backend.infrastructure.text_extractors.extract_pages_async", new=AsyncMock(return_value=SimpleNamespace(full_text="Contract text " * 50, pages=[]))), \
+             patch("backend.application.services.pdf_provenance_service.PdfProvenanceService"), \
              patch("backend.agents.chunking_agent.ChunkingAgent.process_document",
                    new=AsyncMock(return_value={"success": False})), \
              patch("backend.application.services.document_processing_service.DocumentServiceFactory.create_service") as fake_factory:
@@ -183,10 +186,10 @@ class StepExecutorModelSelectionTests(unittest.TestCase):
         route through the fallback chain (Gemini first) - two different
         selections would never actually differ in what got recorded."""
         model_a = self._extract_with("gpt-4o")
-        model_b = self._extract_with("claude-3-5-sonnet-latest")
+        model_b = self._extract_with("claude-sonnet-5")
 
         self.assertEqual(model_a, "gpt-4o")
-        self.assertEqual(model_b, "claude-3-5-sonnet-latest")
+        self.assertEqual(model_b, "claude-sonnet-5")
         self.assertNotEqual(model_a, model_b)
 
 
@@ -217,7 +220,7 @@ class OrchestratorThreadsLlmToBothPathsTests(unittest.TestCase):
              patch("backend.shared.utils.gemini_embedding_service.embedding"):
             from backend.agents.contract_intelligence_agents import IntelligenceOrchestrator
 
-        fake_llm = _fake_llm("claude-3-5-sonnet-latest", None)
+        fake_llm = _fake_llm("claude-sonnet-5", None)
 
         with patch("backend.agents.planning.planning_agent.PlanningAgentFactory.create_planning_agent"), \
              patch("backend.agents.contract_intelligence_agents.PlanExecutionEngine") as MockEngine:
@@ -270,10 +273,10 @@ class GetLlmForModelReturnsRealLlmTests(unittest.TestCase):
         resolved = service._get_llm_for_model("gemini-2.5-flash")
         self.assertIs(resolved, fake_manager.raw_llms["gemini-2.5-flash"])
 
-    def test_unknown_model_falls_back_to_a_real_llm_not_a_crash(self):
+    def test_unknown_model_fails_instead_of_silently_substituting(self):
         service, fake_manager = self._service_with_fake_manager()
-        resolved = service._get_llm_for_model("not-a-real-model")
-        self.assertIn(resolved, fake_manager.raw_llms.values())
+        with self.assertRaisesRegex(ValueError, "Selected analysis model"):
+            service._get_llm_for_model("not-a-real-model")
 
 
 if __name__ == "__main__":

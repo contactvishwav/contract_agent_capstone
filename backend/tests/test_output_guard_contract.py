@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from langgraph.errors import InvalidUpdateError
@@ -11,7 +11,10 @@ from backend.governance.base import GuardResult, GuardStatus, IGuardValidator
 from backend.governance.output_guard import OutputGuard
 from backend.governance.validators.hallucination import HallucinationValidator
 from backend.governance.validators.safety import LlamaGuardValidator
-from backend.main import _validate_output_guard
+with patch("langchain_neo4j.Neo4jGraph"), patch(
+    "backend.shared.utils.gemini_embedding_service.embedding"
+):
+    from backend.main import _validate_output_guard
 
 
 class _StaticValidator(IGuardValidator):
@@ -85,6 +88,27 @@ async def test_llama_guard_async_path_invokes_raw_provider_not_graph():
     assert result.status == GuardStatus.PASSED
     raw_model.ainvoke.assert_awaited_once()
     manager.get_model_by_name.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_output_guard_validators_use_the_selected_provider_model():
+    manager, raw_model = _manager_with_raw_response("unused")
+    raw_model.ainvoke = AsyncMock(side_effect=[
+        SimpleNamespace(content='{"is_safe": true, "violation_category": null, "reason": "ok"}'),
+        SimpleNamespace(content='{"is_hallucination": false, "reason": "supported", "confidence": 1.0}'),
+    ])
+    guard = OutputGuard(model_manager=manager)
+
+    result = await guard.avalidate(
+        "A grounded answer.",
+        {"model": "gpt-4o", "source_text": "A grounded answer."},
+    )
+
+    assert result.status == GuardStatus.PASSED
+    assert manager.get_raw_model_by_name.call_args_list == [
+        call("gpt-4o"),
+        call("gpt-4o"),
+    ]
 
 
 def test_llama_guard_provider_failure_fails_closed_without_sensitive_log(caplog):

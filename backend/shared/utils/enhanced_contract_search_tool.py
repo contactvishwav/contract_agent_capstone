@@ -522,7 +522,8 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params, contr
                    source_contract.filename AS filename, c.id AS chunk_id,
                    c.chunk_type AS chunk_type, c.content AS content,
                    c.chunk_index AS chunk_index, c.quality_score AS quality_score,
-                   c.start_offset AS start_offset, c.end_offset AS end_offset,
+                   c.start_position AS start_offset, c.end_position AS end_offset,
+                   c.page_number AS page_number,
                    chunk_score AS similarity_score
             ORDER BY chunk_score DESC
             """
@@ -545,6 +546,7 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params, contr
                         "chunk_index": r["chunk_index"],
                         "start_offset": r.get("start_offset"),
                         "end_offset": r.get("end_offset"),
+                        "page_number": r.get("page_number"),
                         "quality_score": r["quality_score"],
                         "similarity_score": r["similarity_score"],
                         "search_type": "semantic",
@@ -577,7 +579,8 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params, contr
            source_contract.filename AS filename, c.id AS chunk_id,
            c.chunk_type AS chunk_type, c.content AS content,
            c.chunk_index AS chunk_index, c.quality_score AS quality_score,
-           c.start_offset AS start_offset, c.end_offset AS end_offset
+           c.start_position AS start_offset, c.end_position AS end_offset,
+           c.page_number AS page_number
     ORDER BY c.chunk_index DESC
     LIMIT $candidate_limit
     """
@@ -602,6 +605,7 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params, contr
             "chunk_index": r["chunk_index"],
             "start_offset": r.get("start_offset"),
             "end_offset": r.get("end_offset"),
+            "page_number": r.get("page_number"),
             "quality_score": r["quality_score"],
             "search_type": "text_new" if search_text else "recent",
         })

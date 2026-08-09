@@ -12,12 +12,10 @@ uploader's tenant then found nothing, since the contract was actually
 filed under a different tenant_id than the one it was uploaded under.
 
 This is the exact same class of bug commit 7b7ac9a fixed for the regular
-upload path (document_processing_service.py's initial_state already sets
-"tenant_id": request.tenant_id or "default-tenant") - that fix was never
-mirrored into the enhanced upload path. This test proves the mirror fix:
+upload path. This test proves the mirror fix:
 the tenant_id actually reaching the PDF processing agent's initial state
 must match the request's real tenant_id, not silently collapse to the
-default for every tenant.
+default for every tenant. Missing tenant context must fail closed.
 
 Follows the EnhancedDocumentProcessingService mocking pattern established
 in test_neo4j_connection_reuse.py (EmbeddingOrchestrator/EmbeddingValidator/
@@ -97,7 +95,7 @@ class EnhancedUploadTenantIdThreadingTests(unittest.TestCase):
 
         self.assertEqual(captured["initial_state"].get("tenant_id"), "tenant_globex_inc")
 
-    def test_missing_tenant_id_falls_back_to_default_tenant(self):
+    def test_missing_tenant_id_fails_closed(self):
         service, captured = _make_service_with_captured_agent()
         request = DocumentProcessingRequest(
             file_path="/fake/upload/contract.pdf",
@@ -107,9 +105,36 @@ class EnhancedUploadTenantIdThreadingTests(unittest.TestCase):
         )
 
         with patch("backend.application.services.enhanced_document_processing_service.os.path.exists", return_value=True):
-            asyncio.run(service.process_pdf_with_embeddings(request))
+            with self.assertRaisesRegex(ValueError, "Authenticated tenant context"):
+                asyncio.run(service.process_pdf_with_embeddings(request))
 
-        self.assertEqual(captured["initial_state"].get("tenant_id"), "default-tenant")
+        self.assertNotIn("initial_state", captured)
+
+    def test_enhanced_embedding_writes_are_tenant_scoped(self):
+        service, _ = _make_service_with_captured_agent()
+        service.graph = MagicMock()
+        processing_result = MagicMock()
+        processing_result.document_embeddings = [MagicMock(
+            metadata={"level": "document"}, embedding=[0.1], content="summary"
+        )]
+        processing_result.clause_embeddings = [MagicMock(
+            metadata={"start_position": 3, "end_position": 12, "clause_type": "payment"},
+            embedding=[0.2],
+            content="payment terms",
+        )]
+        processing_result.relationship_embeddings = [MagicMock(
+            metadata={"relationship_type": "PARTY_TO", "party_name": "Acme"},
+            embedding=[0.3],
+            content="Acme is a party",
+        )]
+
+        service._store_enhanced_embeddings("contract-1", "tenant-acme", processing_result)
+
+        self.assertEqual(service.graph.query.call_count, 3)
+        for call in service.graph.query.call_args_list:
+            cypher, params = call.args
+            self.assertIn("tenant_id: $tenant_id", cypher)
+            self.assertEqual(params["tenant_id"], "tenant-acme")
 
 
 if __name__ == "__main__":

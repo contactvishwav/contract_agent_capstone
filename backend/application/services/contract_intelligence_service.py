@@ -4,6 +4,7 @@ from backend.infrastructure.contract_repository import Neo4jContractRepository
 from backend.infrastructure.encryption import field_encryptor
 from backend.application.services.intelligence_result_serializer import intelligence_to_response_dict
 from backend.llm_manager import LLMManager
+from backend.model_registry import model_spec
 import json
 import logging
 import time
@@ -12,6 +13,7 @@ from typing import Dict, Any, Optional
 
 from backend.shared.utils.logger import get_logger
 logger = get_logger(__name__)
+ANALYSIS_CONFIG_VERSION = "analysis-plan-v1"
 
 class ContractIntelligenceService:
     """Service for contract intelligence analysis using multi-agent system"""
@@ -46,6 +48,15 @@ class ContractIntelligenceService:
             # Convert to domain entities
             intelligence = self._convert_to_domain_entities(analysis_result)
             intelligence.processing_time = time.time() - start_time
+            manager = getattr(self, "llm_manager", None)
+            spec = manager.get_model_spec(model) if manager else model_spec(model)
+            intelligence.requested_model = model
+            intelligence.actual_model = model
+            intelligence.requested_provider = spec.provider
+            intelligence.actual_provider = spec.provider
+            intelligence.fallback_occurred = False
+            intelligence.fallback_reason = None
+            intelligence.configuration_version = ANALYSIS_CONFIG_VERSION
             
             logger.info(f"Contract intelligence analysis completed in {intelligence.processing_time:.2f}s")
             return intelligence
@@ -54,20 +65,10 @@ class ContractIntelligenceService:
             logger.error(f"Contract intelligence analysis failed: {e}")
             import traceback
             logger.error(f"Full traceback: {traceback.format_exc()}")
-            # Return empty result on failure
-            return ContractIntelligence(
-                clauses=[],
-                violations=[],
-                risk_assessment=RiskAssessment(
-                    overall_risk_score=0.0,
-                    risk_level="UNKNOWN",
-                    critical_issues=[],
-                    recommendations=["Analysis failed - manual review required"]
-                ),
-                redlines=[],
-                processing_time=time.time() - start_time,
-                processing_complete=False
-            )
+            # A plausible empty legal-analysis object is not a truthful
+            # provider failure. Let Celery/API status report FAILURE and never
+            # persist requested_model as though it were an actual invocation.
+            raise RuntimeError("Contract intelligence provider execution failed") from e
     
     async def analyze_contract_by_id(self, contract_id: str, tenant_id: str = "default-tenant", model: str = "gemini-2.5-flash", use_planning: bool = True) -> Optional[ContractIntelligence]:
         """Analyze contract intelligence for an existing contract by ID"""
@@ -105,7 +106,7 @@ class ContractIntelligenceService:
             
         except Exception as e:
             logger.error(f"Failed to analyze contract {contract_id}: {e}")
-            return None
+            raise
     
     def _get_llm_for_model(self, model: str):
         """Get a real, structured-output-capable LLM instance for the
@@ -127,14 +128,9 @@ class ContractIntelligenceService:
         """
         try:
             return self.llm_manager.raw_llms[model]
-        except KeyError:
-            logger.warning(f"Model {model} not found, using default")
-            # Use first available model as fallback
-            available_models = list(self.llm_manager.raw_llms.keys())
-            if available_models:
-                return self.llm_manager.raw_llms[available_models[0]]
-            else:
-                raise ValueError("No LLM models available")
+        except KeyError as exc:
+            # Legal analysis must never silently substitute another provider.
+            raise ValueError(f"Selected analysis model {model} is unavailable") from exc
     
     def _convert_to_domain_entities(self, analysis_result: Dict[str, Any]) -> ContractIntelligence:
         """Convert analysis results to domain entities"""
@@ -226,6 +222,8 @@ class ContractIntelligenceService:
         
         try:
             # Update contract with intelligence data including CUAD fields
+            manager = getattr(self, "llm_manager", None)
+            spec = manager.get_model_spec(model) if manager else model_spec(model)
             intelligence_data = {
                 "risk_score": intelligence.risk_assessment.overall_risk_score,
                 "risk_level": intelligence.risk_assessment.risk_level,
@@ -253,6 +251,13 @@ class ContractIntelligenceService:
                 "planned_execution": intelligence.planned_execution,
                 "analysis_method": intelligence.analysis_method,
                 "model_used": model,
+                "requested_model": model,
+                "actual_model": model,
+                "requested_provider": spec.provider,
+                "actual_provider": spec.provider,
+                "fallback_occurred": False,
+                "fallback_reason": None,
+                "configuration_version": ANALYSIS_CONFIG_VERSION,
             }
 
             payload = intelligence_to_response_dict(contract_id, model, intelligence)
@@ -270,6 +275,13 @@ class ContractIntelligenceService:
                 tenant_id: $tenant_id,
                 status: $intelligence_status,
                 model_used: $model_used,
+                requested_model: $requested_model,
+                actual_model: $actual_model,
+                requested_provider: $requested_provider,
+                actual_provider: $actual_provider,
+                fallback_occurred: $fallback_occurred,
+                fallback_reason: $fallback_reason,
+                configuration_version: $configuration_version,
                 execution_path: $execution_path,
                 planned_execution: $planned_execution,
                 analysis_method: $analysis_method,
@@ -296,6 +308,12 @@ class ContractIntelligenceService:
                 c.analysis_planned_execution = $planned_execution,
                 c.analysis_method = $analysis_method,
                 c.model_used = $model_used,
+                c.analysis_requested_model = $requested_model,
+                c.analysis_actual_model = $actual_model,
+                c.analysis_requested_provider = $requested_provider,
+                c.analysis_actual_provider = $actual_provider,
+                c.analysis_fallback_occurred = $fallback_occurred,
+                c.analysis_configuration_version = $configuration_version,
                 c.latest_analysis_id = $analysis_id,
                 c.analysis_task_state = 'SUCCESS',
                 c.intelligence_updated = datetime()
