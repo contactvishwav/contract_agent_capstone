@@ -75,3 +75,37 @@ The API additions are backward-compatible and attribution fields are nullable fo
 legacy records. Rollback must not relabel history or restore silent fallback.
 Production release requires configured-provider smoke checks, cost/quota review,
 and e2-micro build/runtime validation. This ADR does not authorize deployment.
+
+## Addendum (found live, independent audit, 2026-08-09): the real gemini-2.5-pro finding
+
+The "credential presence does not prove entitlement" risk named in Consequences
+above was confirmed with a precise, non-speculative cause, not the vaguer
+"entitlement gap" language first used to describe it. Directly querying Google's
+real `ListModels` endpoint with this project's own working `GOOGLE_API_KEY` (the
+same key `gemini-2.5-flash` uses successfully) shows `models/gemini-2.5-pro` in
+the returned catalog - so this is not a wrong or outdated model-ID string in the
+registry. Calling `generateContent`/`streamGenerateContent` on that exact model
+with that same key returns a real Google-issued HTTP 404:
+
+> "This model models/gemini-2.5-pro is no longer available to new users. Please
+> update your code to use a newer model for the latest features and
+> improvements."
+
+That is: Google lists the model in its public catalog while actively rejecting
+new-project/new-key access to it - a real, specific, and apparently undocumented
+(by Google) provider policy, not an account misconfiguration on our side and not
+a naming/deprecation mistake in `model_registry.py`.
+
+**Decision:** `gemini-2.5-pro`'s `ModelSpec` is marked `deprecated=True` in
+`backend/model_registry.py`, which the registry already filters out of
+`available_models()`/`GET /api/models` and rejects at `validate_model()` with a
+clean, immediate `deprecated_model` error - reusing existing, already-tested
+mechanics rather than adding a new exclusion path. Chosen over keeping it
+selectable-and-explicitly-failing (this ADR's own general "explicit failure over
+silent substitution" principle would otherwise argue for the latter) because the
+failure here is not transient the way a quota/timeout/auth failure is: it is
+deterministic and permanent for this project's credentials, so a user selecting
+it always fails, and the live-observed failure message ("Response failed before
+completion. Please retry.") is actively misleading for a failure that retrying
+can never fix. If Google's policy for this project/key ever changes, this is a
+one-line revert, re-verified live before re-enabling - not a design reversal.

@@ -44,8 +44,30 @@ def test_available_choices_are_workflow_compatible_and_configuration_derived():
     ):
         chat_ids = [spec.stable_id for spec in available_models("chat")]
         analysis_ids = [spec.stable_id for spec in available_models("analysis")]
-    assert chat_ids == ["gemini-2.5-flash", "gemini-2.5-pro", "gpt-4o"]
-    assert analysis_ids == ["gemini-2.5-flash", "gemini-2.5-pro", "gpt-4o"]
+    # gemini-2.5-pro is excluded here even though GOOGLE_API_KEY is
+    # configured - see test_gemini_2_5_pro_is_deprecated_and_excluded below
+    # and ADR-006's addendum: confirmed live, Google rejects this project's
+    # real key with a 404 ("no longer available to new users") despite
+    # listing the model, so it must never be shown as selectable.
+    assert chat_ids == ["gemini-2.5-flash", "gpt-4o"]
+    assert analysis_ids == ["gemini-2.5-flash", "gpt-4o"]
+
+
+def test_gemini_2_5_pro_is_deprecated_and_excluded():
+    """Independent-audit finding #3 regression: Google's real API 404s this
+    exact, correctly-named, catalog-listed model for this project's key
+    ("no longer available to new users") - it must never be offered as a
+    selectable choice, and selecting it directly must fail immediately and
+    cleanly rather than reaching the provider and failing there."""
+    with patch.dict(
+        "os.environ", {"GOOGLE_API_KEY": "configured"}, clear=True,
+    ):
+        assert "gemini-2.5-pro" not in [spec.stable_id for spec in available_models("chat")]
+        assert "gemini-2.5-pro" not in [spec.stable_id for spec in available_models("analysis")]
+
+        with pytest.raises(ModelSelectionError) as error:
+            validate_model("gemini-2.5-pro", "chat")
+    assert error.value.category == "deprecated_model"
 
 
 def test_deprecated_model_fails_with_distinct_category_even_if_configured():

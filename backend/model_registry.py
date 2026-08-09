@@ -62,10 +62,28 @@ MODEL_SPECS = (
         True, False, "low", "fast",
     ),
     ModelSpec(
+        # Independent-audit finding #3, confirmed live against Google's real
+        # API with this project's own working GOOGLE_API_KEY (the same key
+        # gemini-2.5-flash uses successfully): the model IS listed by
+        # Google's ListModels endpoint (models/gemini-2.5-pro appears in the
+        # catalog, so this is not a wrong/outdated ID string), but every
+        # generateContent/streamGenerateContent call against it returns a
+        # real HTTP 404 with Google's own message: "This model
+        # models/gemini-2.5-pro is no longer available to new users. Please
+        # update your code to use a newer model for the latest features and
+        # improvements." This is neither a naming/deprecation issue on our
+        # side nor a vague "entitlement gap" - it's Google closing new-
+        # project/new-key access to a model it still lists. `deprecated=True`
+        # here reuses the existing, already-tested filter (available_models/
+        # validate_model both already reject deprecated specs) rather than a
+        # provider-side deprecation claim - see ADR-006 for the full finding
+        # and why hiding was chosen over showing it as selectable-then-
+        # explicitly-failing. If Google's policy for this project/key ever
+        # changes, flip this back and re-verify live before re-enabling.
         "gemini-2.5-pro", "google", "gemini-2.5-pro", "Google · Gemini 2.5 Pro",
         "GOOGLE_API_KEY",
         frozenset({"chat", "analysis", "upload", "structured_output", "tool_calling", "streaming", "vision"}),
-        True, False, "medium", "slow",
+        True, False, "medium", "slow", deprecated=True,
     ),
     ModelSpec(
         "gpt-4o", "openai", "gpt-4o", "OpenAI · GPT-4o",
