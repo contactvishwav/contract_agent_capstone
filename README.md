@@ -59,7 +59,7 @@ This repository includes the same MCP tools in Contract Chat through an authenti
 - **AI Framework**: LangChain throughout; LangGraph orchestrates the traditional analysis workflow (the fallback path), the PDF-processing agents, and Contract Chat. The real *default* analysis pipeline (`use_planning=True` everywhere, including the frontend) runs on a custom async step executor, `PlanExecutionEngine`, not LangGraph - see `docs/DEMO_UNDERSTANDING.md` §6.
 - **Database**: Neo4j Aura with vector indexing for graph-based knowledge storage.
 - **Embeddings**: **Gemini 1536-dimensional** high-precision vectors (`gemini-embedding-001`).
-- **LLM Providers**: Google Gemini (`gemini-2.5-pro`/`gemini-2.5-flash`, the production default) is primary; OpenAI (`gpt-4o`), Anthropic (`claude-3-5-sonnet-latest`), and Mistral (`mistral-large-latest`) are all genuinely wired in `backend/llm_manager.py`, initialized dynamically based on which API keys are actually configured.
+- **LLM Providers**: the authenticated server registry exposes only configured, workflow-compatible choices. Google Gemini (`gemini-2.5-pro`/`gemini-2.5-flash`, the production default), OpenAI (`gpt-4o`), Anthropic (`claude-sonnet-5`), and Mistral (`mistral-large-latest`, chat-only and development-only) are wired in `backend/llm_manager.py`; legal chat/analysis failures do not silently cross providers. See [`ADR-006`](docs/adr/006-server-model-registry-and-explicit-legal-failure.md).
 - **Backend/Frontend**: FastAPI (Async Python) and React + TypeScript with Vite.
 - **Caching**: Redis - deployed and **enabled by default**, not optional (see the note below); backs LLM/GraphRAG-result caching, the Celery broker, and shared cross-process usage/cost/hallucination counters.
 

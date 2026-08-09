@@ -8,6 +8,8 @@ This index assigns authority; it does not duplicate the underlying documents. Wh
 | Verified current system paths and gaps | [`SYSTEM_MAP.md`](SYSTEM_MAP.md), current code/tests | [`ARCHITECTURE.md`](ARCHITECTURE.md) is partially stale |
 | Default/fallback analysis paths | `backend/agents/contract_intelligence_agents.py`, `backend/agents/planning/`, accepted ADR when created | [`DEMO_UNDERSTANDING.md`](DEMO_UNDERSTANDING.md) §4/§6, [`CAPSTONE_SUMMARY.md`](CAPSTONE_SUMMARY.md) §14 |
 | Contract Chat | `backend/main.py`, `backend/contract_chat_agent.py`, session repository/routes, frontend chat components, tests | [`ARCHITECTURE.md`](ARCHITECTURE.md) requires refresh |
+| Source PDFs and citation navigation | [`adr/005-encrypted-source-pdf-provenance-and-viewer.md`](adr/005-encrypted-source-pdf-provenance-and-viewer.md), provenance/storage services, citation tests | Legacy citation rows may have excerpt-only provenance |
+| Model registry, routing, attribution, fallback | [`adr/006-server-model-registry-and-explicit-legal-failure.md`](adr/006-server-model-registry-and-explicit-legal-failure.md), `backend/model_registry.py`, provider-boundary tests | UI labels and historical provider summaries |
 | Search/RAG | `backend/shared/utils/search_strategies.py`, `enhanced_contract_search_tool.py`, vector config, tests | [`DEMO_UNDERSTANDING.md`](DEMO_UNDERSTANDING.md) §4.2/§7 |
 | Authentication, tenancy, RBAC | `backend/governance/`, authenticated routes, tenant-isolation tests | [`CAPSTONE_SUMMARY.md`](CAPSTONE_SUMMARY.md) §16/§17 |
 | Neo4j schema and migrations | `backend/migrations/run_all_migrations.py`, migration modules, repositories | [`Enterprise_Database_Design.md`](Enterprise_Database_Design.md) is descriptive, not migration authority |
