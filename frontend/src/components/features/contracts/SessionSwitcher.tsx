@@ -28,7 +28,7 @@ export function SessionSwitcher() {
         renameSession,
     } = useChatSession();
     const { contracts, setSelectedContract } = useContractHistory();
-    const { replaceMessages, reset } = useChat();
+    const { replaceMessages, reset, stopActiveRequest } = useChat();
     const [loadingId, setLoadingId] = React.useState<string | null>(null);
     const [loadError, setLoadError] = React.useState<string | null>(null);
     const [editingId, setEditingId] = React.useState<string | null>(null);
@@ -81,10 +81,12 @@ export function SessionSwitcher() {
         // Deliberately reload even when this is already active. A refresh
         // restores metadata first; the persisted messages still have to be
         // fetched, and a retry must never be short-circuited as a no-op.
+        await stopActiveRequest();
         await loadSession(session);
     };
 
-    const handleNewChat = () => {
+    const handleNewChat = async () => {
+        await stopActiveRequest();
         startNewSession();
         loadedSessionId.current = null;
         setLoadError(null);
@@ -122,7 +124,7 @@ export function SessionSwitcher() {
             <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 Conversations
             </div>
-            <Button variant="outline" onClick={handleNewChat} className="w-full">
+            <Button variant="outline" onClick={() => void handleNewChat()} className="w-full">
                 New chat
             </Button>
             {sessionListError && (

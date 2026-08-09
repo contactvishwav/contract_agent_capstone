@@ -16,7 +16,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 with patch("langchain_neo4j.Neo4jGraph"), \
      patch("backend.shared.utils.gemini_embedding_service.embedding"):
     from backend.infrastructure.chat_session_repository import Neo4jChatSessionRepository
-    from backend.main import resilient_runner, runner
+    from backend.main import ChatRunRegistry, cancellable_chat_stream, resilient_runner, runner
 
 from backend.governance.base import GuardResult, GuardStatus
 
@@ -36,6 +36,60 @@ class RunnerSessionPersistenceTests(unittest.IsolatedAsyncioTestCase):
         async for item in agen:
             events.append(item)
         return events
+
+    async def test_active_run_cancellation_is_bound_to_tenant_and_session(self):
+        registry = ChatRunRegistry()
+        run = await registry.register("run-a", "tenant-a", "SESSION_A")
+
+        self.assertIsNone(await registry.request_cancel(
+            "run-a", "tenant-b", "SESSION_A", timeout_seconds=0.01,
+        ))
+        self.assertIsNone(await registry.request_cancel(
+            "run-a", "tenant-a", "SESSION_B", timeout_seconds=0.01,
+        ))
+        self.assertFalse(run.cancel_requested.is_set())
+
+        cancellation = asyncio.create_task(registry.request_cancel(
+            "run-a", "tenant-a", "SESSION_A", timeout_seconds=1,
+        ))
+        await run.cancel_requested.wait()
+        run.outcome = "cancelled"
+        await registry.finish(run)
+        self.assertEqual(await cancellation, "cancelled")
+
+    async def test_server_cancel_interrupts_buffered_run_before_late_answer(self):
+        registry = ChatRunRegistry()
+        run = await registry.register("run-a", "tenant-a", "SESSION_A")
+        entered_slow_phase = asyncio.Event()
+
+        async def slow_resilient_runner(cancellation_observer=None, **kwargs):
+            yield 'data: {"type": "tool_message", "content": "bounded evidence"}\n\n'
+            try:
+                entered_slow_phase.set()
+                await asyncio.Event().wait()
+                yield 'data: {"type": "ai_message", "status": "passed", "content": "late"}\n\n'
+            except asyncio.CancelledError:
+                cancellation_observer(True)
+                raise
+
+        with patch("backend.main.chat_run_registry", registry), \
+             patch("backend.main.resilient_runner", slow_resilient_runner):
+            collection = asyncio.create_task(self._collect(cancellable_chat_stream(
+                run,
+                model="gemini-2.5-flash",
+                tenant_id="tenant-a",
+                chat_session_id="SESSION_A",
+            )))
+            await entered_slow_phase.wait()
+            outcome = await registry.request_cancel(
+                "run-a", "tenant-a", "SESSION_A", timeout_seconds=1,
+            )
+            events = await collection
+
+        self.assertEqual(outcome, "cancelled")
+        self.assertEqual(len(events), 1)
+        self.assertIn('"tool_message"', events[0])
+        self.assertNotIn("late", "".join(events))
 
     def _fake_llm_mgr_with_full_turn(self):
         """A tool-call turn followed by a final natural-language answer -
@@ -345,7 +399,7 @@ class RunnerSessionPersistenceTests(unittest.IsolatedAsyncioTestCase):
             yield  # pragma: no cover
 
         with patch("backend.main.runner", cancelled_runner), \
-             patch("backend.main._persist_chat_terminal_state") as persist_terminal, \
+             patch("backend.main._persist_chat_terminal_state", return_value=True) as persist_terminal, \
              patch("backend.main.record_output_guard_outcome") as record_outcome, \
              patch("backend.main._audit_chat_terminal_outcome") as audit_outcome:
             with self.assertRaises(asyncio.CancelledError):
@@ -357,6 +411,25 @@ class RunnerSessionPersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(persist_terminal.call_args.args[-1], "cancelled")
         record_outcome.assert_called_once_with("cancelled", "client_cancellation")
         audit_outcome.assert_called_once()
+
+    async def test_completed_terminal_wins_a_late_cancellation_race(self):
+        async def cancelled_after_completion(**kwargs):
+            raise asyncio.CancelledError()
+            yield  # pragma: no cover
+
+        with patch("backend.main.runner", cancelled_after_completion), \
+             patch("backend.main._persist_chat_terminal_state", return_value=False) as persist_terminal, \
+             patch("backend.main.record_output_guard_outcome") as record_outcome, \
+             patch("backend.main._audit_chat_terminal_outcome") as audit_outcome:
+            with self.assertRaises(asyncio.CancelledError):
+                await self._collect(resilient_runner(
+                    model="gemini-2.5-flash", prompt="Summarize", history="[]",
+                    llm_mgr=MagicMock(), tenant_id="tenant_a", chat_session_id="SESSION_1",
+                ))
+
+        self.assertEqual(persist_terminal.call_args.args[-1], "cancelled")
+        record_outcome.assert_not_called()
+        audit_outcome.assert_not_called()
 
 
 if __name__ == "__main__":

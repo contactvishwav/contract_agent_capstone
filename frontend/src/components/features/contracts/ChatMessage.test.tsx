@@ -60,4 +60,18 @@ describe('ChatMessage', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Response validation failed');
     expect(screen.queryByText('No verified source citations were produced for this answer.')).not.toBeInTheDocument();
   });
+
+  it('restores cancellation as a restrained terminal state, not a system failure', () => {
+    const restored = groupStoredMessagesIntoUiMessages([{
+      message_id: 'm2', role: 'ai_message', content: 'Generation stopped',
+      model: 'gpt-4o', tool_name: null, tool_call_id: null,
+      citations: [], terminal_status: 'cancelled', sequence: 4,
+      created_at: '2026-08-08T00:00:00Z',
+    }]);
+
+    render(<ChatMessage message={restored[0]} />);
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Generation stopped');
+    expect(screen.queryByText(/failed/i)).not.toBeInTheDocument();
+  });
 });

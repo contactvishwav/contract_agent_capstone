@@ -11,7 +11,7 @@ import {
 import { Button } from "../../shared/ui/button";
 import { fetchEventSource } from '@microsoft/fetch-event-source';
 import { MouseEvent } from 'react';
-import { SendHorizontal } from "lucide-react";
+import { LoaderCircle, SendHorizontal, Square } from "lucide-react";
 import { Message, MessagePart, useChat } from "./provider";
 import { authHeader, clearSession } from "../../../lib/authStore";
 import { useContractHistory } from "../../../contexts/ContractHistoryContext";
@@ -37,10 +37,14 @@ export function ChatInput() {
         reset,
         promptRequest,
         consumePromptRequest,
+        activeRequest,
+        beginRequest,
+        markRequestCommitted,
+        finishRequest,
+        stopActiveRequest,
     } = useChat();
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const formRef = useRef<HTMLFormElement>(null);
-    const requestController = useRef<AbortController | null>(null);
     const { contracts, selectedContractId, setSelectedContract } = useContractHistory();
     const { activeSession, createSession } = useChatSession();
 
@@ -106,59 +110,103 @@ export function ChatInput() {
         setPromptValue('');
 
         const auth = authHeader();
-        requestController.current?.abort();
-        const controller = new AbortController();
-        requestController.current = controller;
-        await fetchEventSource('/api/run/', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                ...(auth ? { Authorization: auth } : {}),
-            },
-            body: JSON.stringify({ model, prompt, contract_id, session_id: session.session_id }),
-            signal: controller.signal,
-            onmessage(event) {
-                const data: MessagePart = JSON.parse(event.data);
+        const runId = crypto.randomUUID();
+        const cancelServer = async () => {
+            const response = await fetch(`/api/chat/runs/${encodeURIComponent(runId)}/cancel`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(auth ? { Authorization: auth } : {}),
+                },
+                body: JSON.stringify({ session_id: session.session_id }),
+            });
+            if (response.status === 202) return true;
+            if (response.status === 404 || response.status === 409) return false;
+            throw new Error('Chat cancellation could not be confirmed');
+        };
+        const { id: requestId, controller } = beginRequest(
+            session.session_id,
+            aiMessage.id,
+            cancelServer,
+        );
+        let streamFinished = false;
+        let errorReported = false;
+        try {
+            await fetchEventSource('/api/run/', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(auth ? { Authorization: auth } : {}),
+                },
+                body: JSON.stringify({
+                    model, prompt, contract_id, session_id: session.session_id, run_id: runId,
+                }),
+                signal: controller.signal,
+                onmessage(event) {
+                    if (controller.signal.aborted || streamFinished) return;
+                    const data: MessagePart = JSON.parse(event.data);
 
-                if (data.type === "end") {
-                    updateMessageGenerating(aiMessage.id, false);
-                } else if (data.type === "history") {
-                    // No longer needed client-side - the backend persists
-                    // every turn to the session itself (backend/main.py's
-                    // runner()) once session_id is present, so there is
-                    // nothing left for the client to round-trip.
-                } else {
-                    addMessagePart(aiMessage.id, data);
+                    // The backend emits terminal answer/error content only after
+                    // durable persistence. From this point completion wins the
+                    // race and Stop is no longer meaningful, even if the final
+                    // `end` event has not reached the browser yet.
+                    if ((data.type === "ai_message" || data.type === "error") && data.status) {
+                        markRequestCommitted(requestId);
+                    }
+                    if (data.type === "end") {
+                        streamFinished = true;
+                        updateMessageGenerating(aiMessage.id, false);
+                        finishRequest(requestId);
+                        setSubmiting(false);
+                    } else if (data.type === "history") {
+                        // The backend persists every turn; history is restored
+                        // from the authenticated session detail endpoint.
+                    } else {
+                        addMessagePart(aiMessage.id, data);
+                    }
+                },
+                async onopen(response) {
+                    if (response.status === 401) {
+                        clearSession();
+                        throw new Error('Session expired - please sign in again');
+                    }
+                },
+                onclose() {
+                    streamFinished = true;
+                },
+                onerror(error) {
+                    if (controller.signal.aborted) throw error;
+                    if (!errorReported) {
+                        errorReported = true;
+                        addMessagePart(aiMessage.id, {
+                            type: "error",
+                            status: "generation_failed",
+                            content: "Response failed before completion. Please retry.",
+                        });
+                        updateMessageGenerating(aiMessage.id, false);
+                    }
+                    throw error;
                 }
-            },
-            async onopen(response) {
-                if (response.status === 401) {
-                    // Session expired/invalid - matches apiClient.ts's handling
-                    // for regular fetch calls, so the login gate takes over
-                    // instead of leaving the chat silently stuck.
-                    clearSession();
-                    throw new Error('Session expired - please sign in again');
-                }
-            },
-            onclose() {
-                setSubmiting(false);
-                requestController.current = null;
-            },
-            onerror() {
-                setSubmiting(false);
-                requestController.current = null;
-                // removed console error
-                addMessagePart(aiMessage.id, { type: "ai_message", content: "Error: Failed to generate the response." });
+            });
+        } catch {
+            if (!controller.signal.aborted && !streamFinished && !errorReported) {
+                addMessagePart(aiMessage.id, {
+                    type: "error",
+                    status: "generation_failed",
+                    content: "Response failed before completion. Please retry.",
+                });
                 updateMessageGenerating(aiMessage.id, false);
-                throw new Error('Connection closed due to error');
             }
-        });
+        } finally {
+            streamFinished = true;
+            finishRequest(requestId);
+            setSubmiting(false);
+        }
     };
 
     const handleClear = (event: MouseEvent) => {
         event.preventDefault();
-        requestController.current?.abort();
-        requestController.current = null;
+        void stopActiveRequest();
         setSubmiting(false);
         reset();
         setPromptValue('');
@@ -178,9 +226,12 @@ export function ChatInput() {
     // to react to a contract being selected/uploaded elsewhere in the app
     // (e.g. on the Intelligence page), not just the user's own choice here.
     const [contractSelection, setContractSelection] = React.useState(effectiveContractId);
+    const hasExplicitScopeSelection = React.useRef(false);
     React.useEffect(() => {
+        if (!activeSession && hasExplicitScopeSelection.current) return;
         setContractSelection(effectiveContractId);
-    }, [effectiveContractId]);
+        if (activeSession) hasExplicitScopeSelection.current = false;
+    }, [activeSession, effectiveContractId]);
 
     React.useEffect(() => {
         if (!promptRequest || submiting) return;
@@ -200,9 +251,12 @@ export function ChatInput() {
         formRef.current?.requestSubmit();
     }, [consumePromptRequest, pendingAutoSubmitId, promptRequest, promptValue, submiting]);
 
-    React.useEffect(() => () => requestController.current?.abort(), []);
+    React.useEffect(() => () => {
+        void stopActiveRequest();
+    }, [stopActiveRequest]);
 
     const handleContractChange = (value: string) => {
+        hasExplicitScopeSelection.current = true;
         setContractSelection(value);
         setSelectedContract(value === ALL_CONTRACTS_VALUE ? null : value);
     };
@@ -218,6 +272,7 @@ export function ChatInput() {
                     ref={textareaRef}
                     value={promptValue}
                     onChange={(event) => setPromptValue(event.target.value)}
+                    disabled={Boolean(activeRequest)}
                 />
                 <div className="flex flex-col gap-2 md:flex-row">
                     <div className="flex flex-1 flex-col gap-1">
@@ -226,7 +281,7 @@ export function ChatInput() {
                             name="contract_id"
                             value={contractSelection}
                             onValueChange={handleContractChange}
-                            disabled={Boolean(activeSession)}
+                            disabled={Boolean(activeSession) || Boolean(activeRequest)}
                         >
                             <SelectTrigger className="text-foreground" aria-label="Contract scope">
                                 <SelectValue placeholder="Which contract?" />
@@ -248,7 +303,7 @@ export function ChatInput() {
                     </div>
                     <div className="flex min-w-0 flex-col gap-1">
                         <span className="text-xs font-medium text-muted-foreground">Model</span>
-                        <Select name="model" defaultValue="gemini-2.5-flash">
+                        <Select name="model" defaultValue="gemini-2.5-flash" disabled={Boolean(activeRequest)}>
                             <SelectTrigger className="w-full text-foreground" aria-label="Model">
                                 <SelectValue />
                             </SelectTrigger>
@@ -260,13 +315,30 @@ export function ChatInput() {
                             </SelectContent>
                         </Select>
                     </div>
-                    <Button variant="outline" className="flex-0" onClick={handleClear}>
+                    <Button variant="outline" className="flex-0" onClick={handleClear} disabled={Boolean(activeRequest)}>
                         Reset
                     </Button>
-                    <Button className="flex-0" type="submit" disabled={submiting}>
-                        Send your prompt now!
-                        <SendHorizontal />
-                    </Button>
+                    {activeRequest?.phase === "running" ? (
+                        <Button
+                            className="flex-0 bg-red-700 text-white hover:bg-red-800 focus-visible:ring-red-600"
+                            type="button"
+                            aria-label="Stop generating"
+                            onClick={() => void stopActiveRequest()}
+                        >
+                            Stop generating
+                            <Square aria-hidden="true" />
+                        </Button>
+                    ) : activeRequest ? (
+                        <Button className="flex-0" type="button" disabled aria-live="polite">
+                            {activeRequest.phase === "stopping" ? "Stopping…" : "Finishing…"}
+                            <LoaderCircle className="animate-spin" aria-hidden="true" />
+                        </Button>
+                    ) : (
+                        <Button className="flex-0" type="submit" disabled={submiting}>
+                            Send your prompt now!
+                            <SendHorizontal aria-hidden="true" />
+                        </Button>
+                    )}
                 </div>
             </form>
         </div>

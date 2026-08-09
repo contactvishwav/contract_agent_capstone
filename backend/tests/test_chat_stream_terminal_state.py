@@ -12,6 +12,41 @@ async def _broken_runner(**_kwargs):
 
 
 class ChatStreamTerminalStateTests(unittest.IsolatedAsyncioTestCase):
+    def test_cancelled_terminal_is_tenant_scoped_and_completion_wins(self):
+        from backend.main import _persist_chat_terminal_state
+
+        repository = MagicMock()
+        repository.list_messages.return_value = [{"role": "user_message"}]
+        repository.append_message.return_value = {"message_id": "MESSAGE_CANCELLED"}
+
+        with patch("backend.main.Neo4jChatSessionRepository", return_value=repository):
+            persisted = _persist_chat_terminal_state(
+                "SESSION_A", "tenant-a", "gemini-2.5-flash",
+                "Generation stopped", "cancelled",
+            )
+
+        self.assertTrue(persisted)
+        repository.list_messages.assert_called_once_with("SESSION_A", "tenant-a")
+        repository.append_message.assert_called_once_with(
+            "SESSION_A",
+            "tenant-a",
+            role="ai_message",
+            content="Generation stopped",
+            model="gemini-2.5-flash",
+            terminal_status="cancelled",
+        )
+
+        repository.reset_mock()
+        repository.list_messages.return_value = [{"role": "ai_message", "terminal_status": "passed"}]
+        with patch("backend.main.Neo4jChatSessionRepository", return_value=repository):
+            persisted = _persist_chat_terminal_state(
+                "SESSION_A", "tenant-a", "gemini-2.5-flash",
+                "Generation stopped", "cancelled",
+            )
+
+        self.assertFalse(persisted)
+        repository.append_message.assert_not_called()
+
     async def test_failed_stream_persists_safe_terminal_message_and_ends_sse(self):
         from backend.main import resilient_runner
 

@@ -8,11 +8,12 @@ const mocks = vi.hoisted(() => ({
   createSession: vi.fn(),
   fetchEventSource: vi.fn(),
   setSelectedContract: vi.fn(),
+  contracts: [] as Array<{ contract_id: string; filename: string }>,
 }));
 
 vi.mock('../../../contexts/ContractHistoryContext', () => ({
   useContractHistory: () => ({
-    contracts: [],
+    contracts: mocks.contracts,
     selectedContractId: null,
     setSelectedContract: mocks.setSelectedContract,
   }),
@@ -28,6 +29,7 @@ vi.mock('@microsoft/fetch-event-source', () => ({
 describe('Contract Chat suggestions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.contracts = [];
     mocks.createSession.mockResolvedValue({
       session_id: 'SESSION_NEW', contract_id: null, title: 'How many SOW contracts?',
       created_at: null, updated_at: null, message_count: 0,
@@ -85,5 +87,29 @@ describe('Contract Chat suggestions', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Response validation failed');
     await waitFor(() => expect(screen.getByRole('button', { name: /Send your prompt now/i })).toBeEnabled());
+  });
+
+  it('preserves an explicit All contracts selection instead of restoring the first-contract fallback', async () => {
+    mocks.contracts = [{ contract_id: 'CONTRACT_SOW', filename: 'Clean_SOW.pdf' }];
+    render(
+      <ChatProvider>
+        <ChatOutput />
+        <ChatInput />
+      </ChatProvider>
+    );
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Contract scope' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'All contracts' }));
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Compare payment terms' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send your prompt now/i }));
+
+    await waitFor(() => expect(mocks.createSession).toHaveBeenCalledWith(
+      null,
+      'Compare payment terms',
+    ));
+    expect(JSON.parse(mocks.fetchEventSource.mock.calls[0][1].body)).toMatchObject({
+      contract_id: null,
+      session_id: 'SESSION_NEW',
+    });
   });
 });

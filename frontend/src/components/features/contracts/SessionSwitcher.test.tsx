@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   reset: vi.fn(),
   setSelectedContract: vi.fn(),
   renameSession: vi.fn(),
+  stopActiveRequest: vi.fn(),
 }));
 
 const active = {
@@ -41,7 +42,11 @@ vi.mock('../../../contexts/ContractHistoryContext', () => ({
   }),
 }));
 vi.mock('./provider', () => ({
-  useChat: () => ({ replaceMessages: mocks.replaceMessages, reset: mocks.reset }),
+  useChat: () => ({
+    replaceMessages: mocks.replaceMessages,
+    reset: mocks.reset,
+    stopActiveRequest: mocks.stopActiveRequest,
+  }),
 }));
 vi.mock('../../../services/chatSessionApi', async () => {
   const actual = await vi.importActual<typeof import('../../../services/chatSessionApi')>('../../../services/chatSessionApi');
@@ -53,6 +58,7 @@ describe('SessionSwitcher', () => {
     vi.clearAllMocks();
     active.message_count = 2;
     mocks.getSessionDetail.mockResolvedValue({ ...active, messages: [] });
+    mocks.stopActiveRequest.mockResolvedValue(undefined);
   });
 
   it('does not replace a newly-created empty session while its first turn streams', () => {
@@ -80,8 +86,27 @@ describe('SessionSwitcher', () => {
     await waitFor(() => expect(mocks.selectSession).toHaveBeenCalledWith(second));
 
     fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
-    expect(mocks.startNewSession).toHaveBeenCalled();
+    await waitFor(() => expect(mocks.startNewSession).toHaveBeenCalled());
+    expect(mocks.stopActiveRequest).toHaveBeenCalled();
     expect(mocks.reset).toHaveBeenCalled();
+  });
+
+  it('waits for active-stream cleanup before loading another session', async () => {
+    let releaseCancellation: () => void = () => undefined;
+    mocks.stopActiveRequest.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      releaseCancellation = resolve;
+    }));
+    render(<SessionSwitcher />);
+    await waitFor(() => expect(mocks.getSessionDetail).toHaveBeenCalledWith('SESSION_A'));
+    vi.clearAllMocks();
+    mocks.getSessionDetail.mockResolvedValue({ ...second, messages: [] });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Risk review Clean_SOW.pdf' }));
+    expect(mocks.stopActiveRequest).toHaveBeenCalledTimes(1);
+    expect(mocks.getSessionDetail).not.toHaveBeenCalled();
+
+    releaseCancellation();
+    await waitFor(() => expect(mocks.getSessionDetail).toHaveBeenCalledWith('SESSION_B'));
   });
 
   it('surfaces session-load errors instead of swallowing them', async () => {

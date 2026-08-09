@@ -2,7 +2,9 @@ import asyncio
 import inspect
 import json
 from contextlib import asynccontextmanager
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import AsyncIterator, Callable, Optional
+from uuid import UUID
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Depends, Request, Response, HTTPException
@@ -44,6 +46,69 @@ logger = get_logger(__name__)
 
 class ChatPersistenceError(RuntimeError):
     """A safe, content-free marker for terminal-message persistence failure."""
+
+
+@dataclass
+class ActiveChatRun:
+    """Server-owned cancellation state for one authenticated SSE run."""
+
+    run_id: str
+    tenant_id: str
+    session_id: str
+    cancel_requested: asyncio.Event = field(default_factory=asyncio.Event)
+    done: asyncio.Event = field(default_factory=asyncio.Event)
+    outcome: Optional[str] = None
+
+
+class ChatRunRegistry:
+    """Process-local active-run registry for the single-process API service.
+
+    The production deployment runs one constrained FastAPI process. Keeping the
+    cancellable asyncio task in that process is what permits immediate provider,
+    tool, and Output Guard cancellation. Any future multi-process API deployment
+    requires a distributed cancellation design; a Redis flag alone cannot cancel
+    an asyncio task executing in another process.
+    """
+
+    def __init__(self):
+        self._runs: dict[str, ActiveChatRun] = {}
+        self._lock = asyncio.Lock()
+
+    async def register(self, run_id: str, tenant_id: str, session_id: str) -> ActiveChatRun:
+        async with self._lock:
+            if run_id in self._runs:
+                raise ValueError("run identifier is already active")
+            run = ActiveChatRun(run_id=run_id, tenant_id=tenant_id, session_id=session_id)
+            self._runs[run_id] = run
+            return run
+
+    async def request_cancel(
+        self,
+        run_id: str,
+        tenant_id: str,
+        session_id: str,
+        timeout_seconds: float = 10.0,
+    ) -> Optional[str]:
+        async with self._lock:
+            run = self._runs.get(run_id)
+            if not run or run.tenant_id != tenant_id or run.session_id != session_id:
+                return None
+            run.cancel_requested.set()
+
+        try:
+            await asyncio.wait_for(run.done.wait(), timeout=timeout_seconds)
+        except asyncio.TimeoutError:
+            return "cancellation_timeout"
+        return run.outcome or "cancellation_failed"
+
+    async def finish(self, run: ActiveChatRun) -> None:
+        async with self._lock:
+            if self._runs.get(run.run_id) is run:
+                self._runs.pop(run.run_id, None)
+        run.done.set()
+
+
+chat_run_registry = ChatRunRegistry()
 
 import os
 from openinference.instrumentation.langchain import LangChainInstrumentor
@@ -253,6 +318,13 @@ class RunPayload(BaseModel):
     # session belongs to the caller's tenant) is checked in the /api/run/
     # route itself, before streaming starts - see run() below.
     session_id: Optional[str] = None
+    # Client-generated opaque UUID used only to cancel this authenticated,
+    # tenant/session-bound active request. It is never authorization by itself.
+    run_id: Optional[UUID] = None
+
+
+class CancelChatRunPayload(BaseModel):
+    session_id: str
 
 def rebuild_history(history):
     history = json.loads(history)
@@ -720,16 +792,23 @@ def _persist_chat_terminal_state(
     model: str,
     message: str,
     terminal_status: str,
-) -> None:
-    """Close an interrupted persisted turn with an explicit safe state."""
+) -> Optional[bool]:
+    """Close an interrupted turn if no assistant terminal already won.
+
+    The tri-state return is the race result: true when this call created the
+    terminal record, false when an assistant terminal already won, and `None`
+    when persistence could not be confirmed.
+    """
     if not chat_session_id:
-        return
+        return None
     try:
         repository = Neo4jChatSessionRepository()
         existing = repository.list_messages(chat_session_id, tenant_id)
-        if not existing or existing[-1].get("role") == "ai_message":
-            return
-        repository.append_message(
+        if not existing:
+            return None
+        if existing[-1].get("role") == "ai_message":
+            return False
+        persisted = repository.append_message(
             chat_session_id,
             tenant_id,
             role="ai_message",
@@ -737,10 +816,12 @@ def _persist_chat_terminal_state(
             model=model,
             terminal_status=terminal_status,
         )
+        return True if persisted else None
     except Exception as exc:
         logger.error(
             f"Failed to persist Contract Chat terminal state ({type(exc).__name__}); content omitted"
         )
+        return None
 
 
 def _audit_chat_terminal_outcome(kwargs: dict, terminal_status: str) -> None:
@@ -767,21 +848,27 @@ def _audit_chat_terminal_outcome(kwargs: dict, terminal_status: str) -> None:
         )
 
 
-async def resilient_runner(**kwargs):
+async def resilient_runner(
+    cancellation_observer: Optional[Callable[[Optional[bool]], None]] = None,
+    **kwargs,
+):
     """Keep failed/cancelled SSE turns honest in the persistence layer."""
     try:
         async for event in runner(**kwargs):
             yield event
     except asyncio.CancelledError:
-        _persist_chat_terminal_state(
+        cancellation_won = _persist_chat_terminal_state(
             kwargs.get("chat_session_id"),
             kwargs["tenant_id"],
             kwargs["model"],
-            "Response cancelled before completion.",
+            "Generation stopped",
             GuardStatus.CANCELLED.value,
         )
-        record_output_guard_outcome(GuardStatus.CANCELLED.value, "client_cancellation")
-        _audit_chat_terminal_outcome(kwargs, GuardStatus.CANCELLED.value)
+        if cancellation_observer:
+            cancellation_observer(cancellation_won)
+        if cancellation_won:
+            record_output_guard_outcome(GuardStatus.CANCELLED.value, "client_cancellation")
+            _audit_chat_terminal_outcome(kwargs, GuardStatus.CANCELLED.value)
         raise
     except Exception as exc:
         logger.error(
@@ -805,12 +892,132 @@ async def resilient_runner(**kwargs):
         yield f"data: {json.dumps({'content': '', 'type': 'end', 'status': terminal_status})}\n\n"
 
 
+def _is_durably_terminal_sse_event(event: str) -> bool:
+    """Return true once the browser-visible terminal record is persisted."""
+    try:
+        payload = json.loads(event.removeprefix("data: ").strip())
+    except (TypeError, ValueError):
+        return False
+    return payload.get("type") in {"ai_message", "error"} and bool(payload.get("status"))
+
+
+async def cancellable_chat_stream(
+    run: ActiveChatRun,
+    **runner_kwargs,
+) -> AsyncIterator[str]:
+    """Race each stream step against an authenticated server cancellation.
+
+    Cancelling the pending `anext` task injects `CancelledError` through
+    `resilient_runner` into provider/tool/Output Guard awaits. That path persists
+    `cancelled` before the cancellation endpoint acknowledges success.
+    """
+
+    def observe_cancellation(persisted: Optional[bool]) -> None:
+        if persisted is True:
+            run.outcome = "cancelled"
+        elif persisted is False:
+            run.outcome = "completed"
+        else:
+            run.outcome = "cancellation_failed"
+
+    source = resilient_runner(
+        cancellation_observer=observe_cancellation,
+        **runner_kwargs,
+    )
+    next_event: Optional[asyncio.Task] = None
+    cancellation_wait: Optional[asyncio.Task] = None
+    try:
+        while True:
+            next_event = asyncio.create_task(source.__anext__())
+            cancellation_wait = asyncio.create_task(run.cancel_requested.wait())
+            done, _ = await asyncio.wait(
+                {next_event, cancellation_wait},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            if next_event in done:
+                cancellation_wait.cancel()
+                try:
+                    await cancellation_wait
+                except asyncio.CancelledError:
+                    pass
+                try:
+                    event = next_event.result()
+                except StopAsyncIteration:
+                    break
+
+                if _is_durably_terminal_sse_event(event):
+                    run.outcome = "completed"
+                    yield event
+                    async for remaining in source:
+                        yield remaining
+                    break
+
+                yield event
+                if run.cancel_requested.is_set():
+                    # Cancellation and a non-terminal chunk became ready in the
+                    # same loop turn. Never release a later assistant answer.
+                    continue
+            else:
+                next_event.cancel()
+                try:
+                    await next_event
+                except (asyncio.CancelledError, StopAsyncIteration):
+                    pass
+                break
+    finally:
+        for pending in (next_event, cancellation_wait):
+            if pending and not pending.done():
+                pending.cancel()
+                try:
+                    await pending
+                except (asyncio.CancelledError, StopAsyncIteration):
+                    pass
+        try:
+            await source.aclose()
+        except (RuntimeError, asyncio.CancelledError):
+            pass
+        if run.outcome is None:
+            run.outcome = "completed_or_unpersisted"
+        await chat_run_registry.finish(run)
+
+
+@app.post("/api/chat/runs/{run_id}/cancel", status_code=202)
+async def cancel_chat_run(
+    run_id: UUID,
+    payload: CancelChatRunPayload,
+    identity: TokenIdentity = Depends(requires_permission(Permission.ANALYZE)),
+):
+    # Revalidate durable session ownership; registry possession is never auth.
+    session = Neo4jChatSessionRepository().get_session(
+        payload.session_id,
+        identity.tenant_id,
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Active chat run not found")
+
+    outcome = await chat_run_registry.request_cancel(
+        str(run_id),
+        identity.tenant_id,
+        payload.session_id,
+    )
+    if outcome is None:
+        raise HTTPException(status_code=404, detail="Active chat run not found")
+    if outcome == "completed":
+        raise HTTPException(status_code=409, detail="Chat run already completed")
+    if outcome != "cancelled":
+        raise HTTPException(status_code=503, detail="Chat cancellation could not be confirmed")
+    return {"status": "cancelled"}
+
+
 @app.post("/api/run/")
 async def run(
     payload: RunPayload,
     llm_mgr: LLMManager = Depends(get_llm_manager),
     identity: TokenIdentity = Depends(requires_permission(Permission.ANALYZE)),
 ):
+    if payload.run_id and not payload.session_id:
+        raise HTTPException(status_code=400, detail="Cancellable chat runs require a session")
     effective_contract_id = normalize_contract_scope(payload.contract_id)
     if payload.session_id:
         # Ownership check happens here, not inside runner(): runner() is an
@@ -836,17 +1043,28 @@ async def run(
         # tenant; the tenant predicate is inside the Neo4j query.
         raise HTTPException(status_code=404, detail="Contract not found")
 
-    return StreamingResponse(
-        resilient_runner(
-            model=payload.model,
-            prompt=payload.prompt,
-            history=payload.history or "[]",
-            llm_mgr=llm_mgr,
-            tenant_id=identity.tenant_id,
-            user_role=identity.role,
-            user_id=identity.username or "authenticated_user",
-            contract_id=effective_contract_id,
-            chat_session_id=payload.session_id,
-        ),
-        media_type="text/event-stream",
-    )
+    runner_kwargs = {
+        "model": payload.model,
+        "prompt": payload.prompt,
+        "history": payload.history or "[]",
+        "llm_mgr": llm_mgr,
+        "tenant_id": identity.tenant_id,
+        "user_role": identity.role,
+        "user_id": identity.username or "authenticated_user",
+        "contract_id": effective_contract_id,
+        "chat_session_id": payload.session_id,
+    }
+    if payload.run_id and payload.session_id:
+        try:
+            active_run = await chat_run_registry.register(
+                str(payload.run_id),
+                identity.tenant_id,
+                payload.session_id,
+            )
+        except ValueError:
+            raise HTTPException(status_code=409, detail="Chat run identifier is already active")
+        stream = cancellable_chat_stream(active_run, **runner_kwargs)
+    else:
+        stream = resilient_runner(**runner_kwargs)
+
+    return StreamingResponse(stream, media_type="text/event-stream")
