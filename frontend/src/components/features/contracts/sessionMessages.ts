@@ -33,6 +33,7 @@ export function groupStoredMessagesIntoUiMessages(stored: ChatSessionMessage[]):
                 : row.role,
             content: row.content,
             ...(row.terminal_status ? { status: row.terminal_status } : {}),
+            reason_category: row.terminal_reason,
             requested_model: row.requested_model,
             actual_model: row.actual_model || row.model,
             requested_provider: row.requested_provider,

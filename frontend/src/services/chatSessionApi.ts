@@ -31,6 +31,7 @@ export interface ChatSessionMessage {
   tool_call_id: string | null;
   citations: ChatCitation[];
   terminal_status?: 'passed' | 'rejected' | 'validation_failed' | 'timed_out' | 'cancelled' | 'empty' | 'generation_failed' | 'persistence_failed' | null;
+  terminal_reason?: string | null;
   sequence: number;
   created_at: string | null;
 }
@@ -40,6 +41,8 @@ export interface ChatCitation {
   contract_id: string;
   filename: string;
   source_type: 'document' | 'section' | 'clause' | 'relationship' | 'chunk';
+  evidence_id?: string | null;
+  evidence_source_type?: 'document_metadata' | 'document_text' | 'section' | 'clause' | 'chunk' | 'relationship' | 'policy_rule' | 'analysis_result';
   page: number | null;
   section_id: string | null;
   section_title: string | null;

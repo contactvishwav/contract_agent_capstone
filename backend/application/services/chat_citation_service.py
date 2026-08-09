@@ -19,6 +19,10 @@ from backend.application.services.pdf_provenance_service import (
     PdfProvenanceService,
     enrich_citations_with_provenance,
 )
+from backend.application.services.chat_evidence_service import (
+    evidence_id,
+    parse_evidence_envelope,
+)
 
 MAX_EXCERPT_LENGTH = 500
 
@@ -125,7 +129,48 @@ def build_validated_citations(
     """Build citations from this turn's tool evidence and validate ownership."""
     candidates: list[dict[str, Any]] = []
     for tool_message in tool_messages:
-        parsed = _parse_tool_content(tool_message.get("content"))
+        parsed = (
+            tool_message
+            if tool_message.get("schema_version")
+            else _parse_tool_content(tool_message.get("content"))
+        )
+        envelope = parse_evidence_envelope(parsed)
+        if envelope:
+            for item in envelope.get("evidence", []):
+                if not isinstance(item, Mapping) or not item.get("contract_id"):
+                    continue
+                supplied_id = item.get("evidence_id")
+                if not isinstance(supplied_id, str) or supplied_id != evidence_id(item, tenant_id):
+                    continue
+                locator = item.get("locator") if isinstance(item.get("locator"), Mapping) else {}
+                evidence_source_type = str(item.get("source_type") or "document_metadata")
+                candidates.append({
+                    "citation_id": supplied_id,
+                    "evidence_id": supplied_id,
+                    "evidence_source_type": evidence_source_type,
+                    "evidence_facts": item.get("facts") or {},
+                    "evidence_locator": dict(locator),
+                    "contract_id": str(item["contract_id"]),
+                    "filename": item.get("filename"),
+                    "source_type": (
+                        "document"
+                        if evidence_source_type in {"document_metadata", "document_text"}
+                        else evidence_source_type
+                    ),
+                    "page": None,
+                    "section_id": locator.get("section_id"),
+                    "section_title": locator.get("section_title") or locator.get("section_type"),
+                    "clause_id": locator.get("clause_id"),
+                    "clause_type": locator.get("clause_type"),
+                    "chunk_id": locator.get("chunk_id"),
+                    "chunk_index": locator.get("chunk_index") or locator.get("chunk_order"),
+                    "start_offset": locator.get("start_offset") or locator.get("start_position"),
+                    "end_offset": locator.get("end_offset") or locator.get("end_position"),
+                    "excerpt": item.get("excerpt"),
+                    "tool_name": item.get("tool_name") or envelope.get("tool_name"),
+                    "tool_call_id": item.get("tool_call_id") or envelope.get("tool_call_id"),
+                })
+            continue
         for item in _walk_mappings(parsed):
             contract_id = item.get("contract_id") or item.get("file_id")
             source_type = _source_type(item)
@@ -166,7 +211,7 @@ def build_validated_citations(
         # one answer.  Tool-call identity remains useful metadata on the
         # retained citation, but it is not source identity and must not
         # produce duplicate evidence cards.
-        citation_id = _citation_id(candidate)
+        citation_id = candidate.pop("citation_id", None) or _citation_id(candidate)
         if citation_id in seen:
             continue
         seen.add(citation_id)
@@ -203,7 +248,26 @@ def revalidate_stored_citations(
         safe = dict(citation)
         safe["filename"] = active[contract_id]
         safe["validation_status"] = "tenant_active"
-        if safe.get("citation_id") not in {_citation_id(safe), _legacy_citation_id(safe)}:
+        canonical_evidence_id = safe.get("evidence_id")
+        if canonical_evidence_id:
+            source_item = {
+                "source_type": safe.get("evidence_source_type") or safe.get("source_type"),
+                "contract_id": contract_id,
+                "filename": safe.get("filename"),
+                "facts": safe.get("evidence_facts") or {},
+                "excerpt": safe.get("excerpt"),
+                "locator": safe.get("evidence_locator") or {},
+            }
+            valid_identity = (
+                safe.get("citation_id") == canonical_evidence_id
+                and canonical_evidence_id == evidence_id(source_item, tenant_id)
+            )
+        else:
+            valid_identity = safe.get("citation_id") in {
+                _citation_id(safe),
+                _legacy_citation_id(safe),
+            }
+        if not valid_identity:
             # Any manipulated contract/source/excerpt identifier invalidates
             # the stored citation. Derived page/highlight fields are excluded
             # above because they are discarded and recomputed below.

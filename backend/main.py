@@ -42,9 +42,46 @@ from backend.governance.auth import TokenIdentity
 from backend.infrastructure.audit_logger import AuditLogger, AuditEventType
 from backend.infrastructure.chat_session_repository import Neo4jChatSessionRepository
 from backend.application.services.chat_citation_service import build_validated_citations
+from backend.application.services.chat_evidence_service import (
+    combine_evidence_envelopes,
+    evidence_summary,
+    parse_evidence_envelope,
+    render_deterministic_metadata_answer,
+)
 from backend.shared.monitoring.prometheus_metrics import record_output_guard_outcome
 
 logger = get_logger(__name__)
+
+_SAFE_TERMINAL_REASONS = {
+    "none",
+    "no_evidence",
+    "unsupported_claim",
+    "contradicted_claim",
+    "insufficient_scope",
+    "count_mismatch",
+    "invented_contract",
+    "fabricated_evidence_id",
+    "unauthorized_evidence",
+    "cross_tenant_evidence",
+    "text_evidence_required",
+    "infrastructure",
+    "invalid_evidence_envelope",
+    "invalid_result",
+    "timeout",
+    "empty_output",
+    "unsafe_output",
+    "out_of_scope",
+    "malicious_intent",
+    "prompt_guard_rejection",
+    "client_cancellation",
+    "generation_failed",
+    "persistence_failed",
+}
+
+
+def _bounded_reason_category(value: object, fallback: str) -> str:
+    candidate = value.lower() if isinstance(value, str) else fallback
+    return candidate if candidate in _SAFE_TERMINAL_REASONS else fallback
 
 
 class ChatPersistenceError(RuntimeError):
@@ -480,16 +517,33 @@ async def _validate_output_guard(
         )
 
 
-def _safe_terminal_message(status: GuardStatus, violation_type: Optional[str]) -> str:
-    if status == GuardStatus.REJECTED and violation_type == "UNGROUNDED_OUTPUT":
-        return "Response withheld because it could not be verified against contract evidence. Please refine your question or retry."
+def _safe_terminal_message(
+    status: GuardStatus,
+    violation_type: Optional[str],
+    reason_category: Optional[str] = None,
+) -> str:
+    if status == GuardStatus.REJECTED and reason_category == "no_evidence":
+        return "No relevant contract evidence was found for this question. Try narrowing the contract or rephrasing the request."
+    if status == GuardStatus.REJECTED and violation_type in {
+        "UNGROUNDED_OUTPUT",
+        "HALLUCINATION_DETECTED",
+        "UNKNOWN_EVIDENCE_ID",
+        "CONTRADICTED_OUTPUT",
+    }:
+        return "Response withheld because the answer contained claims that could not be verified against the selected contract evidence."
     if status == GuardStatus.REJECTED:
         return "Response withheld by the safety policy. Please revise your request or retry."
     if status == GuardStatus.TIMED_OUT:
-        return "Response validation timed out. Please retry."
+        return "Response verification timed out. Please retry."
     if status == GuardStatus.EMPTY:
         return "The assistant returned no response. Please retry."
-    return "Response validation failed. Please retry."
+    return "The response could not be validated because the verification service failed. Please retry."
+
+
+def _safe_prompt_guard_message(violation_type: Optional[str]) -> str:
+    if violation_type == "OUT_OF_SCOPE":
+        return "Contract Chat is limited to contract-related requests. Please ask a question about the selected contract evidence."
+    return "This request was blocked by the Contract Chat safety policy. Please revise it and retry."
 
 
 async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, tenant_id: str, user_role: str = "unknown", user_id: str = "authenticated_user", contract_id: Optional[str] = None, chat_session_id: Optional[str] = None, requested_provider: Optional[str] = None, actual_provider: Optional[str] = None):
@@ -547,6 +601,19 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
 
     if not guard_result.is_safe:
         logger.error(f"Prompt blocked by Guard: {guard_result.violation_type}")
+        prompt_guard_message = _safe_prompt_guard_message(guard_result.violation_type)
+        prompt_metadata = getattr(guard_result, "metadata", None)
+        prompt_reason_value = (
+            prompt_metadata.get("failure_category")
+            if isinstance(prompt_metadata, dict)
+            else None
+        )
+        prompt_reason = _bounded_reason_category(
+            prompt_reason_value
+            if isinstance(prompt_reason_value, str)
+            else guard_result.violation_type,
+            "prompt_guard_rejection",
+        )
         if chat_session_repo:
             # Still visible on reopen - a declined prompt shouldn't vanish
             # from a restored session just because it never reached the LLM.
@@ -555,15 +622,16 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
                 chat_session_id,
                 tenant_id,
                 role="ai_message",
-                content=guard_result.message,
+                content=prompt_guard_message,
                 requested_model=model,
                 requested_provider=requested_provider,
                 prompt_version=CHAT_PROMPT_VERSION,
                 execution_path="contract_chat_langgraph",
                 terminal_status=prompt_guard_status.value,
+                terminal_reason=prompt_reason,
             )
-        yield f"data: {json.dumps({'content': guard_result.message, 'type': 'error', 'status': prompt_guard_status.value})}\n\n"
-        yield f"data: {json.dumps({'content': '', 'type': 'end', 'status': prompt_guard_status.value})}\n\n"
+        yield f"data: {json.dumps({'content': prompt_guard_message, 'type': 'error', 'status': prompt_guard_status.value, 'reason_category': prompt_reason})}\n\n"
+        yield f"data: {json.dumps({'content': '', 'type': 'end', 'status': prompt_guard_status.value, 'reason_category': prompt_reason})}\n\n"
         return
 
     if chat_session_repo:
@@ -614,8 +682,7 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
     
     # Buffer for post-check
     ai_full_content = ""
-    tool_call_names = {}
-    tool_evidence = []
+    evidence_envelopes = []
 
     async for message in messages:
         if message[0] == "messages":
@@ -641,9 +708,6 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
             if "assistant" in message[1]:
                 for history_message in message[1]["assistant"]["messages"]:
                     context.append(history_message.model_dump_json())
-                    for tc in (getattr(history_message, "tool_calls", None) or []):
-                        if tc.get("id"):
-                            tool_call_names[tc["id"]] = tc.get("name")
                     if chat_session_repo:
                         # These are the real, final AIMessage.tool_calls -
                         # the authoritative source (not re-parsed SSE
@@ -664,12 +728,10 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
                     else:
                         context.append(json.dumps(tool_message))
                     if hasattr(tool_message, "content"):
-                        tool_call_id = getattr(tool_message, "tool_call_id", None)
-                        tool_evidence.append({
-                            "content": _normalize_ai_message_content(tool_message.content),
-                            "tool_call_id": tool_call_id,
-                            "tool_name": tool_call_names.get(tool_call_id),
-                        })
+                        normalized_content = _normalize_ai_message_content(tool_message.content)
+                        parsed_envelope = parse_evidence_envelope(normalized_content)
+                        if parsed_envelope:
+                            evidence_envelopes.append(parsed_envelope)
                     if chat_session_repo and hasattr(tool_message, "content"):
                         chat_session_repo.append_message(
                             chat_session_id, tenant_id, role="tool_message",
@@ -694,19 +756,20 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
                 # surfaced to the client at all - a silent, hard failure).
                 ai_full_content += _normalize_ai_message_content(chunk.content)
 
-    # 2. Llama Guard Post-Check
-    # Extract source context from tool results for hallucination check
-    tool_contents = []
-    for msg_str in context:
-        try:
-            msg = json.loads(msg_str)
-            if msg.get("type") == "tool":
-                tool_contents.append(msg.get("content", ""))
-        except Exception:
-            pass
-    
-    if tool_contents:
-        context_metadata["source_text"] = "\n---\n".join(tool_contents)
+    # The exact structured envelopes that the answer model saw are combined
+    # for Output Guard and citation validation.  Historical tool messages are
+    # deliberately excluded: only evidence retrieved for this turn may ground
+    # its candidate answer.
+    evidence_envelope = combine_evidence_envelopes(evidence_envelopes, tenant_id)
+    context_metadata["evidence_envelope"] = evidence_envelope
+    logger.info("Contract Chat evidence prepared: %s", evidence_summary(evidence_envelope))
+    deterministic_metadata_answer = render_deterministic_metadata_answer(
+        prompt,
+        evidence_envelope,
+    )
+    if deterministic_metadata_answer is not None:
+        ai_full_content = deterministic_metadata_answer
+        logger.info("Using deterministic metadata answer from validated evidence")
 
     output_guard = OutputGuard(audit_logger=audit_logger, model_manager=llm_mgr)
     post_check_result = await _validate_output_guard(
@@ -715,9 +778,10 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
         context_metadata,
     )
     output_status = _guard_status(post_check_result)
-    reason_category = (post_check_result.metadata or {}).get("failure_category") or (
+    raw_reason_category = (post_check_result.metadata or {}).get("failure_category") or (
         post_check_result.violation_type or "none"
     ).lower()
+    reason_category = _bounded_reason_category(raw_reason_category, "infrastructure")
     record_output_guard_outcome(output_status.value, reason_category)
     
     # Log Output Guard Check
@@ -737,6 +801,7 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
         final_ai_content = _safe_terminal_message(
             output_status,
             post_check_result.violation_type,
+            reason_category,
         )
     else:
         # If PII was redacted, we should update the context
@@ -767,9 +832,9 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
         )
 
     citations = []
-    if output_status == GuardStatus.PASSED and tool_evidence:
+    if output_status == GuardStatus.PASSED and evidence_envelope.get("evidence"):
         try:
-            citations = build_validated_citations(tool_evidence, tenant_id)
+            citations = build_validated_citations([evidence_envelope], tenant_id)
         except Exception as exc:
             logger.error(f"Contract Chat citation validation failed ({type(exc).__name__})")
 
@@ -782,6 +847,7 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
         persisted = chat_session_repo.append_message(
             chat_session_id, tenant_id, role="ai_message", content=final_ai_content,
             model=model, terminal_status=output_status.value,
+            terminal_reason=reason_category,
             requested_model=model, actual_model=model,
             requested_provider=requested_provider, actual_provider=actual_provider,
             fallback_occurred=False, prompt_version=CHAT_PROMPT_VERSION,
@@ -793,14 +859,14 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
     if output_status == GuardStatus.PASSED:
         yield f"data: {json.dumps({'content': final_ai_content, 'type': 'ai_message', 'status': output_status.value, 'requested_model': model, 'actual_model': model, 'requested_provider': requested_provider, 'actual_provider': actual_provider, 'fallback_occurred': False, 'prompt_version': CHAT_PROMPT_VERSION, 'execution_path': 'contract_chat_langgraph'})}\n\n"
     else:
-        yield f"data: {json.dumps({'content': final_ai_content, 'type': 'error', 'status': output_status.value})}\n\n"
+        yield f"data: {json.dumps({'content': final_ai_content, 'type': 'error', 'status': output_status.value, 'reason_category': reason_category})}\n\n"
 
     if citations:
         yield f"data: {json.dumps({'content': json.dumps(citations), 'type': 'citations'})}\n\n"
 
     if output_status == GuardStatus.PASSED:
         yield f"data: {json.dumps({'content': context, 'type': 'history'})}\n\n"
-    yield f"data: {json.dumps({'content': '', 'type': 'end', 'status': output_status.value})}\n\n"
+    yield f"data: {json.dumps({'content': '', 'type': 'end', 'status': output_status.value, 'reason_category': reason_category})}\n\n"
 
 
 def _persist_chat_terminal_state(
@@ -810,6 +876,7 @@ def _persist_chat_terminal_state(
     message: str,
     terminal_status: str,
     provider: Optional[str] = None,
+    terminal_reason: Optional[str] = None,
 ) -> Optional[bool]:
     """Close an interrupted turn if no assistant terminal already won.
 
@@ -833,6 +900,7 @@ def _persist_chat_terminal_state(
             content=message,
             model=model,
             terminal_status=terminal_status,
+            terminal_reason=terminal_reason or terminal_status,
             requested_model=model,
             actual_model=model,
             requested_provider=provider,
@@ -889,6 +957,7 @@ async def resilient_runner(
             "Generation stopped",
             GuardStatus.CANCELLED.value,
             kwargs.get("actual_provider"),
+            "client_cancellation",
         )
         if cancellation_observer:
             cancellation_observer(cancellation_won)
@@ -913,10 +982,11 @@ async def resilient_runner(
             message,
             terminal_status,
             kwargs.get("actual_provider"),
+            terminal_status,
         )
         _audit_chat_terminal_outcome(kwargs, terminal_status)
-        yield f"data: {json.dumps({'content': message, 'type': 'error', 'status': terminal_status})}\n\n"
-        yield f"data: {json.dumps({'content': '', 'type': 'end', 'status': terminal_status})}\n\n"
+        yield f"data: {json.dumps({'content': message, 'type': 'error', 'status': terminal_status, 'reason_category': terminal_status})}\n\n"
+        yield f"data: {json.dumps({'content': '', 'type': 'end', 'status': terminal_status, 'reason_category': terminal_status})}\n\n"
 
 
 def _is_durably_terminal_sse_event(event: str) -> bool:

@@ -108,6 +108,7 @@ class MessageResponse(BaseModel):
         "generation_failed",
         "persistence_failed",
     ]] = None
+    terminal_reason: Optional[str] = None
     sequence: int
     created_at: Optional[str] = None
 
@@ -181,6 +182,7 @@ async def get_session_detail(
                 tool_call_id=m.get("tool_call_id"),
                 citations=revalidate_stored_citations(m.get("citations"), identity.tenant_id),
                 terminal_status=m.get("terminal_status"),
+                terminal_reason=m.get("terminal_reason"),
                 sequence=m["sequence"],
                 created_at=serialize_neo4j_datetime(m.get("created_at")),
             )

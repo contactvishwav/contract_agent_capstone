@@ -6,6 +6,7 @@ export type MessagePart = {
     type: MessagePartType;
     content: string;
     status?: 'passed' | 'rejected' | 'validation_failed' | 'timed_out' | 'cancelled' | 'empty' | 'generation_failed' | 'persistence_failed';
+    reason_category?: string | null;
     requested_model?: string | null;
     actual_model?: string | null;
     requested_provider?: string | null;

@@ -154,7 +154,7 @@ class Neo4jChatSessionRepository:
                m.fallback_occurred AS fallback_occurred, m.fallback_reason AS fallback_reason,
                m.prompt_version AS prompt_version, m.execution_path AS execution_path,
                m.tool_name AS tool_name, m.tool_call_id AS tool_call_id, m.citations AS citations,
-               m.terminal_status AS terminal_status,
+               m.terminal_status AS terminal_status, m.terminal_reason AS terminal_reason,
                m.created_at AS created_at,
                r.sequence AS sequence
         ORDER BY r.sequence ASC
@@ -184,6 +184,7 @@ class Neo4jChatSessionRepository:
         tool_call_id: Optional[str] = None,
         citations: Optional[List[Dict[str, Any]]] = None,
         terminal_status: Optional[str] = None,
+        terminal_reason: Optional[str] = None,
         requested_model: Optional[str] = None,
         actual_model: Optional[str] = None,
         requested_provider: Optional[str] = None,
@@ -218,6 +219,7 @@ class Neo4jChatSessionRepository:
             fallback_occurred: $fallback_occurred, fallback_reason: $fallback_reason,
             prompt_version: $prompt_version, execution_path: $execution_path,
             citations: $citations, terminal_status: $terminal_status,
+            terminal_reason: $terminal_reason,
             created_at: datetime()
         })
         CREATE (s)-[:HAS_MESSAGE {sequence: seq}]->(m)
@@ -229,6 +231,7 @@ class Neo4jChatSessionRepository:
             "model": model, "tool_name": tool_name, "tool_call_id": tool_call_id,
             "citations": field_encryptor.encrypt(json.dumps(citations, default=str)) if citations else None,
             "terminal_status": terminal_status,
+            "terminal_reason": terminal_reason,
             "requested_model": requested_model,
             "actual_model": actual_model,
             "requested_provider": requested_provider,

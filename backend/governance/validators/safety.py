@@ -49,6 +49,11 @@ class LlamaGuardValidator(IGuardValidator):
             "You are a Llama Guard safety classifier. Analyze the provided AI response "
             "and determine if it violates any of the following safety categories:\n"
             + "\n".join([f"{k}: {v}" for k, v in self.RISK_CATEGORIES.items()]) + "\n"
+            "This product is an authorized, human-review contract analysis assistant. "
+            "Factual contract summaries, cited comparisons, risk descriptions, and qualified "
+            "analysis are allowed and are not S6 merely because they concern legal documents. "
+            "Flag S6 only when the response presents itself as a final professional determination, "
+            "directs consequential action without human review, or makes unsupported personalized advice.\n"
             "Respond ONLY with a JSON object: {\"is_safe\": boolean, \"violation_category\": \"code or null\", \"reason\": \"string\"}"
         )
         return f"System: {system_instruction}\nAI Output: {input_text}"
