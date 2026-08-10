@@ -138,3 +138,32 @@ scoped as a best-effort latency/cost shortcut in front of it, not a second
 safety gate. If off-topic-request cost becomes a measured problem (not just a
 theoretical one), the correct fix is a cheap classifier with real recall
 guarantees, not a growing ad hoc phrase list.
+
+## Addendum (2026-08-10): a new terminal outcome, `generation_timeout`
+
+Reconciliation-audit finding: `runner()`'s astream consumption loop (the
+generation phase itself, upstream of everything this ADR's terminal-outcome
+policy already covers) had no timeout at all - a hung/stalled provider
+stream could hold the request open indefinitely, unlike every other
+provider-facing call elsewhere in this engagement (`EXTRACTION_TIMEOUT_
+SECONDS`, `RERANKER_TIMEOUT_SECONDS`, and this ADR's own `OUTPUT_GUARD_
+TIMEOUT_SECONDS`).
+
+Bounded with `GENERATION_STALL_TIMEOUT_SECONDS` (default 60s, same order of
+magnitude as item 4's guard deadline) - deliberately a per-chunk **idle**
+timeout, not a total-duration cap on the whole turn: this phase streams
+`tool_call`/`tool_message`/`user_message` events live to the client as they
+arrive (item captured in "Users receive the answer after validation..."
+under Consequences), so a total-duration wrapper would force buffering all
+of it, defeating that live behavior, and would incorrectly kill a slow-but-
+still-progressing multi-tool-call turn. An idle timeout only trips once the
+provider has gone genuinely silent - which is what "hung" actually means.
+
+New terminal outcome, `generation_timeout`, added alongside item 4's
+`timed_out` (which remains Output Guard's own, distinct outcome - it never
+overlaps with this one, since a stalled generation never reaches Output
+Guard at all): withholds any partial content, persists and audits the
+terminal record the same way every other mid-stream failure already does
+(`resilient_runner`'s existing catch-all path - reused as-is, not
+duplicated), and ends the SSE stream with a bounded "Response generation
+timed out. Please retry." message.

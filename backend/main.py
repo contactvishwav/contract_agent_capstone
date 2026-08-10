@@ -75,6 +75,7 @@ _SAFE_TERMINAL_REASONS = {
     "prompt_guard_rejection",
     "client_cancellation",
     "generation_failed",
+    "generation_timeout",
     "persistence_failed",
 }
 
@@ -86,6 +87,16 @@ def _bounded_reason_category(value: object, fallback: str) -> str:
 
 class ChatPersistenceError(RuntimeError):
     """A safe, content-free marker for terminal-message persistence failure."""
+
+
+class ChatGenerationTimeoutError(RuntimeError):
+    """A safe, content-free marker for a stalled/hung generation stream -
+    reconciliation-audit finding: runner()'s astream loop had no timeout at
+    all, unlike every other provider-facing call in this engagement (PDF
+    extraction's EXTRACTION_TIMEOUT_SECONDS, reranking's
+    RERANKER_TIMEOUT_SECONDS, Output Guard's OUTPUT_GUARD_TIMEOUT_SECONDS -
+    see ADR-004). A hung provider stream could otherwise hold the request
+    (and the worker/connection serving it) open indefinitely."""
 
 
 @dataclass
@@ -154,6 +165,19 @@ import os
 from openinference.instrumentation.langchain import LangChainInstrumentor
 
 load_dotenv()
+
+# Reconciliation-audit finding: bounds a STALLED generation stream (no new
+# chunk at all), not the turn's total duration - a total-duration cap would
+# require buffering every tool_call/tool_message/user_message event instead
+# of streaming them live as they arrive (the existing, deliberate behavior
+# at runner()'s "messages"/"updates" yield sites), and would kill
+# legitimately slow-but-progressing multi-tool-call turns. A per-chunk idle
+# timeout, like a network read-timeout, only trips when the provider has
+# genuinely gone silent - which is exactly what "hung/runaway" describes.
+# Same order of magnitude as OUTPUT_GUARD_TIMEOUT_SECONDS's default
+# (ADR-004) and the other provider-facing timeouts elsewhere in this
+# engagement (EXTRACTION_TIMEOUT_SECONDS, RERANKER_TIMEOUT_SECONDS).
+GENERATION_STALL_TIMEOUT_SECONDS = float(os.getenv("GENERATION_STALL_TIMEOUT_SECONDS", "60"))
 
 # Initialize Phoenix tracing (OpenTelemetry)
 phoenix_endpoint = os.environ.get("PHOENIX_COLLECTOR_ENDPOINT", "http://localhost:6006/v1/traces")
@@ -684,7 +708,28 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
     ai_full_content = ""
     evidence_envelopes = []
 
-    async for message in messages:
+    messages_iter = messages.__aiter__()
+    while True:
+        try:
+            message = await asyncio.wait_for(
+                messages_iter.__anext__(), timeout=GENERATION_STALL_TIMEOUT_SECONDS,
+            )
+        except StopAsyncIteration:
+            break
+        except asyncio.TimeoutError:
+            logger.error(
+                f"Chat generation stalled - no output for {GENERATION_STALL_TIMEOUT_SECONDS}s; aborting"
+            )
+            # Caught by resilient_runner's except Exception block, which
+            # persists the terminal record, audits, and yields the safe
+            # error+end SSE events - the same path already used for every
+            # other mid-stream failure (ChatPersistenceError, provider
+            # errors). No content was safely completed here, so nothing
+            # else in this function needs to run.
+            raise ChatGenerationTimeoutError(
+                f"generation stalled for {GENERATION_STALL_TIMEOUT_SECONDS}s"
+            )
+
         if message[0] == "messages":
             chunk = message[1]
 
@@ -969,12 +1014,15 @@ async def resilient_runner(
         logger.error(
             f"Contract Chat stream failed ({type(exc).__name__}); prompt and content omitted"
         )
-        message = "Response failed before completion. Please retry."
-        terminal_status = (
-            "persistence_failed"
-            if isinstance(exc, ChatPersistenceError)
-            else "generation_failed"
-        )
+        if isinstance(exc, ChatPersistenceError):
+            message = "Response failed before completion. Please retry."
+            terminal_status = "persistence_failed"
+        elif isinstance(exc, ChatGenerationTimeoutError):
+            message = "Response generation timed out. Please retry."
+            terminal_status = "generation_timeout"
+        else:
+            message = "Response failed before completion. Please retry."
+            terminal_status = "generation_failed"
         _persist_chat_terminal_state(
             kwargs.get("chat_session_id"),
             kwargs["tenant_id"],
