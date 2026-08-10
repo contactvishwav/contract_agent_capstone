@@ -21,6 +21,23 @@ Schema:
 	   the LLM's own context, which LangChain's ToolMessage requires),
 	   terminal_status (nullable, assistant terminal outcome), created_at})
   (:ChatSession)-[:HAS_MESSAGE {sequence: int}]->(:ChatMessage)
+  (:ChatAttachment {attachment_id, tenant_id, session_id, mime_type,
+   size_bytes, storage_key, created_at}) - Contract Chat image attachments
+   (ADR-008). Bytes live encrypted on disk (chat_attachment_storage.py);
+   this node is metadata only, never the image content. tenant_id AND
+   session_id are both node properties (not solely derivable from a
+   relationship) for the same isolation-via-property-filter reason
+   ChatSession/ChatMessage use them - a cross-tenant/cross-session read is
+   rejected by the MATCH predicate itself, not by a relationship traversal.
+  (:ChatMessage)-[:HAS_ATTACHMENT]->(:ChatAttachment) - mirrors
+   (:Document)-[:HAS_CHUNK]->(:Chunk)'s existing convention. An attachment
+   is created (via create_attachment) before the message that will
+   reference it exists - the two-phase upload-then-send flow chat images
+   need - and linked once that message is actually persisted
+   (link_attachment_to_message). An uploaded-but-never-sent attachment is a
+   known, accepted orphan class, same as the PDF pipeline's own orphan case
+   (docs/tasks/active/pdf-citations-model-selection.md's risks) - no
+   retention/purge tooling is built here.
 
 role uses four values - "user_message" | "ai_message" | "tool_call" |
 "tool_message" - deliberately matching frontend/src/components/features/
@@ -55,6 +72,10 @@ def generate_session_id() -> str:
 
 def generate_message_id() -> str:
     return f"MSG_{uuid.uuid4().hex[:12].upper()}"
+
+
+def generate_attachment_id() -> str:
+    return f"ATTACH_{uuid.uuid4().hex[:12].upper()}"
 
 
 class Neo4jChatSessionRepository:
@@ -242,3 +263,91 @@ class Neo4jChatSessionRepository:
             "execution_path": execution_path,
         })
         return result[0] if result else None
+
+    def create_attachment(
+        self,
+        session_id: str,
+        tenant_id: str,
+        attachment_id: str,
+        mime_type: str,
+        size_bytes: int,
+        storage_key: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Creates a standalone ChatAttachment, not yet linked to any
+        message - the upload step of the two-phase upload-then-send flow.
+        MATCH is tenant_id-scoped (same posture as every other write path
+        here): a caller can never attach to another tenant's session even
+        if it somehow obtained the session_id.
+
+        attachment_id is caller-generated (generate_attachment_id()), not
+        minted inside this method: the storage layer's storage_key is a
+        pure function of (tenant_id, session_id, attachment_id), so the
+        real image bytes must already be encrypted and on disk - keyed off
+        this same id - before this graph write happens. Writing the graph
+        row first would leave a moment where a node claims a storage_key
+        that doesn't exist yet."""
+        cypher = """
+        MATCH (s:ChatSession {session_id: $session_id, tenant_id: $tenant_id})
+        WHERE s.archived_at IS NULL
+        CREATE (a:ChatAttachment {
+            attachment_id: $attachment_id, tenant_id: $tenant_id, session_id: $session_id,
+            mime_type: $mime_type, size_bytes: $size_bytes, storage_key: $storage_key,
+            created_at: datetime()
+        })
+        RETURN a.attachment_id AS attachment_id, a.tenant_id AS tenant_id,
+               a.session_id AS session_id, a.mime_type AS mime_type,
+               a.size_bytes AS size_bytes, a.storage_key AS storage_key,
+               a.created_at AS created_at
+        """
+        result = self._query(cypher, {
+            "session_id": session_id, "tenant_id": tenant_id, "attachment_id": attachment_id,
+            "mime_type": mime_type, "size_bytes": size_bytes, "storage_key": storage_key,
+        })
+        return result[0] if result else None
+
+    def get_attachment(self, attachment_id: str, tenant_id: str, session_id: str) -> Optional[Dict[str, Any]]:
+        """Ownership-checked metadata fetch for the retrieval endpoint -
+        None for missing, cross-tenant, AND cross-session (an attachment
+        genuinely owned by this tenant but a different one of their own
+        sessions is still rejected; the URL path's session_id must match
+        exactly), matching get_session's indistinguishable-404 posture."""
+        cypher = """
+        MATCH (a:ChatAttachment {attachment_id: $attachment_id, tenant_id: $tenant_id, session_id: $session_id})
+        RETURN a.attachment_id AS attachment_id, a.tenant_id AS tenant_id,
+               a.session_id AS session_id, a.mime_type AS mime_type,
+               a.size_bytes AS size_bytes, a.storage_key AS storage_key,
+               a.created_at AS created_at
+        """
+        result = self._query(cypher, {
+            "attachment_id": attachment_id, "tenant_id": tenant_id, "session_id": session_id,
+        })
+        return result[0] if result else None
+
+    def link_attachment_to_message(self, attachment_id: str, message_id: str, tenant_id: str) -> bool:
+        """Links a previously-uploaded attachment to the message that was
+        just persisted for the turn it belongs to. Both MATCHes are
+        tenant_id-scoped; returns False (a safe no-op) if either the
+        attachment or the message doesn't exist for this tenant - a caller
+        can never link across tenants even by guessing IDs."""
+        cypher = """
+        MATCH (a:ChatAttachment {attachment_id: $attachment_id, tenant_id: $tenant_id})
+        MATCH (m:ChatMessage {message_id: $message_id, tenant_id: $tenant_id})
+        CREATE (m)-[:HAS_ATTACHMENT]->(a)
+        RETURN a.attachment_id AS attachment_id
+        """
+        result = self._query(cypher, {
+            "attachment_id": attachment_id, "message_id": message_id, "tenant_id": tenant_id,
+        })
+        return bool(result)
+
+    def list_attachments_for_message(self, message_id: str, tenant_id: str) -> List[Dict[str, Any]]:
+        """Empty list for a missing/cross-tenant message - same defense-in-
+        depth posture as list_messages. Used to restore attachment
+        references onto a message on session load."""
+        cypher = """
+        MATCH (m:ChatMessage {message_id: $message_id, tenant_id: $tenant_id})-[:HAS_ATTACHMENT]->(a:ChatAttachment)
+        RETURN a.attachment_id AS attachment_id, a.mime_type AS mime_type,
+               a.size_bytes AS size_bytes, a.created_at AS created_at
+        ORDER BY a.created_at ASC
+        """
+        return self._query(cypher, {"message_id": message_id, "tenant_id": tenant_id})

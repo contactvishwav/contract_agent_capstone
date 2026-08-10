@@ -153,8 +153,12 @@ class MigrationRunnerVersioningTests(unittest.TestCase):
         )
         self.assertIn("analysis_run_schema", names)
         self.assertIn("pdf_source_schema", names)
-        self.assertEqual(len(names), 14)
-        self.assertEqual(len(set(names)), 14, "No duplicate migration names")
+        self.assertIn(
+            "chat_attachment_schema", names,
+            "Contract Chat image attachments (ADR-008, backend/infrastructure/chat_attachment_storage.py)",
+        )
+        self.assertEqual(len(names), 15)
+        self.assertEqual(len(set(names)), 15, "No duplicate migration names")
 
 
 if __name__ == "__main__":

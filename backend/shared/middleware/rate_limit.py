@@ -69,6 +69,14 @@ AUTH_INVITE_ACCEPT_RATE_LIMIT = os.getenv("AUTH_INVITE_ACCEPT_RATE_LIMIT", "10/m
 # rather than after it has already run up a large multi-provider LLM bill.
 CHAT_RUN_RATE_LIMIT = os.getenv("CHAT_RUN_RATE_LIMIT", "30/minute")
 
+# Image attachment uploads (ADR-008) are a real disk-write operation
+# reachable independent of /api/run/ - CHAT_RUN_RATE_LIMIT bounds generation
+# call *frequency* (which doesn't need to scale with a single call's cost),
+# but this endpoint needs its own bound against storage-exhaustion abuse
+# specifically. Slightly under CHAT_RUN_RATE_LIMIT: a real user doesn't
+# upload more images per minute than messages they send.
+CHAT_ATTACHMENT_UPLOAD_RATE_LIMIT = os.getenv("CHAT_ATTACHMENT_UPLOAD_RATE_LIMIT", "20/minute")
+
 
 def _resolve_storage_uri() -> str:
     try:

@@ -6,21 +6,30 @@ is where messages actually get appended to a session as a conversation
 happens.
 """
 from typing import List, Literal, Optional
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel, Field, field_validator
 
 from backend.governance.auth import TokenIdentity
 from backend.application.services.chat_citation_service import revalidate_stored_citations
 from backend.governance.rbac import Permission, requires_permission
-from backend.infrastructure.chat_session_repository import Neo4jChatSessionRepository
+from backend.infrastructure.chat_attachment_storage import ChatAttachmentUnavailable, chat_attachment_storage
+from backend.infrastructure.chat_session_repository import Neo4jChatSessionRepository, generate_attachment_id
 from backend.infrastructure.contract_repository import Neo4jContractRepository
+from backend.shared.middleware.rate_limit import CHAT_ATTACHMENT_UPLOAD_RATE_LIMIT, limiter, tenant_scoped_or_ip_key
 from backend.shared.utils.utils import serialize_neo4j_datetime
 
 router = APIRouter(prefix="/api/chat", tags=["chat-sessions"])
 repository = Neo4jChatSessionRepository()
 contract_repository = Neo4jContractRepository()
 ALL_CONTRACTS_SENTINEL = "__all_contracts__"
+
+# 5MB: the tightest of the three configured providers' real per-image
+# limits (Anthropic's) - see ADR-008. Going higher would mean Claude turns
+# could get an explicit provider-side rejection that Gemini/GPT-4o
+# wouldn't, an inconsistency deliberately avoided rather than accepted.
+MAX_ATTACHMENT_SIZE_BYTES = 5 * 1024 * 1024
 
 
 def normalize_contract_scope(contract_id: Optional[str]) -> Optional[str]:
@@ -117,6 +126,12 @@ class SessionDetailResponse(SessionResponse):
     messages: List[MessageResponse]
 
 
+class AttachmentResponse(BaseModel):
+    attachment_id: str
+    mime_type: str
+    size_bytes: int
+
+
 def _serialize_session(row) -> SessionResponse:
     return SessionResponse(
         session_id=row["session_id"], contract_id=row.get("contract_id"), title=row["title"],
@@ -203,3 +218,85 @@ async def rename_session(
     if not row:
         raise HTTPException(status_code=404, detail=f"Chat session {session_id} not found")
     return _serialize_session(row)
+
+
+@router.post("/sessions/{session_id}/attachments", response_model=AttachmentResponse, status_code=201)
+@limiter.limit(CHAT_ATTACHMENT_UPLOAD_RATE_LIMIT, key_func=tenant_scoped_or_ip_key)
+async def upload_attachment(
+    request: Request,
+    session_id: str,
+    file: UploadFile = File(...),
+    identity: TokenIdentity = Depends(requires_permission(Permission.ANALYZE)),
+):
+    """Uploads one image into an existing session, ahead of the message
+    that will reference it (see chat_session_repository.py's two-phase
+    upload-then-send design note). Rate-limited per-tenant (ADR-008): a
+    real disk-write operation reachable independent of /api/run/'s own
+    limit. The `request: Request` parameter (unused directly here) is
+    required by @limiter.limit, same convention as main.py's run().
+    """
+    session = repository.get_session(session_id, identity.tenant_id)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Chat session {session_id} not found")
+
+    content = await file.read()
+    if len(content) > MAX_ATTACHMENT_SIZE_BYTES:
+        raise HTTPException(status_code=400, detail="Attachment too large (max 5MB)")
+
+    # Encrypt-and-store first, keyed off a freshly generated id, before any
+    # graph write - see create_attachment's docstring for why this order
+    # matters. mime_type here is the real, sniffed format (never the
+    # client-declared Content-Type); ValueError means the bytes aren't one
+    # of the three supported image formats.
+    attachment_id = generate_attachment_id()
+    try:
+        storage_key, mime_type = chat_attachment_storage.store(
+            identity.tenant_id, session_id, attachment_id, content,
+        )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Attachment content is not a supported image format (PNG/JPEG/WEBP)")
+
+    row = repository.create_attachment(
+        session_id, identity.tenant_id, attachment_id, mime_type, len(content), storage_key,
+    )
+    if not row:
+        # Session vanished (archived/deleted) between the get_session check
+        # above and this write - roll back the now-orphaned encrypted blob
+        # rather than leaving it unaddressable by any graph row.
+        chat_attachment_storage.remove(identity.tenant_id, session_id, attachment_id)
+        raise HTTPException(status_code=404, detail=f"Chat session {session_id} not found")
+
+    return AttachmentResponse(attachment_id=attachment_id, mime_type=mime_type, size_bytes=len(content))
+
+
+@router.get("/sessions/{session_id}/attachments/{attachment_id}")
+async def get_attachment(
+    session_id: str,
+    attachment_id: str,
+    identity: TokenIdentity = Depends(requires_permission(Permission.ANALYZE)),
+):
+    """Returns one tenant/session-owned image attachment without exposing
+    its storage path - same authenticated-retrieval shape as
+    document_upload.py's get_contract_source_pdf."""
+    attachment = repository.get_attachment(attachment_id, identity.tenant_id, session_id)
+    if not attachment:
+        # Missing, cross-tenant, and cross-session are deliberately
+        # indistinguishable.
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    try:
+        content = chat_attachment_storage.read(
+            identity.tenant_id, session_id, attachment_id, attachment["storage_key"],
+        )
+    except ChatAttachmentUnavailable:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    return Response(
+        content=content,
+        media_type=attachment["mime_type"],
+        headers={
+            "Content-Disposition": f"inline; filename*=UTF-8''{quote(attachment_id, safe='')}",
+            "Cache-Control": "private, no-store, max-age=0",
+            "Pragma": "no-cache",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )

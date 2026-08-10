@@ -63,8 +63,10 @@ services:
       # above, not the Docker-internal network.
       - FRONTEND_BASE_URL=${FRONTEND_BASE_URL-http://localhost:3000}
       - PDF_SOURCE_STORAGE_DIR=/var/lib/contract-agent/source-pdfs
+      - CHAT_ATTACHMENT_STORAGE_DIR=/var/lib/contract-agent/chat-attachments
     volumes:
       - pdf_source_data:/var/lib/contract-agent/source-pdfs
+      - chat_attachment_data:/var/lib/contract-agent/chat-attachments
     depends_on:
       neo4j:
         condition: service_healthy
@@ -213,6 +215,7 @@ volumes:
   neo4j_data:
   redis_data:
   pdf_source_data:
+  chat_attachment_data:
 
 networks:
   net:

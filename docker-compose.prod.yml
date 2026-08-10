@@ -102,11 +102,17 @@ services:
       - GCP_SECRET_ID=${GCP_SECRET_ID-ENCRYPTION_KEY}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:?Set CORS_ALLOWED_ORIGINS to your real frontend origin, e.g. https://your-domain.example}
       - PDF_SOURCE_STORAGE_DIR=/var/lib/contract-agent/source-pdfs
+      - CHAT_ATTACHMENT_STORAGE_DIR=/var/lib/contract-agent/chat-attachments
     volumes:
       # Original PDFs are encrypted application data. This volume is
       # intentionally backend-only: neither nginx nor the Celery worker can
       # serve/read it, and no host path is exposed to clients.
       - pdf_source_data:/var/lib/contract-agent/source-pdfs
+      # Chat image attachments (ADR-008) - same backend-only posture as
+      # pdf_source_data above, and for the same reason: encrypted
+      # application data, never Celery/nginx-reachable, no host path
+      # exposed to clients.
+      - chat_attachment_data:/var/lib/contract-agent/chat-attachments
     depends_on:
       redis:
         condition: service_healthy
@@ -254,6 +260,7 @@ services:
 volumes:
   redis_data:
   pdf_source_data:
+  chat_attachment_data:
   # Caddy's ACME account + issued certificates/keys - persisted so a
   # container restart doesn't re-issue from Let's Encrypt every time
   # (their rate limits are generous but there's no reason to burn them).
