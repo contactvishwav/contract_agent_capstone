@@ -1,9 +1,10 @@
 import asyncio
+import base64
 import inspect
 import json
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import AsyncIterator, Callable, Optional
+from typing import AsyncIterator, Callable, List, Optional
 from uuid import UUID
 
 from dotenv import load_dotenv
@@ -40,11 +41,13 @@ from backend.governance.base import GuardResult, GuardStatus
 from backend.governance.rbac import Permission, requires_permission
 from backend.governance.auth import TokenIdentity
 from backend.infrastructure.audit_logger import AuditLogger, AuditEventType
+from backend.infrastructure.chat_attachment_storage import chat_attachment_storage
 from backend.infrastructure.chat_session_repository import Neo4jChatSessionRepository
 from backend.application.services.chat_citation_service import build_validated_citations
 from backend.application.services.chat_evidence_service import (
     combine_evidence_envelopes,
     evidence_summary,
+    image_attachment_evidence_item,
     parse_evidence_envelope,
     render_deterministic_metadata_answer,
 )
@@ -386,6 +389,15 @@ class RunPayload(BaseModel):
     # Client-generated opaque UUID used only to cancel this authenticated,
     # tenant/session-bound active request. It is never authorization by itself.
     run_id: Optional[UUID] = None
+    # Optional: image attachments (ADR-008) uploaded ahead of this turn via
+    # POST /api/chat/sessions/{session_id}/attachments. Requires
+    # session_id (attachments are session-scoped; there is no ownership
+    # context to check them against otherwise) and a vision-capable model
+    # (model_registry.py's ModelSpec.capabilities) - both enforced in the
+    # /api/run/ route below, before streaming starts, same "clean 400
+    # before StreamingResponse starts" reasoning as every other pre-stream
+    # validation here.
+    attachment_ids: Optional[List[str]] = None
 
 
 class CancelChatRunPayload(BaseModel):
@@ -435,6 +447,54 @@ def _messages_from_stored(stored_messages):
         if message_class:
             messages.append(message_class(content=row.get("content") or ""))
     return messages
+
+
+def _build_prompt_message(
+    prompt: str,
+    attachment_ids: Optional[List[str]],
+    chat_session_repo,
+    tenant_id: str,
+    chat_session_id: Optional[str],
+) -> tuple[HumanMessage, list]:
+    """Plain-text HumanMessage when there's no attachment (unchanged
+    behavior); otherwise a multimodal content-block list. Also returns the
+    list of successfully-loaded attachments (id + real mime_type), so the
+    caller can build matching Output Guard evidence (ADR-004 addendum)
+    without a second repository round-trip.
+
+    One shared, provider-agnostic content-block format (langchain_core's
+    documented v1 standard, ImageContentBlock:
+    {"type": "image", "base64"|"url", "mime_type"}) - Gemini/GPT-4o/
+    Claude's own LangChain integrations (ChatGoogleGenerativeAI/
+    ChatOpenAI/ChatAnthropic) each independently detect and convert this
+    to their own real wire shape internally (see ADR-008's research
+    citations). No provider-specific branching here or anywhere else in
+    this codebase.
+    """
+    if not attachment_ids or not chat_session_repo:
+        return HumanMessage(content=prompt), []
+
+    content_blocks: list = [{"type": "text", "text": prompt}]
+    loaded_attachments: list = []
+    for attachment_id in attachment_ids:
+        attachment = chat_session_repo.get_attachment(attachment_id, tenant_id, chat_session_id)
+        if not attachment:
+            # Already ownership-checked in the /api/run/ route before
+            # streaming started - reaching here means the attachment
+            # vanished in the narrow window since (e.g. a concurrent
+            # request). Skip it rather than fail the whole turn over one
+            # since-vanished attachment.
+            continue
+        image_bytes = chat_attachment_storage.read(
+            tenant_id, chat_session_id, attachment_id, attachment["storage_key"],
+        )
+        content_blocks.append({
+            "type": "image",
+            "base64": base64.b64encode(image_bytes).decode("ascii"),
+            "mime_type": attachment["mime_type"],
+        })
+        loaded_attachments.append({"attachment_id": attachment_id, "mime_type": attachment["mime_type"]})
+    return HumanMessage(content=content_blocks), loaded_attachments
 
 
 def _normalize_ai_message_content(content):
@@ -570,7 +630,7 @@ def _safe_prompt_guard_message(violation_type: Optional[str]) -> str:
     return "This request was blocked by the Contract Chat safety policy. Please revise it and retry."
 
 
-async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, tenant_id: str, user_role: str = "unknown", user_id: str = "authenticated_user", contract_id: Optional[str] = None, chat_session_id: Optional[str] = None, requested_provider: Optional[str] = None, actual_provider: Optional[str] = None):
+async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, tenant_id: str, user_role: str = "unknown", user_id: str = "authenticated_user", contract_id: Optional[str] = None, chat_session_id: Optional[str] = None, requested_provider: Optional[str] = None, actual_provider: Optional[str] = None, attachment_ids: Optional[List[str]] = None):
     logger.info(f"Processing LLM request for model '{model}' for user_role '{user_role}'")
     requested_provider = requested_provider or model_spec(model).provider
     actual_provider = actual_provider or requested_provider
@@ -667,14 +727,22 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
         # never completes.
         stored_messages = chat_session_repo.list_messages(chat_session_id, tenant_id)
         previous_messages = _messages_from_stored(stored_messages)
-        chat_session_repo.append_message(chat_session_id, tenant_id, role="user_message", content=prompt)
+        persisted_user_message = chat_session_repo.append_message(chat_session_id, tenant_id, role="user_message", content=prompt)
+        if attachment_ids and persisted_user_message:
+            # Links each already-uploaded, already-ownership-checked
+            # attachment (ADR-008) to the message just persisted for this
+            # turn - the second half of the two-phase upload-then-send
+            # flow. content itself stays plain text; the attachment
+            # relationship is the only record of the image.
+            for attachment_id in attachment_ids:
+                chat_session_repo.link_attachment_to_message(attachment_id, persisted_user_message["message_id"], tenant_id)
     elif history != "[]":
         # history comes in from FE as stringified list of dumped model messages
         previous_messages = rebuild_history(history)
     else:
         previous_messages = []
 
-    prompt_message = HumanMessage(content=prompt)
+    prompt_message, loaded_attachments = _build_prompt_message(prompt, attachment_ids, chat_session_repo, tenant_id, chat_session_id)
     input_messages = [*previous_messages, prompt_message]
     
     corr_id = correlation_id_var.get()
@@ -746,7 +814,15 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
             # passes. Streaming it here would disclose content before the
             # post-check could reject or redact it.
             if isinstance(chunk[0], HumanMessage):
-                yield f"data: {json.dumps({'content': chunk[0].content, 'type': 'user_message'})}\n\n"
+                # chunk[0].content is a plain string normally, but a list of
+                # content blocks (text + image, ADR-008) when this turn
+                # carried an attachment - _normalize_ai_message_content
+                # already knows how to flatten that shape to just its text
+                # portion (image blocks have no "text" key, so they're
+                # skipped here, not serialized into this echo event).
+                # Attachment representation for the live/restored UI is
+                # Stage 3's scope, not this SSE echo.
+                yield f"data: {json.dumps({'content': _normalize_ai_message_content(chunk[0].content), 'type': 'user_message'})}\n\n"
 
         if message[0] == "updates":
             # use pydantic BaseClass method model_dump_json to dump message model to be stringified into history
@@ -806,6 +882,22 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
     # deliberately excluded: only evidence retrieved for this turn may ground
     # its candidate answer.
     evidence_envelope = combine_evidence_envelopes(evidence_envelopes, tenant_id)
+    if loaded_attachments:
+        # ADR-004 addendum / ADR-008: the attached image(s) this turn's
+        # HumanMessage actually carried are real evidence too - the
+        # responding model directly examined them, same as it examines
+        # retrieved contract text. Without this, Output Guard's grounding
+        # check has literally nothing to validate an image-describing claim
+        # against and incorrectly rejects a genuine, correct vision answer
+        # as insufficient_scope (confirmed live). image_attachment is
+        # deliberately not one of the source types that satisfies the
+        # separate legal-terms/text-evidence check below, so a turn mixing
+        # an image with real contract claims still needs real contract
+        # evidence for those claims, unchanged.
+        evidence_envelope["evidence"] = evidence_envelope.get("evidence", []) + [
+            image_attachment_evidence_item(loaded["attachment_id"], tenant_id, loaded["mime_type"])
+            for loaded in loaded_attachments
+        ]
     context_metadata["evidence_envelope"] = evidence_envelope
     logger.info("Contract Chat evidence prepared: %s", evidence_summary(evidence_envelope))
     deterministic_metadata_answer = render_deterministic_metadata_answer(
@@ -1180,13 +1272,16 @@ async def run(
     if payload.run_id and not payload.session_id:
         raise HTTPException(status_code=400, detail="Cancellable chat runs require a session")
     effective_contract_id = normalize_contract_scope(payload.contract_id)
+    if payload.attachment_ids and not payload.session_id:
+        raise HTTPException(status_code=400, detail="Image attachments require an active chat session")
     if payload.session_id:
         # Ownership check happens here, not inside runner(): runner() is an
         # async generator feeding StreamingResponse, and by the time it
         # could raise, response headers (200, text/event-stream) may
         # already be committed, so a clean HTTPException(404) isn't
         # reliably achievable from inside it. This is a plain coroutine.
-        session = Neo4jChatSessionRepository().get_session(payload.session_id, identity.tenant_id)
+        session_repo = Neo4jChatSessionRepository()
+        session = session_repo.get_session(payload.session_id, identity.tenant_id)
         if not session:
             raise HTTPException(status_code=404, detail=f"Chat session {payload.session_id} not found")
         persisted_contract_id = normalize_contract_scope(session.get("contract_id"))
@@ -1196,6 +1291,26 @@ async def run(
             # unchanged after an attempted scope override.
             raise HTTPException(status_code=409, detail="Contract scope does not match chat session")
         effective_contract_id = persisted_contract_id
+
+        if payload.attachment_ids:
+            # Explicit vision-capability gate (ADR-008): reject before any
+            # provider call, reusing model_registry.py's existing
+            # capabilities data - no silent fallback/degrade for a model
+            # that can't actually see the image.
+            if "vision" not in selected_spec.capabilities:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "message": "Selected model does not support image attachments",
+                        "category": "vision_unsupported",
+                    },
+                )
+            # Same "clean 400 before streaming starts" reasoning as the
+            # session/contract checks above - each attachment must already
+            # exist and belong to this exact tenant+session.
+            for attachment_id in payload.attachment_ids:
+                if not session_repo.get_attachment(attachment_id, identity.tenant_id, payload.session_id):
+                    raise HTTPException(status_code=404, detail=f"Attachment {attachment_id} not found")
 
     if effective_contract_id and not contract_exists_for_tenant(
         effective_contract_id, identity.tenant_id
@@ -1216,6 +1331,7 @@ async def run(
         "chat_session_id": payload.session_id,
         "requested_provider": selected_spec.provider,
         "actual_provider": selected_spec.provider,
+        "attachment_ids": payload.attachment_ids,
     }
     if payload.run_id and payload.session_id:
         try:

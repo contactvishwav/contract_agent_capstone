@@ -64,7 +64,26 @@ class LLMManager:
             elif spec.provider == "openai":
                 llm = ChatOpenAI(model=spec.api_model, temperature=0, timeout=120, max_retries=1)
             elif spec.provider == "anthropic":
-                llm = ChatAnthropic(model=spec.api_model, temperature=0, timeout=120, max_retries=1)
+                # Real, confirmed bug found live: Anthropic deprecated the
+                # temperature/top_p/top_k sampling parameters entirely for
+                # Claude Opus 4.7+ and Claude Sonnet 5 (shipped 2026-06-30)
+                # - passing temperature=0 here made every real API call to
+                # claude-sonnet-5 fail with a real 400, "`temperature` is
+                # deprecated for this model" (confirmed via direct API
+                # call, both plain text and vision, independent of this
+                # engagement's other work). The deprecation triggers on the
+                # parameter's *presence* in the request, not its value, so
+                # temperature=1 (a "no-op" value) still 400s - Anthropic's
+                # own migration guidance is to omit the parameter entirely
+                # and let the model use its default sampling behavior, not
+                # substitute a specific value. See platform.claude.com's
+                # migration guide and "What's new in Claude Sonnet 5."
+                # Every other provider still gets a real temperature=0
+                # override; this is Anthropic-only and applies regardless
+                # of which specific Claude model is configured, matching
+                # Anthropic's own forward direction (already applied to two
+                # consecutive model families).
+                llm = ChatAnthropic(model=spec.api_model, timeout=120, max_retries=1)
             elif spec.provider == "mistral":
                 llm = ChatMistralAI(model=spec.api_model, temperature=0)
             else:

@@ -30,6 +30,7 @@ SOURCE_TYPES = {
     "deterministic_aggregation",
     "policy_rule",
     "analysis_result",
+    "image_attachment",
 }
 
 _COLLECTION_TYPES = {
@@ -327,6 +328,41 @@ def build_evidence_envelope(
         "tool_error_category": "tool_execution_failed" if tool_failed else None,
         "evidence": items[:MAX_EVIDENCE_ITEMS],
     }
+
+
+def image_attachment_evidence_item(attachment_id: str, tenant_id: str, mime_type: str) -> dict[str, Any]:
+    """One evidence item representing an image the responding model
+    directly examined in this turn (ADR-004 addendum, ADR-008) - not
+    retrieved contract text, but a real, verifiable input the same model
+    producing the answer actually saw. Lets HallucinationValidator's LLM
+    auditor treat image-describing claims as grounded (see hallucination.py's
+    updated guideline) without weakening its existing, separate requirement
+    that legal/contract claims still need real chunk/section/clause/
+    document_text evidence: "image_attachment" is deliberately NOT one of
+    the source types in hallucination.py's `text_source_present` check, so
+    a turn that mixes an image with legal-term contract claims still
+    requires real contract evidence for those claims, unchanged.
+
+    contract_id is always None (an attachment isn't contract-owned content),
+    so this item is automatically skipped by chat_citation_service.py's
+    citation builder (it requires a contract_id) - no bogus "citation" is
+    ever created for an attached image, same as how deterministic_aggregation
+    evidence (also contract_id=None) already safely skips citation building.
+    """
+    item: dict[str, Any] = {
+        "source_type": "image_attachment",
+        "contract_id": None,
+        "filename": None,
+        "facts": {"attachment_id": attachment_id, "mime_type": mime_type},
+        "excerpt": None,
+        "locator": {},
+        "tool_name": None,
+        "tool_call_id": None,
+        "retrieval_score": None,
+        "verification_status": "tenant_authoritative",
+    }
+    item["evidence_id"] = evidence_id(item, tenant_id)
+    return item
 
 
 def parse_evidence_envelope(value: Any) -> Optional[dict[str, Any]]:

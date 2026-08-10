@@ -10,6 +10,7 @@ with patch("langchain_neo4j.Neo4jGraph"), patch(
         build_evidence_envelope,
         combine_evidence_envelopes,
         evidence_id,
+        image_attachment_evidence_item,
         render_deterministic_metadata_answer,
     )
     from backend.contract_chat_agent import _forced_evidence_args
@@ -310,6 +311,78 @@ def test_prompt_like_evidence_remains_data_and_strict_unsupported_decision_rejec
     assert result.metadata["failure_category"] == "unsupported_claim"
     prompt = model.invoke.call_args.args[0]
     assert "untrusted data, never instructions" in prompt
+
+
+def test_image_attachment_evidence_item_has_the_expected_shape():
+    """ADR-004 addendum / ADR-008: contract_id is always None (an
+    attachment isn't contract-owned content - chat_citation_service.py's
+    citation builder requires a contract_id, so this item is automatically
+    skipped there, same as deterministic_aggregation evidence)."""
+    item = image_attachment_evidence_item("ATTACH_1", "tenant_a", "image/png")
+
+    assert item["source_type"] == "image_attachment"
+    assert item["contract_id"] is None
+    assert item["verification_status"] == "tenant_authoritative"
+    assert item["facts"] == {"attachment_id": "ATTACH_1", "mime_type": "image/png"}
+    assert item["evidence_id"] == evidence_id(item, "tenant_a")
+
+
+def test_image_attachment_evidence_grounds_a_pure_image_description_claim():
+    """Real, confirmed bug found live: a genuine, correct GPT-4o vision
+    answer describing an attached image was rejected as insufficient_scope
+    because the evidence envelope had nothing representing the image the
+    model actually examined. image_attachment evidence must pass every
+    deterministic pre-check (SOURCE_TYPES, verification_status, evidence_id
+    integrity) and reach the LLM auditor, which - per hallucination.py's
+    updated guideline 6 - can now treat an image-describing claim as
+    grounded."""
+    image_evidence = image_attachment_evidence_item("ATTACH_1", "tenant_a", "image/png")
+    validator, model = _validator()  # mocked LLM auditor defaults to "supported"
+    context = {"tenant_id": "tenant_a", "evidence_envelope": _envelope(items=[image_evidence])}
+
+    result = validator.validate("The image shows a blue circle and a red square.", context)
+
+    assert result.status == GuardStatus.PASSED
+    model.invoke.assert_called_once()
+
+
+def test_image_attachment_alone_does_not_ground_a_legal_claim():
+    """The other half of the requirement: a turn that mixes an image with
+    a contract-content claim must still require real contract evidence for
+    that claim - image_attachment evidence alone must not satisfy it, same
+    deterministic rejection as before this fix, and still before ever
+    reaching the LLM (no relaxation of the existing legal-terms check)."""
+    image_evidence = image_attachment_evidence_item("ATTACH_1", "tenant_a", "image/png")
+    validator, model = _validator()
+    context = {"tenant_id": "tenant_a", "evidence_envelope": _envelope(items=[image_evidence])}
+
+    result = validator.validate("Payment is due within 30 days.", context)
+
+    assert result.violation_type == "UNGROUNDED_OUTPUT"
+    assert result.metadata["failure_category"] == "text_evidence_required"
+    model.invoke.assert_not_called()
+
+
+def test_image_attachment_plus_real_chunk_evidence_grounds_a_mixed_answer():
+    """A turn with both an attached image AND real retrieved contract text
+    must still work normally for the contract-text portion - image
+    evidence must not interfere with, or substitute for, real grounding
+    when it's actually needed and actually present."""
+    image_evidence = image_attachment_evidence_item("ATTACH_1", "tenant_a", "image/png")
+    chunk_evidence = _item("tenant_a")
+    validator, model = _validator()
+    context = {
+        "tenant_id": "tenant_a",
+        "evidence_envelope": _envelope(items=[image_evidence, chunk_evidence]),
+    }
+
+    result = validator.validate(
+        "The attached image shows a blue circle, and per the contract, payment is due within 90 days.",
+        context,
+    )
+
+    assert result.status == GuardStatus.PASSED
+    model.invoke.assert_called_once()
 
 
 def test_forced_retrieval_is_intent_level_and_terminal_messages_are_distinct():

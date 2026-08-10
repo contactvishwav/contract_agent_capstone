@@ -27,6 +27,31 @@ _TENANT_SCOPED_TOOL_NAMES = {"ContractSearch", "EnhancedContractSearch"} | MCP_C
 CHAT_PROMPT_VERSION = "contract-chat-v2-evidence"
 
 
+def _message_text(content) -> str:
+    """A HumanMessage's content is normally a plain string, but is a list
+    of content blocks (text + image, ADR-008) when the turn carries an
+    attachment - see main.py's _build_prompt_message. Real, confirmed bug
+    found live during Stage 2 verification: bare `str(message.content)` on
+    a list-shaped content produced its Python repr, including the full
+    raw base64 image data, which then got used as a search term
+    (_forced_evidence_args below) - a real live turn forced a nonsense
+    EnhancedContractSearch call with the base64 blob as summary_search,
+    contributing to an incorrect insufficient_scope rejection for an
+    otherwise-answerable vision question. Only the text block(s) matter
+    for intent-routing/forced-evidence purposes; image content is never
+    text to search on.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    return str(content) if content else ""
+
+
 _METADATA_INTENT = re.compile(
     r"\b(how many|count|list|available|which contracts?|what contracts?|contract types?|parties)\b",
     re.IGNORECASE,
@@ -110,7 +135,7 @@ def get_agent(llm):
 
         latest_prompt = next(
             (
-                str(message.content)
+                _message_text(message.content)
                 for message in reversed(state["messages"])
                 if isinstance(message, HumanMessage)
             ),

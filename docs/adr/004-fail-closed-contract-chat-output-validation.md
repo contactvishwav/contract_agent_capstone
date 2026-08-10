@@ -167,3 +167,40 @@ terminal record the same way every other mid-stream failure already does
 (`resilient_runner`'s existing catch-all path - reused as-is, not
 duplicated), and ends the SSE stream with a bounded "Response generation
 timed out. Please retry." message.
+
+## Addendum (2026-08-10): `image_attachment` grounding evidence
+
+Reconciliation finding from ADR-008 (Contract Chat image attachments):
+a genuine, correct vision answer describing an attached image was
+rejected by `HallucinationValidator` as `insufficient_scope` - the
+evidence envelope had nothing representing the image the responding
+model actually examined, so the LLM auditor correctly (from its own
+narrow perspective) found the claim unsupported. Confirmed live: a direct
+raw-provider call bypassing the graph/Output Guard entirely proved the
+underlying vision answer itself was accurate.
+
+Fixed narrowly, not by relaxing grounding generally. A new evidence
+`source_type`, `image_attachment` (`chat_evidence_service.py`'s
+`image_attachment_evidence_item()`), represents an attached image the
+responding model directly examined in this turn - `contract_id` is always
+`None` (it isn't contract-owned content), and `verification_status` is
+`tenant_authoritative`, matching `deterministic_aggregation`'s existing
+pattern for evidence with no contract owner. `runner()` appends one such
+item per successfully-loaded attachment to the combined envelope before
+Output Guard runs.
+
+This new source type is deliberately **not** one of the types
+`HallucinationValidator`'s deterministic legal-terms check treats as
+satisfying `text_source_present` - a turn that mixes an attached image
+with a legal/contract-content claim still requires real
+document_text/section/clause/chunk evidence for that claim, exactly as
+before this addendum; only image-describing claims are newly grounded.
+The LLM auditor's own prompt gained one guideline explaining this
+distinction explicitly, so the same narrow scoping holds at the
+LLM-judged layer, not just the deterministic pre-checks.
+
+Because `contract_id` is always `None`, `chat_citation_service.py`'s
+citation builder (which requires a `contract_id`) automatically skips
+this evidence type - no bogus "citation" is ever fabricated for an
+attached image, the same existing behavior `deterministic_aggregation`
+evidence already relies on.
