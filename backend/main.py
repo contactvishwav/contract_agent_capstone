@@ -28,7 +28,7 @@ from backend.agents.agent_workflow_tracker import get_current_workflow_status
 from backend.shared.middleware.tracing import TracingMiddleware
 from backend.shared.middleware.metrics import PrometheusMiddleware
 from backend.shared.middleware.security_headers import SecurityHeadersMiddleware
-from backend.shared.middleware.rate_limit import limiter
+from backend.shared.middleware.rate_limit import limiter, CHAT_RUN_RATE_LIMIT, tenant_scoped_or_ip_key
 from backend.shared.monitoring.prometheus_metrics import render_metrics
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -1108,11 +1108,18 @@ async def cancel_chat_run(
 
 
 @app.post("/api/run/")
+@limiter.limit(CHAT_RUN_RATE_LIMIT, key_func=tenant_scoped_or_ip_key)
 async def run(
+    request: Request,
     payload: RunPayload,
     llm_mgr: LLMManager = Depends(get_llm_manager),
     identity: TokenIdentity = Depends(requires_permission(Permission.ANALYZE)),
 ):
+    """Rate-limited per-tenant (CHAT_RUN_RATE_LIMIT, reconciliation-audit
+    finding) - every call is a real, billed LLM generation. The
+    `request: Request` parameter (unused directly here) is required by
+    @limiter.limit to identify the calling client, same convention as
+    auth_api.py's register()/issue_token()."""
     try:
         selected_spec = validate_model(payload.model, "chat")
     except ModelSelectionError as exc:

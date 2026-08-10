@@ -166,3 +166,22 @@ async def get_current_identity(authorization: Optional[str] = Header(None)) -> T
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token is missing tenant_id/role claims")
 
     return TokenIdentity(tenant_id=tenant_id, role=role, username=payload.get("username"))
+
+
+def tenant_id_for_rate_limiting(authorization: Optional[str]) -> Optional[str]:
+    """Best-effort tenant_id extraction for rate-limit bucketing only - NOT
+    an authorization decision (that's exclusively get_current_identity's
+    job, which raises on anything invalid). Verifies the signature (so a
+    caller can't forge a tenant_id to dodge another tenant's quota) but
+    returns None instead of raising on anything wrong, so the actual 401
+    still comes from get_current_identity/requires_permission afterward -
+    this only decides which bucket a rate-limited request counts against.
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    token = authorization[len("Bearer "):]
+    try:
+        payload = jwt.decode(token, _get_secret_key(), algorithms=[_ALGORITHM])
+    except jwt.InvalidTokenError:
+        return None
+    return payload.get("tenant_id")

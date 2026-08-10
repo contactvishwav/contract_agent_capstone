@@ -2,12 +2,32 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from fastapi import HTTPException
+from starlette.requests import Request
 
 with patch("langchain_neo4j.Neo4jGraph"), \
      patch("backend.shared.utils.gemini_embedding_service.embedding"):
     import backend.main as main
     from backend.api import chat_sessions
     from backend.governance.auth import TokenIdentity
+
+
+def _fake_request() -> Request:
+    """main.run() now carries @limiter.limit (reconciliation-audit
+    finding), which requires a real starlette Request positional argument
+    to key the rate-limit check on - this file calls run() directly as a
+    coroutine (bypassing the ASGI/TestClient layer entirely) for speed and
+    isolation, so it must build one by hand rather than getting one for
+    free from a real HTTP request."""
+    return Request({
+        "type": "http",
+        "method": "POST",
+        "path": "/api/run/",
+        "headers": [],
+        "client": ("testclient", 123),
+        "server": ("testserver", 80),
+        "scheme": "http",
+        "query_string": b"",
+    })
 
 
 class ContractScopeNormalizationTests(unittest.TestCase):
@@ -39,7 +59,7 @@ class ChatRunContractScopeTests(unittest.IsolatedAsyncioTestCase):
         )
         with patch.object(main, "Neo4jChatSessionRepository", return_value=session_repo), \
              patch.object(main, "contract_exists_for_tenant", return_value=True) as owns:
-            response = await main.run(payload, llm_mgr=self.llm_mgr, identity=self.identity)
+            response = await main.run(_fake_request(), payload, llm_mgr=self.llm_mgr, identity=self.identity)
         return response, owns
 
     async def test_matching_specific_contract_is_allowed(self):
@@ -77,7 +97,7 @@ class ChatRunContractScopeTests(unittest.IsolatedAsyncioTestCase):
              patch.object(main, "contract_exists_for_tenant", return_value=False), \
              patch.object(main, "runner") as runner:
             with self.assertRaises(HTTPException) as caught:
-                await main.run(payload, llm_mgr=self.llm_mgr, identity=self.identity)
+                await main.run(_fake_request(), payload, llm_mgr=self.llm_mgr, identity=self.identity)
         self.assertEqual(caught.exception.status_code, 404)
         runner.assert_not_called()
 
@@ -93,7 +113,7 @@ class ChatRunContractScopeTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main, "Neo4jChatSessionRepository", return_value=session_repo), \
              patch.object(main, "runner") as runner:
             with self.assertRaises(HTTPException):
-                await main.run(payload, llm_mgr=self.llm_mgr, identity=self.identity)
+                await main.run(_fake_request(), payload, llm_mgr=self.llm_mgr, identity=self.identity)
         session_repo.list_messages.assert_not_called()
         session_repo.append_message.assert_not_called()
         runner.assert_not_called()
