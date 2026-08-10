@@ -1,7 +1,20 @@
 import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ChatMessage } from './message';
 import { groupStoredMessagesIntoUiMessages } from './sessionMessages';
+
+// message.tsx resolves the active session_id (for authenticated attachment
+// fetches - AttachmentImage) via useChatSession(), so every render needs a
+// provider in scope. None of these fixtures include an "attachments" part,
+// so the exact session_id below is never actually read.
+vi.mock('../../../contexts/ChatSessionContext', () => ({
+  useChatSession: () => ({
+    activeSession: {
+      session_id: 'SESSION_TEST', contract_id: null, title: 'Test',
+      created_at: null, updated_at: null, message_count: 0,
+    },
+  }),
+}));
 
 describe('ChatMessage', () => {
   it('combines streamed chunks before rendering sanitized GFM', () => {
@@ -73,7 +86,7 @@ describe('ChatMessage', () => {
       message_id: 'm1', role: 'ai_message',
       content: 'Response validation failed. Please retry.',
       model: 'gemini-2.5-flash', tool_name: null, tool_call_id: null,
-      citations: [], terminal_status: 'validation_failed', sequence: 2,
+      citations: [], attachments: [], terminal_status: 'validation_failed', sequence: 2,
       terminal_reason: 'infrastructure',
       created_at: '2026-08-08T00:00:00Z',
     }]);
@@ -89,7 +102,7 @@ describe('ChatMessage', () => {
     const restored = groupStoredMessagesIntoUiMessages([{
       message_id: 'm2', role: 'ai_message', content: 'Generation stopped',
       model: 'gpt-4o', tool_name: null, tool_call_id: null,
-      citations: [], terminal_status: 'cancelled', sequence: 4,
+      citations: [], attachments: [], terminal_status: 'cancelled', sequence: 4,
       created_at: '2026-08-08T00:00:00Z',
     }]);
 

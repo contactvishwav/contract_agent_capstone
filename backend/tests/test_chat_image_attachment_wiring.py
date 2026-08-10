@@ -181,6 +181,37 @@ class VisionCapabilityGateRouteTests(unittest.TestCase):
             ))
         self.assertEqual(response.media_type, "text/event-stream")
 
+    def test_more_than_four_attachments_is_rejected_before_any_provider_call(self):
+        """ADR-008: bounds cost/context blowup per turn. Real gap found
+        during Stage 3 verification - the limit was documented in the ADR
+        but never actually enforced in code."""
+        for i in range(2, 6):
+            self.repo.create_attachment(self.sid, "tenant_a", f"ATTACH_{i}", "image/png", 1, "a" * 64)
+        payload = self._payload(attachment_ids=[f"ATTACH_{i}" for i in range(1, 6)])  # 5 total
+
+        with patch.object(main, "validate_model", return_value=self.vision_spec), \
+             patch.object(main, "Neo4jChatSessionRepository", return_value=self.repo), \
+             patch.object(main, "resilient_runner") as resilient_runner, \
+             patch.object(main, "runner") as runner:
+            with self.assertRaises(HTTPException) as cm:
+                asyncio.run(main.run(_fake_request(), payload, llm_mgr=self.llm_mgr, identity=self.identity))
+
+        self.assertEqual(cm.exception.status_code, 400)
+        self.assertIn("4", cm.exception.detail)
+        resilient_runner.assert_not_called()
+        runner.assert_not_called()
+
+    def test_exactly_four_attachments_is_allowed(self):
+        for i in range(2, 5):
+            self.repo.create_attachment(self.sid, "tenant_a", f"ATTACH_{i}", "image/png", 1, "a" * 64)
+        payload = self._payload(attachment_ids=[f"ATTACH_{i}" for i in range(1, 5)])  # 4 total
+
+        with patch.object(main, "validate_model", return_value=self.vision_spec), \
+             patch.object(main, "Neo4jChatSessionRepository", return_value=self.repo):
+            response = asyncio.run(main.run(_fake_request(), payload, llm_mgr=self.llm_mgr, identity=self.identity))
+
+        self.assertEqual(response.media_type, "text/event-stream")
+
     def test_attachments_without_a_session_id_are_rejected(self):
         payload = main.RunPayload(model="non-vision-model", prompt="hi", attachment_ids=["ATTACH_1"])
         with patch.object(main, "validate_model", return_value=self.vision_spec):

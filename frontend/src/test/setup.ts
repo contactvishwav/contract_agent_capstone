@@ -14,3 +14,14 @@ Object.defineProperty(Element.prototype, 'scrollIntoView', {
 if (typeof globalThis.DOMMatrix === 'undefined') {
   globalThis.DOMMatrix = class TestDOMMatrix {} as typeof DOMMatrix;
 }
+
+// jsdom does not implement the object URL APIs at all (blob URL creation
+// for local image previews and authenticated attachment fetches - input.tsx,
+// AttachmentImage.tsx). Real browser behavior isn't under test here, just
+// that these components call create/revoke correctly - a deterministic
+// fake string keeps assertions simple without needing a real Blob backend.
+if (typeof globalThis.URL.createObjectURL === 'undefined') {
+  let counter = 0;
+  globalThis.URL.createObjectURL = () => `blob:test-${++counter}`;
+  globalThis.URL.revokeObjectURL = () => undefined;
+}

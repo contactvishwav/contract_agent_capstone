@@ -14,10 +14,18 @@ export function groupStoredMessagesIntoUiMessages(stored: ChatSessionMessage[]):
     for (const row of stored) {
         if (row.role === "user_message") {
             current = null; // force a new ai Message for whatever follows
+            const parts: Message["parts"] = [];
+            // Attachments render first (same convention Claude/ChatGPT use:
+            // image strip above the text) - a JSON-stringified synthetic
+            // part, same bolt-on pattern as "citations" below.
+            if (row.attachments?.length) {
+                parts.push({ type: "attachments", content: JSON.stringify(row.attachments) });
+            }
+            parts.push({ type: "user_message", content: row.content });
             messages.push({
                 id: row.message_id,
                 type: "user",
-                parts: [{ type: "user_message", content: row.content }],
+                parts,
                 generating: false,
             });
             continue;

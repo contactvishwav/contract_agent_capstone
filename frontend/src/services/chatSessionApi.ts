@@ -30,10 +30,16 @@ export interface ChatSessionMessage {
   tool_name: string | null;
   tool_call_id: string | null;
   citations: ChatCitation[];
+  attachments: ChatAttachmentRef[];
   terminal_status?: 'passed' | 'rejected' | 'validation_failed' | 'timed_out' | 'cancelled' | 'empty' | 'generation_failed' | 'persistence_failed' | null;
   terminal_reason?: string | null;
   sequence: number;
   created_at: string | null;
+}
+
+export interface ChatAttachmentRef {
+  attachment_id: string;
+  mime_type: string;
 }
 
 export interface ChatCitation {

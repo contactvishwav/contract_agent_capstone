@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useCallback } from "react";
 
-export type MessagePartType = "user_message" | "ai_message" | "tool_call" | "tool_message" | "citations" | "error" | "history" | "end";
+export type MessagePartType = "user_message" | "ai_message" | "tool_call" | "tool_message" | "citations" | "attachments" | "error" | "history" | "end";
 
 export type MessagePart = {
     type: MessagePartType;

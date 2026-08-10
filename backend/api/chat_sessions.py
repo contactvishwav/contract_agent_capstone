@@ -107,6 +107,7 @@ class MessageResponse(BaseModel):
     tool_name: Optional[str] = None
     tool_call_id: Optional[str] = None
     citations: List[dict] = Field(default_factory=list)
+    attachments: List[dict] = Field(default_factory=list)
     terminal_status: Optional[Literal[
         "passed",
         "rejected",
@@ -197,6 +198,15 @@ async def get_session_detail(
                 tool_call_id=m.get("tool_call_id"),
                 citations=revalidate_stored_citations(
                     m.get("citations"), identity.tenant_id, answer_text=m.get("content"),
+                ),
+                attachments=(
+                    # Only attachment_id/mime_type reach the client - not
+                    # size_bytes/created_at (Neo4j datetime, not directly
+                    # JSON-serializable, and not needed for rendering).
+                    [
+                        {"attachment_id": a["attachment_id"], "mime_type": a["mime_type"]}
+                        for a in repository.list_attachments_for_message(m["message_id"], identity.tenant_id)
+                    ] if m["role"] == "user_message" else []
                 ),
                 terminal_status=m.get("terminal_status"),
                 terminal_reason=m.get("terminal_reason"),

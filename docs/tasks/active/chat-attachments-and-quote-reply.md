@@ -1,11 +1,11 @@
 # Contract Chat image attachments and quote-reply
 
-- Status: In progress (Stage 2 of 5 complete)
+- Status: In progress (Stage 3 of 5 complete)
 - Active owner/tool: Claude
 - Branch: `feat/persistent-chat-sessions`
 - Worktree: `/Users/vishwa/contract_agent_capstone_copy`
 - Base commit: `4812985`
-- Last known commit: `f36b504` (Stage 1)
+- Last known commit: (uncommitted - Stage 1 work in progress)
 
 ## Goal
 
@@ -15,9 +15,9 @@ quote-and-reply. See ADR-008 for the full design and reasoning. Staged
 implementation, each stage independently reported and verified:
 
 1. Storage + Attachment entity + upload/retrieval endpoints + tenant
-   isolation tests.
+   isolation tests. **(this stage)**
 2. Provider image-format wiring + explicit vision-capability gate +
-   cross-provider conversion regression test. **(this stage)**
+   cross-provider conversion regression test.
 3. Frontend attach/preview/render UI (live + restored).
 4. Quote-reply backend (context threading, persistence, citation
    snapshot, confirmed never re-fed into Output Guard).
@@ -49,7 +49,7 @@ implementation, each stage independently reported and verified:
 - [x] Stage 2: single provider-agnostic image content-block format feeds
   Gemini/GPT-4o/Claude with zero per-provider branching; explicit
   rejection for non-vision models.
-- [ ] Stage 3: attach/preview/render UI, including correct rendering on
+- [x] Stage 3: attach/preview/render UI, including correct rendering on
   session restoration.
 - [ ] Stage 4: quote-reply reaches the model as real context; persists and
   restores correctly; citation snapshot is UI-only, never re-grounds.
@@ -74,12 +74,11 @@ implementation, each stage independently reported and verified:
 - `backend/shared/middleware/rate_limit.py` (new rate limit constant)
 - `docker-compose.yml` / `docker-compose.prod.yml` (new volume)
 - `docs/adr/008-contract-chat-attachments-and-quote-reply.md` (new)
-- `backend/contract_chat_agent.py`, `backend/main.py`,
-  `backend/llm_manager.py` (Stage 2)
-- Later stages: frontend `input.tsx`, `message.tsx`, `provider.tsx`,
-  `sessionMessages.ts`, a new attachment API service file (Stage 3, 5);
-  `chat_session_repository.py`'s message schema
-  (`quoted_text`/`quoted_message_id`/`quoted_citations`, Stage 4).
+- Later stages: `backend/contract_chat_agent.py`, `backend/main.py`,
+  `backend/model_registry.py` (Stage 2); frontend `input.tsx`,
+  `message.tsx`, `provider.tsx`, `sessionMessages.ts`, a new attachment
+  API service file (Stage 3, 5); `chat_session_repository.py`'s message
+  schema (`quoted_text`/`quoted_message_id`/`quoted_citations`, Stage 4).
 
 ## Verification commands
 
@@ -99,14 +98,16 @@ implementation notes:
   `(tenant_id, session_id, attachment_id)`, computed before any graph
   write - encrypt-and-store happens first, keyed off a freshly generated
   id, then the graph row is created once with the real storage_key/mime_
-  type already known.
+  type already known. Avoids a placeholder-then-update two-step dance and
+  avoids a moment where a graph node claims a storage_key that doesn't
+  exist yet.
 - `get_attachment` requires an exact `(attachment_id, tenant_id,
   session_id)` match - a tenant's own attachment from a *different* one of
   their own sessions is still rejected, not just cross-tenant reads.
 
 ## Work completed
 
-**Stage 1**:
+**Stage 1** (this pass):
 - `ChatAttachmentStorage` (AES-256-GCM, AAD-bound to tenant+session+
   attachment identity, magic-byte format sniffing, path-traversal
   defense) - `backend/infrastructure/chat_attachment_storage.py`.
@@ -151,13 +152,17 @@ implementation notes:
 - `RunPayload.attachment_ids: Optional[List[str]]`.
 - 22 new tests: `test_chat_image_cross_provider_conversion.py` (4, the
   literal same-dict-through-each-real-conversion-function proof),
-  `test_chat_image_attachment_wiring.py` (9: `_build_prompt_message`
+  `test_chat_image_attachment_wiring.py` (11: `_build_prompt_message`
   unit tests, vision-gate route tests including "no attachment leaves a
   non-vision model unaffected" and "cross-tenant attachment 404s", and
   a real end-to-end `runner()` test proving the model receives the
   correct multimodal content and the attachment gets linked),
   `test_chat_image_message_text_extraction.py` (7, the regression test
   for the bug found live - see below).
+- One pre-existing test updated legitimately:
+  `test_all_real_migrations_registered_in_correct_order`'s exact-count
+  assertion (this was actually a Stage 1 leftover, caught and fixed in
+  this pass's full-suite run).
 
 **Interim fix pass** (between Stage 2 and Stage 3, both explicitly
 requested and both now resolved):
@@ -199,16 +204,108 @@ requested and both now resolved):
   `"status": "passed"` with a real generated answer (visible in the raw
   history event), no more 400.
 
+**Stage 3** (this pass):
+- Backend addition needed to make restoration possible at all:
+  `MessageResponse.attachments` (`backend/api/chat_sessions.py`) - only
+  `attachment_id`/`mime_type` reach the client (not `size_bytes`/
+  `created_at`, a Neo4j datetime not directly JSON-serializable and not
+  needed for rendering); scoped to `user_message` rows only (attachments
+  are only ever linked there).
+- Also closed a real gap found while implementing this stage: the
+  "4 images per message" limit was documented in ADR-008 but never
+  actually enforced in code - added `MAX_ATTACHMENTS_PER_MESSAGE` check
+  to `/api/run/`, before any provider call, same pattern as the vision
+  gate.
+- `frontend/src/services/chatAttachmentApi.ts` (new): upload (multipart),
+  authenticated image fetch as an object URL, client-side validation
+  mirroring the server's real limits (5MB/PNG-JPEG-WEBP/4-per-message),
+  a distinct `AttachmentUploadError` carrying the server's real rejection
+  reason (size/format/rate-limit/network) - no silent failures.
+- `MessagePartType` gained `"attachments"` (`provider.tsx`) - same
+  JSON-stringified synthetic-part bolt-on pattern `"citations"` already
+  established, so live-sent and restored messages render identically
+  with zero special-casing.
+- `AttachmentImage.tsx` (new): authenticated fetch (never a public URL,
+  same posture as `PdfCitationViewer.tsx`), loading/ready/unavailable
+  states, click-to-enlarge lightbox.
+- `input.tsx`: attach button (hidden file input + trigger), thumbnail
+  preview row with per-attachment uploading/error states and remove,
+  two-phase upload-on-select (not deferred to send) so most uploads have
+  already finished by the time the user finishes typing, session created
+  lazily on first attach if none exists yet (`ensureSession`, shared with
+  the existing first-send lazy creation), Send disabled while any
+  attachment is uploading/errored/unsupported-by-the-selected-model, a
+  real inline vision-gate warning (using `ModelOption.capabilities`,
+  already returned by the existing models endpoint - zero extra
+  requests) rather than waiting for the server's 400.
+- `sessionMessages.ts`: restores the `"attachments"` part from
+  `ChatSessionMessage.attachments`, ordered before the text part.
+- 55 new tests total: 6 new backend (`test_chat_session_detail_
+  attachments.py` ×4, attachment-count-limit ×2), 11 new frontend
+  (`ChatAttachments.test.tsx` - client-side validation, loading/error
+  states, remove, 4-image limit, vision-gate warning, lazy session
+  creation on attach, live-send request body + rendering, restored-
+  history rendering). One pre-existing frontend test file
+  (`ChatMessage.test.tsx`) needed a `useChatSession` mock added, since
+  `ChatMessage` now resolves `session_id` for attachment fetches -  a
+  real, necessary consequence of this stage's change, not a workaround.
+
 ## Work remaining
 
-Stages 3-5, per the acceptance criteria above.
+Stages 4-5, per the acceptance criteria above.
 
 ## Failing checks
 
-None - full suite green (913 passed/1 skipped after Stage 1, 935 after
-Stage 2, 941 after this interim Output-Guard/Claude fix pass).
+None - full suite green throughout (913 passed/1 skipped after Stage 1,
+935 after Stage 2, 941 after the interim Output-Guard/Claude fix pass,
+947 after Stage 3). Frontend: 40/40 tests, clean production build, lint
+at the exact same pre-existing baseline (17 errors/7 warnings) - zero
+new lint issues introduced.
+
+## Checks not run
+
+- **Real browser verification was not possible this pass**: no browser-
+  automation tool (Playwright/Puppeteer/similar) is available in this
+  session. Not fabricated or approximated as "done." Substituted with
+  the closest honest proxy: drove the exact same API sequence the real
+  frontend calls (upload → send a real question against gpt-4o with a
+  real test image → fetch session detail as a page refresh would →
+  re-fetch the image bytes as `AttachmentImage` would after that
+  refresh) - confirmed a genuine, correct vision answer ("The image
+  contains a green circle and a purple triangle," matching the actual
+  test image), confirmed the restored session detail carries the
+  `attachments` field correctly, and confirmed the re-fetched image
+  bytes are byte-identical to the original upload. This proves the
+  backend contract the UI depends on is correct end-to-end with real
+  data and a real provider - it does not prove the actual bundled
+  frontend renders correctly in a real browser. A manual pass in a real
+  browser is recommended before considering Stage 3 fully closed.
+
+## Changed/uncommitted files
+
+All Stage 1-3 and interim-fix files remain uncommitted pending user
+review, matching this branch's established per-stage reporting
+discipline.
+
+## Risks/questions
+
+- Real browser verification still outstanding - see "Checks not run"
+  above. Recommend a manual pass (attach, send, navigate away/back,
+  refresh) before this stage is considered fully closed.
+- Minor, disclosed UX limitation: if a session is created by attaching
+  an image before typing any text, its title defaults to "New chat"
+  (the server's default when no title is given) rather than being
+  derived from the first message, since no message text exists yet at
+  attach time. Not fixed - a rename-after-the-fact would add real
+  complexity for a small cosmetic gain; flagging rather than silently
+  accepting without mention.
+- None currently open from Stage 2's interim fix pass (Output Guard
+  grounding gap, Claude's temperature incompatibility) - both fixed,
+  tested, and live-verified.
+- None new beyond what ADR-008 already names as accepted (orphaned-
+  attachment retention, no session archive/delete to cascade against yet).
 
 ## Recommended next action
 
-Proceed to Stage 3 (frontend attach/preview/render UI) after this pass's
+Proceed to Stage 4 (quote-reply backend) after this pass's
 report is reviewed.

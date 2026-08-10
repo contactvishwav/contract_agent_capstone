@@ -360,6 +360,11 @@ async def metrics():
     return Response(content=render_metrics(), media_type=CONTENT_TYPE_LATEST)
 
 
+# ADR-008: bounds cost/context blowup per turn; easy to raise later since
+# it's already a proper relationship (HAS_ATTACHMENT), not a single field.
+MAX_ATTACHMENTS_PER_MESSAGE = 4
+
+
 class RunPayload(BaseModel):
     model: str
     prompt: str
@@ -1293,6 +1298,11 @@ async def run(
         effective_contract_id = persisted_contract_id
 
         if payload.attachment_ids:
+            if len(payload.attachment_ids) > MAX_ATTACHMENTS_PER_MESSAGE:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Too many attachments (max {MAX_ATTACHMENTS_PER_MESSAGE} per message)",
+                )
             # Explicit vision-capability gate (ADR-008): reject before any
             # provider call, reusing model_registry.py's existing
             # capabilities data - no silent fallback/degrade for a model

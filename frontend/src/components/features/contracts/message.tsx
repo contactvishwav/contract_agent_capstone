@@ -3,9 +3,11 @@ import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import { Loader } from "../../shared/ui/loader";
-import { ChatCitation } from "../../../services/chatSessionApi";
+import { ChatAttachmentRef, ChatCitation } from "../../../services/chatSessionApi";
 import { Message, MessagePart } from "./provider";
 import { PdfCitationViewer } from "./PdfCitationViewer";
+import { AttachmentImage } from "./AttachmentImage";
+import { useChatSession } from "../../../contexts/ChatSessionContext";
 
 interface Props {
     message: Message;
@@ -102,8 +104,33 @@ function CitationPanel({ content }: { content: string }) {
     );
 }
 
-function renderPart(part: RenderGroup, index: number): ReactNode {
+function parseAttachments(content: string): ChatAttachmentRef[] {
+    try {
+        const value = JSON.parse(content);
+        return Array.isArray(value)
+            ? value.filter((item) => item && typeof item.attachment_id === "string")
+            : [];
+    } catch {
+        return [];
+    }
+}
+
+function AttachmentsRow({ content, sessionId }: { content: string; sessionId: string | null }) {
+    const attachments = parseAttachments(content);
+    if (!attachments.length || !sessionId) return null;
+    return (
+        <div className="mb-2 flex flex-wrap gap-2" aria-label="Attached images">
+            {attachments.map((attachment) => (
+                <AttachmentImage key={attachment.attachment_id} sessionId={sessionId} attachmentId={attachment.attachment_id} />
+            ))}
+        </div>
+    );
+}
+
+function renderPart(part: RenderGroup, index: number, sessionId: string | null): ReactNode {
     switch (part.type) {
+        case "attachments":
+            return <AttachmentsRow key={index} content={part.content} sessionId={sessionId} />;
         case "ai_markdown":
             return (
                 <div key={index} className="space-y-2 break-words">
@@ -145,16 +172,18 @@ function renderPart(part: RenderGroup, index: number): ReactNode {
 
 export function ChatMessage({ message }: Props) {
     const { type, parts, generating } = message;
+    const { activeSession } = useChatSession();
     const hasAnswer = parts.some((part) => part.type === "ai_message");
     const hasCitations = parts.some((part) => part.type === "citations" && parseCitations(part.content).length > 0);
     const attribution = [...parts].reverse().find(
         (part) => part.type === "ai_message" && (part.actual_model || part.actual_provider),
     );
+    const sessionId = activeSession?.session_id ?? null;
     return (
         <div className={`py-3 gap-0 ${type === "ai" ? "opacity-100" : "opacity-60"}`}>
             <strong className="text-xs">{type === "ai" ? "AI" : "USER"}</strong>
             <div>
-                {groupParts(parts).map(renderPart)}
+                {groupParts(parts).map((part, index) => renderPart(part, index, sessionId))}
                 {type === "ai" && attribution?.actual_model && (
                     <p className="mt-2 text-xs text-muted-foreground">
                         Actual model: {attribution.actual_provider ? `${attribution.actual_provider} · ` : ""}{attribution.actual_model}
