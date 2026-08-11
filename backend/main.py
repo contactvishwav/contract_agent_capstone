@@ -1264,6 +1264,92 @@ async def cancellable_chat_stream(
         await chat_run_registry.finish(run)
 
 
+def _saw_end_event(event: str) -> bool:
+    try:
+        payload = json.loads(event.removeprefix("data: ").strip())
+    except (TypeError, ValueError):
+        return False
+    return payload.get("type") == "end"
+
+
+def _terminal_event_pair(status: str, reason_category: str, message: str) -> tuple[str, str]:
+    return (
+        f"data: {json.dumps({'content': message, 'type': 'error', 'status': status, 'reason_category': reason_category})}\n\n",
+        f"data: {json.dumps({'content': '', 'type': 'end', 'status': status, 'reason_category': reason_category})}\n\n",
+    )
+
+
+async def _guaranteed_terminal_stream(source: AsyncIterator[str]) -> AsyncIterator[str]:
+    """Defense-in-depth around the whole SSE pipeline (resilient_runner,
+    cancellable_chat_stream, or any future wrapper): regardless of how or
+    why `source` ends - a clean finish, an ordinary exception, or a
+    CancelledError from ANY cause - the client is guaranteed to receive one
+    well-formed terminal 'end' event before the stream closes.
+
+    Real, confirmed bug found live: a spurious mid-generation
+    asyncio.CancelledError occurred with no explicit /api/chat/runs/.../
+    cancel call ever made (confirmed via full log search - see ADR-004's
+    sibling investigation notes in the task record). resilient_runner's own
+    CancelledError handler persists server-side state and re-raises with no
+    client-facing event at all; cancellable_chat_stream's cancellation-race
+    loop only catches StopAsyncIteration around next_event.result(), so any
+    other exception (including this one) propagated out uncaught. The
+    browser's SSE connection was left with nothing further ever arriving -
+    reproduced live as a stall exceeding 400 seconds, well past every
+    configured timeout, because none of those timeouts are the right layer
+    to catch "the client was never told the stream ended" at all.
+
+    Live-verified separately: cancellable_chat_stream's OWN deliberate
+    cancellation-race branch (an explicit Stop Generating click) ends its
+    generator via a plain `break` - ordinary StopAsyncIteration, no
+    exception at all - which reaches this same fallback below. It is
+    currently labeled "generation_failed" even though it was a genuine
+    cancellation; precise labeling for this specific case is a known,
+    deliberately deferred follow-up, not fixed by this pass.
+
+    This is deliberately the single, outermost point of guarantee - fixing
+    each individual internal call site that could raise would only cover
+    known causes; this covers the whole class, including causes not yet
+    found (see the addendum's item 3 investigation into this exact
+    incident's spurious trigger).
+    """
+    saw_end = False
+    try:
+        async for event in source:
+            if _saw_end_event(event):
+                saw_end = True
+            yield event
+    except asyncio.CancelledError:
+        if not saw_end:
+            for fallback_event in _terminal_event_pair("cancelled", "client_cancellation", "Generation stopped."):
+                yield fallback_event
+        return
+    except Exception:
+        logger.error(
+            "Chat stream ended on an unexpected exception past every inner "
+            "handler; a fallback terminal event was sent so the client "
+            "never hangs",
+            exc_info=True,
+        )
+        if not saw_end:
+            for fallback_event in _terminal_event_pair(
+                "generation_failed", "generation_failed", "Response failed before completion. Please retry.",
+            ):
+                yield fallback_event
+        return
+    if not saw_end:
+        # The stream finished (StopAsyncIteration) without ever yielding a
+        # terminal event - either a deliberate cancellation via a plain
+        # `break` (see the docstring above) or, for any other cause, the
+        # backstop for resilient_runner's own contract being violated by a
+        # future change.
+        logger.error("Chat stream ended without a terminal event; a fallback was sent")
+        for fallback_event in _terminal_event_pair(
+            "generation_failed", "generation_failed", "Response failed before completion. Please retry.",
+        ):
+            yield fallback_event
+
+
 @app.post("/api/chat/runs/{run_id}/cancel", status_code=202)
 async def cancel_chat_run(
     run_id: UUID,
@@ -1393,7 +1479,9 @@ async def run(
         except ValueError:
             raise HTTPException(status_code=409, detail="Chat run identifier is already active")
         stream = cancellable_chat_stream(active_run, **runner_kwargs)
+        guarded_stream = _guaranteed_terminal_stream(stream)
     else:
         stream = resilient_runner(**runner_kwargs)
+        guarded_stream = _guaranteed_terminal_stream(stream)
 
-    return StreamingResponse(stream, media_type="text/event-stream")
+    return StreamingResponse(guarded_stream, media_type="text/event-stream")
