@@ -85,28 +85,48 @@ def _current_turn_has_tool_evidence(messages) -> bool:
     return False
 
 
-def _current_turn_has_image(messages) -> bool:
-    """True when the current turn's own HumanMessage carries an attached
-    image (main.py's _build_prompt_message content-block shape). Real,
-    confirmed bug found live: the forced-evidence fallback below existed to
-    catch a model answering a *contract* question from prior knowledge
-    instead of calling a tool - it had no concept of attachments and fired
-    unconditionally, discarding a model's direct, correct examination of an
-    attached image and replacing it with a nonsense EnhancedContractSearch
-    call built from the image question's own text (e.g. "what page is this
-    image from?" as a semantic search term against contract chunks) -
-    producing the confused, ungrounded answers observed live. An attached
-    image is itself real evidence for an image-describing claim (see
-    ADR-004's addendum / image_attachment_evidence_item in
-    chat_evidence_service.py), so a turn that has one needs no forced
-    retrieval just because the model chose not to call a tool.
+def _conversation_has_image_evidence(messages) -> bool:
+    """True when ANY HumanMessage in this invocation carries an attached
+    image (main.py's _build_prompt_message content-block shape) - not just
+    the current turn's own. Real, confirmed bug found live: the
+    forced-evidence fallback below existed to catch a model answering a
+    *contract* question from prior knowledge instead of calling a tool -
+    it had no concept of attachments and fired unconditionally, discarding
+    a model's direct, correct examination of an attached image and
+    replacing it with a nonsense EnhancedContractSearch call built from the
+    image question's own text (e.g. "what page is this image from?" as a
+    semantic search term against contract chunks) - producing the
+    confused, ungrounded answers observed live. An attached image is
+    itself real evidence for an image-describing claim (see ADR-004's
+    addendum / image_attachment_evidence_item in chat_evidence_service.py),
+    so a turn that has one needs no forced retrieval just because the
+    model chose not to call a tool.
+
+    ADR-008 cross-turn image context: originally scoped to only the
+    *latest* HumanMessage (matching _current_turn_has_tool_evidence's
+    "current turn only" scoping) - broadened to scan the whole list once
+    main.py's _messages_from_stored started carrying the single most
+    recent image-bearing turn's real image forward into later turns too
+    (see that function's docstring), since a genuine follow-up about that
+    carried-forward image ("what color is the circle?", no re-attachment)
+    is no longer necessarily the LAST HumanMessage once even one more
+    plain-text turn has happened in between. Deliberate, accepted
+    trade-off: an unrelated question on a later turn that also doesn't
+    call a tool now also skips forcing, purely because an image sits
+    somewhere earlier in this same bounded window - Output Guard's
+    fail-closed evidence check (image_attachment deliberately does not
+    satisfy the legal-terms/text-evidence requirement) remains the real
+    safety net for that case regardless; the practical cost is an
+    occasional avoidable rejection instead of a forced-tool-call recovery,
+    not an ungrounded answer slipping through.
     """
-    for message in reversed(messages):
+    for message in messages:
         if isinstance(message, HumanMessage):
             content = message.content
-            return isinstance(content, list) and any(
+            if isinstance(content, list) and any(
                 isinstance(block, dict) and block.get("type") == "image" for block in content
-            )
+            ):
+                return True
     return False
 
 
@@ -132,19 +152,23 @@ def get_agent(llm):
         "Always explain results you get from the tools in a concise manner to not overwhelm the user but also don't be too technical. "
         "Answer questions as if you are answering to non-technical management level. "
         "Important: Be confident and accurate in your tool choice! Avoid asking follow-up questions if possible. "
-        "An attached image is only available to you in the turn it was attached - a note in an earlier "
-        "message like '[This message included an attached image that is not available in the current "
-        "turn.]' means exactly that: you cannot see that image anymore, even if the user is now asking "
-        "about it. If the user asks about an image from an earlier turn and no image is attached to the "
-        "current turn, tell them plainly you no longer have access to it and ask them to re-attach it - "
-        "do not guess or invent what it might have shown, and do not treat retrieved contract text as a "
-        "substitute for it. "
-        "When an image IS attached to the current turn, you can genuinely see and examine it directly - "
-        "never claim you cannot process images or cannot see it, that is false and will be rejected. If "
-        "the image itself cannot answer part of the question (for example, which page of a larger source "
-        "document it came from, when no page number or other locator is visible in the image), say plainly "
-        "that the image doesn't show that specific information, rather than claiming you cannot process "
-        "images at all. "
+        "The most recently attached image stays visible to you in every later turn of this conversation, "
+        "even when the user doesn't re-attach it - you can genuinely see and examine it directly in a "
+        "follow-up turn, the same as the turn it was first attached in. This stops being true only once "
+        "the user attaches a NEW image (only the newest one is ever visible at a time), or the image is "
+        "old enough that it is no longer the most recent one. A note in an earlier message like '[This "
+        "message included an attached image that is not available in the current turn.]' means exactly "
+        "that for THAT specific image: it has been superseded and you genuinely cannot see it anymore, "
+        "even if the user is now asking about it. If the user asks about an image and none is visible to "
+        "you at all (neither this turn nor carried forward from a recent one), tell them plainly you no "
+        "longer have access to it and ask them to re-attach it - do not guess or invent what it might have "
+        "shown, and do not treat retrieved contract text as a substitute for it. "
+        "When an image IS visible to you (this turn's own attachment, or one carried forward from a "
+        "recent turn), never claim you cannot process images or cannot see it, that is false and will be "
+        "rejected. If the image itself cannot answer part of the question (for example, which page of a "
+        "larger source document it came from, when no page number or other locator is visible in the "
+        "image), say plainly that the image doesn't show that specific information, rather than claiming "
+        "you cannot process images at all. "
         f"Today is {date.today()}"
     )
 
@@ -216,13 +240,13 @@ def get_agent(llm):
         # model's real, direct examination of the image and replacing it
         # with a forced EnhancedContractSearch call built from the image
         # question's own text, producing a confused, ungrounded answer.
-        # _current_turn_has_image (an image is real evidence for an
+        # _conversation_has_image_evidence (an image is real evidence for an
         # image-describing claim - ADR-004's addendum) is checked alongside
         # has_current_evidence for this reason.
         if (
             not getattr(response, "tool_calls", None)
             and not has_current_evidence
-            and not _current_turn_has_image(state["messages"])
+            and not _conversation_has_image_evidence(state["messages"])
         ):
             response = AIMessage(
                 content="",

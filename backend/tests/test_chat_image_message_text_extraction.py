@@ -104,25 +104,19 @@ class ForcedEvidenceRoutingWithImageContentTests(unittest.TestCase):
         fake_run.assert_not_called()
         self.assertEqual(result["messages"][-1].content, "I can see a blue circle and a red square.")
 
-    def test_a_forced_search_that_does_happen_still_never_leaks_base64(self):
-        """A plain-text turn with no image still needs the original
-        forced-retrieval safety net (a model answering a factual question
-        from prior knowledge instead of calling a tool) - and if forcing
-        does happen, the search term must still never contain raw base64,
-        proven here via a mixed scenario where the CURRENT turn's own
-        HumanMessage has no image (so forcing still applies) but the
-        conversation history does - _current_turn_has_image only looks at
-        the latest HumanMessage, matching _current_turn_has_tool_evidence's
-        same "current turn only" scoping."""
+    def test_a_forced_search_with_no_image_anywhere_still_never_leaks_base64(self):
+        """A plain-text conversation with no image anywhere still needs the
+        original forced-retrieval safety net (a model answering a factual
+        question from prior knowledge instead of calling a tool) - and the
+        search term must never contain raw base64 in the first place
+        (guaranteed structurally by _message_text - see
+        MessageTextExtractionTests above - regardless of which turn any
+        image content lives on)."""
         fake_llm = MagicMock()
         fake_llm.bind_tools.return_value = fake_llm
         fake_llm.invoke.return_value = AIMessage(content="Payment is due within 90 days.")
 
-        long_base64 = "Q" * 5000
-        earlier_image_message = HumanMessage(content=[
-            {"type": "text", "text": "Describe the shapes in this image."},
-            {"type": "image", "base64": long_base64, "mime_type": "image/png"},
-        ])
+        earlier_text_message = HumanMessage(content="Hello, I have a question.")
         followup_text_message = HumanMessage(content="What are the payment terms?")
 
         with patch(
@@ -137,16 +131,49 @@ class ForcedEvidenceRoutingWithImageContentTests(unittest.TestCase):
         ):
             graph = get_agent(fake_llm)
             graph.invoke(
-                {"messages": [earlier_image_message, followup_text_message]},
+                {"messages": [earlier_text_message, followup_text_message]},
                 config={"configurable": {"tenant_id": "tenant_a"}},
             )
 
         self.assertEqual(fake_run.call_count, 1)
         _, kwargs = fake_run.call_args
         search_term = kwargs.get("summary_search") or ""
-        self.assertNotIn(long_base64, search_term, "the raw base64 image data must never reach a search term")
         self.assertNotIn("base64", search_term)
         self.assertIn("payment terms", search_term)
+
+    def test_an_image_on_an_earlier_turn_now_also_skips_forcing_for_a_later_turn(self):
+        """ADR-008 cross-turn image context: _conversation_has_image_evidence
+        deliberately scans the WHOLE message list now, not just the latest
+        HumanMessage, since main.py's _messages_from_stored carries the
+        single most recent image-bearing turn's real image forward into
+        later turns too - a genuine follow-up about that image is no
+        longer necessarily the very last HumanMessage in the list.
+        Deliberate, accepted trade-off (see _conversation_has_image_
+        evidence's docstring): an unrelated later question also skips
+        forcing under this same condition - Output Guard's fail-closed
+        evidence check remains the real safety net for that case, this
+        test only proves the routing decision itself."""
+        fake_llm = MagicMock()
+        fake_llm.bind_tools.return_value = fake_llm
+        fake_llm.invoke.return_value = AIMessage(content="Payment is due within 90 days.")
+
+        earlier_image_message = HumanMessage(content=[
+            {"type": "text", "text": "Describe the shapes in this image."},
+            {"type": "image", "base64": "Q" * 5000, "mime_type": "image/png"},
+        ])
+        followup_text_message = HumanMessage(content="What are the payment terms?")
+
+        with patch(
+            "backend.shared.utils.enhanced_contract_search_tool.EnhancedContractSearchTool._run",
+        ) as fake_run:
+            graph = get_agent(fake_llm)
+            result = graph.invoke(
+                {"messages": [earlier_image_message, followup_text_message]},
+                config={"configurable": {"tenant_id": "tenant_a"}},
+            )
+
+        fake_run.assert_not_called()
+        self.assertEqual(result["messages"][-1].content, "Payment is due within 90 days.")
 
 
 if __name__ == "__main__":

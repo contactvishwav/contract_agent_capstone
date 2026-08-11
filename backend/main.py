@@ -434,9 +434,10 @@ def rebuild_history(history):
 # later turn's model had zero way to know an image was ever attached at
 # all, and would either hallucinate about it or get confused into a forced,
 # irrelevant tool call. This marker restores just enough context - not the
-# image itself (see _messages_from_stored's docstring for why images
-# deliberately stay per-turn-only) - for the model to give an honest "I
-# don't have access to that anymore" answer instead. contract_chat_agent.py's
+# image itself - for the model to give an honest "I don't have access to
+# that anymore" answer instead, for any image-bearing turn OLDER than the
+# single most-recent one (see _messages_from_stored's docstring below for
+# that one's real carry-forward treatment). contract_chat_agent.py's
 # BASE_SYSTEM_PROMPT quotes this exact string so the model recognizes it.
 _HISTORICAL_IMAGE_MARKER = (
     "\n\n[This message included an attached image that is not available in "
@@ -444,10 +445,15 @@ _HISTORICAL_IMAGE_MARKER = (
 )
 
 
-def _messages_from_stored(stored_messages):
+def _messages_from_stored(stored_messages, chat_session_repo=None, tenant_id=None, chat_session_id=None):
     """Rebuilds LangChain history for the LLM from persisted ChatMessage
     rows (Neo4jChatSessionRepository.list_messages), used instead of
-    rebuild_history() whenever a session_id is present.
+    rebuild_history() whenever a session_id is present. Returns
+    (messages, carried_forward_attachments) - the second element is the
+    (attachment_id, mime_type) pairs of any image carried forward for real
+    this call, in the same shape _build_prompt_message's loaded_attachments
+    already is, so the caller can fold it into the same Output Guard
+    evidence-building loop with zero new evidence code.
 
     Deliberately uses only "user_message"/"ai_message" rows, converted to
     plain HumanMessage/AIMessage(content=...) - "tool_call"/"tool_message"
@@ -461,59 +467,80 @@ def _messages_from_stored(stored_messages):
     model sees its own prior natural-language answers, not its own prior
     raw tool arguments/results, in later turns of that same session.
 
-    Deliberate design decision (not a gap): an attached image stays
-    "in context" only for the turn it was attached to, matching this
-    codebase's already-established restraint for tool evidence above -
-    re-fetching and re-encoding every attachment from a session's full
-    history on every later turn would grow unboundedly with conversation
-    length and provider cost/latency, a real architectural tradeoff not
-    evaluated for this pass. A user_message row that had an attachment
-    (has_attachment, from list_messages' OPTIONAL MATCH) gets a plain-text
-    marker appended instead, so a later turn's model can honestly decline
-    ("I don't have access to that image anymore, please re-attach it")
-    rather than silently hallucinating or getting confused into an
-    irrelevant forced tool call - see BASE_SYSTEM_PROMPT in
-    contract_chat_agent.py for the matching instruction.
+    ADR-008 cross-turn image context (bounded, not unbounded replay): only
+    the SINGLE most recent user_message row with has_attachment=True gets
+    its real image bytes re-loaded and attached as real content blocks -
+    every OLDER image-bearing row still gets the plain-text
+    _HISTORICAL_IMAGE_MARKER, unchanged from before. This keeps the added
+    provider cost/latency of carrying an image forward constant per turn
+    (at most one turn's worth of images, capped the same way a single
+    turn's own attachments already are - MAX_ATTACHMENTS_PER_MESSAGE)
+    regardless of how long the conversation continues after that, rather
+    than growing with the full session history. Attaching a NEW image on a
+    later turn naturally supersedes this: that later turn becomes "the
+    most recent," and this one reverts to the marker on the turn after
+    that. If the carried-forward attachment(s) can no longer be loaded
+    (e.g. deleted since), this degrades to the same marker rather than
+    silently omitting the image with no explanation - see
+    _build_prompt_message's own vanished-attachment handling for the same
+    posture on the current turn's own attachments.
     """
     role_to_class = {"user_message": HumanMessage, "ai_message": AIMessage}
+
+    most_recent_image_message_id = None
+    for row in stored_messages:
+        if row.get("role") == "user_message" and row.get("has_attachment"):
+            most_recent_image_message_id = row.get("message_id")
+
+    carried_forward_attachments: list = []
     messages = []
     for row in stored_messages:
         message_class = role_to_class.get(row.get("role"))
-        if message_class:
-            content = row.get("content") or ""
-            if row.get("role") == "user_message" and row.get("has_attachment"):
-                content += _HISTORICAL_IMAGE_MARKER
-            messages.append(message_class(content=content))
-    return messages
+        if not message_class:
+            continue
+        content = row.get("content") or ""
+        is_image_row = row.get("role") == "user_message" and row.get("has_attachment")
+        is_most_recent_image_row = is_image_row and row.get("message_id") == most_recent_image_message_id
+
+        if is_most_recent_image_row and chat_session_repo is not None:
+            attachments = chat_session_repo.list_attachments_for_message(row["message_id"], tenant_id)
+            image_blocks, loaded = _image_content_blocks(
+                [a["attachment_id"] for a in attachments], chat_session_repo, tenant_id, chat_session_id,
+            )
+            if image_blocks:
+                messages.append(HumanMessage(content=[{"type": "text", "text": content}, *image_blocks]))
+                carried_forward_attachments.extend(loaded)
+                continue
+
+        if is_image_row:
+            content += _HISTORICAL_IMAGE_MARKER
+        messages.append(message_class(content=content))
+    return messages, carried_forward_attachments
 
 
-def _build_prompt_message(
-    prompt: str,
+def _image_content_blocks(
     attachment_ids: Optional[List[str]],
     chat_session_repo,
     tenant_id: str,
     chat_session_id: Optional[str],
-) -> tuple[HumanMessage, list]:
-    """Plain-text HumanMessage when there's no attachment (unchanged
-    behavior); otherwise a multimodal content-block list. Also returns the
-    list of successfully-loaded attachments (id + real mime_type), so the
-    caller can build matching Output Guard evidence (ADR-004 addendum)
+) -> tuple[list, list]:
+    """Loads each attachment_id's real bytes (ownership-checked via
+    get_attachment) and returns (image_blocks, loaded_attachments) - the
+    provider-agnostic content-block format (langchain_core's documented v1
+    standard, ImageContentBlock: {"type": "image", "base64"|"url",
+    "mime_type"}) plus the (attachment_id, mime_type) pairs the caller
+    needs to build matching Output Guard evidence (ADR-004 addendum)
     without a second repository round-trip.
 
-    One shared, provider-agnostic content-block format (langchain_core's
-    documented v1 standard, ImageContentBlock:
-    {"type": "image", "base64"|"url", "mime_type"}) - Gemini/GPT-4o/
-    Claude's own LangChain integrations (ChatGoogleGenerativeAI/
-    ChatOpenAI/ChatAnthropic) each independently detect and convert this
-    to their own real wire shape internally (see ADR-008's research
-    citations). No provider-specific branching here or anywhere else in
-    this codebase.
+    Shared by _build_prompt_message (the current turn's own attachments)
+    and _messages_from_stored (ADR-008 cross-turn follow-up: the single
+    most recent image-bearing turn's attachments, carried forward into
+    later turns) - one implementation, not duplicated.
     """
-    if not attachment_ids or not chat_session_repo:
-        return HumanMessage(content=prompt), []
-
-    content_blocks: list = [{"type": "text", "text": prompt}]
+    image_blocks: list = []
     loaded_attachments: list = []
+    if not attachment_ids or not chat_session_repo:
+        return image_blocks, loaded_attachments
     for attachment_id in attachment_ids:
         attachment = chat_session_repo.get_attachment(attachment_id, tenant_id, chat_session_id)
         if not attachment:
@@ -526,12 +553,37 @@ def _build_prompt_message(
         image_bytes = chat_attachment_storage.read(
             tenant_id, chat_session_id, attachment_id, attachment["storage_key"],
         )
-        content_blocks.append({
+        image_blocks.append({
             "type": "image",
             "base64": base64.b64encode(image_bytes).decode("ascii"),
             "mime_type": attachment["mime_type"],
         })
         loaded_attachments.append({"attachment_id": attachment_id, "mime_type": attachment["mime_type"]})
+    return image_blocks, loaded_attachments
+
+
+def _build_prompt_message(
+    prompt: str,
+    attachment_ids: Optional[List[str]],
+    chat_session_repo,
+    tenant_id: str,
+    chat_session_id: Optional[str],
+) -> tuple[HumanMessage, list]:
+    """Plain-text HumanMessage when there's no attachment (unchanged
+    behavior); otherwise a multimodal content-block list. See
+    _image_content_blocks for the shared loading logic and the
+    provider-agnostic content-block format (Gemini/GPT-4o/Claude's own
+    LangChain integrations each independently detect and convert this to
+    their own real wire shape internally - see ADR-008's research
+    citations; no provider-specific branching here or anywhere else in
+    this codebase).
+    """
+    if not attachment_ids or not chat_session_repo:
+        return HumanMessage(content=prompt), []
+    image_blocks, loaded_attachments = _image_content_blocks(
+        attachment_ids, chat_session_repo, tenant_id, chat_session_id,
+    )
+    content_blocks: list = [{"type": "text", "text": prompt}, *image_blocks]
     return HumanMessage(content=content_blocks), loaded_attachments
 
 
@@ -792,7 +844,9 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
         # survives a refresh/navigation-away even if the response itself
         # never completes.
         stored_messages = chat_session_repo.list_messages(chat_session_id, tenant_id)
-        previous_messages = _messages_from_stored(stored_messages)
+        previous_messages, carried_forward_attachments = _messages_from_stored(
+            stored_messages, chat_session_repo, tenant_id, chat_session_id,
+        )
         persisted_user_message = chat_session_repo.append_message(chat_session_id, tenant_id, role="user_message", content=prompt)
         if attachment_ids and persisted_user_message:
             # Links each already-uploaded, already-ownership-checked
@@ -805,10 +859,18 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
     elif history != "[]":
         # history comes in from FE as stringified list of dumped model messages
         previous_messages = rebuild_history(history)
+        carried_forward_attachments = []
     else:
         previous_messages = []
+        carried_forward_attachments = []
 
     prompt_message, loaded_attachments = _build_prompt_message(prompt, attachment_ids, chat_session_repo, tenant_id, chat_session_id)
+    # ADR-008 cross-turn image context: the carried-forward image (if any)
+    # is real evidence the responding model actually saw this turn too,
+    # same as the current turn's own attachment - folded into the same
+    # loaded_attachments list so the existing image_attachment_evidence_item
+    # loop below covers both with no new evidence code.
+    loaded_attachments = [*loaded_attachments, *carried_forward_attachments]
     input_messages = [*previous_messages, prompt_message]
     
     corr_id = correlation_id_var.get()
