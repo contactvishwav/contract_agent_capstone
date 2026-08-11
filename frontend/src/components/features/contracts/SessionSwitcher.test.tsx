@@ -1,3 +1,4 @@
+import { StrictMode } from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SessionSwitcher } from './SessionSwitcher';
@@ -107,6 +108,24 @@ describe('SessionSwitcher', () => {
 
     releaseCancellation();
     await waitFor(() => expect(mocks.getSessionDetail).toHaveBeenCalledWith('SESSION_B'));
+  });
+
+  it('does not double-fetch session detail under React StrictMode\'s dev-mode double effect invoke', async () => {
+    // Real, confirmed bug found live while investigating a manually-reported
+    // "attachment doesn't render after refresh" report: the auto-restore
+    // effect below only recorded loadedSessionId.current *inside*
+    // loadSession's async success path, so StrictMode's mount->cleanup->
+    // mount-again dev-mode simulation (this app runs <StrictMode> - see
+    // main.tsx) could fire two concurrent getSessionDetail calls for the
+    // same session before the first one's ref write ever landed. Not
+    // confirmed as that report's root cause, but a genuine wasted-request
+    // race closed regardless - the ref must now be set synchronously,
+    // before the async call starts.
+    render(<StrictMode><SessionSwitcher /></StrictMode>);
+    await waitFor(() => expect(mocks.getSessionDetail).toHaveBeenCalledWith('SESSION_A'));
+    // Give any wrongly-duplicated second call a chance to fire before asserting.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(mocks.getSessionDetail).toHaveBeenCalledTimes(1);
   });
 
   it('surfaces session-load errors instead of swallowing them', async () => {

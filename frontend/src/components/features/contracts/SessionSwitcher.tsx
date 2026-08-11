@@ -68,11 +68,25 @@ export function SessionSwitcher() {
         // here races the optimistic user/AI messages and can clear them
         // mid-stream. Restored sessions have a server message_count and do
         // need detail bootstrap; explicit row clicks always reload below.
+        //
+        // loadedSessionId is set here, synchronously, before the async
+        // loadSession call - not just inside loadSession's own success path
+        // - so React StrictMode's dev-mode double-invoke of this effect
+        // (mount -> cleanup -> mount again, with loadSession's first call
+        // still in flight and nothing yet written to the ref) can't fire
+        // two concurrent GET session-detail requests for the same session.
+        // Both would resolve with the same data and not corrupt the final
+        // render, but this was a real, confirmed duplicate load found
+        // while investigating a manually-reported "attachment doesn't
+        // render after refresh" report - not confirmed as that report's
+        // cause, but a genuine wasted-request/race surface worth closing
+        // regardless.
         if (
             activeSession &&
             activeSession.message_count > 0 &&
             loadedSessionId.current !== activeSession.session_id
         ) {
+            loadedSessionId.current = activeSession.session_id;
             loadSession(activeSession);
         }
     }, [activeSession, loadSession]);
