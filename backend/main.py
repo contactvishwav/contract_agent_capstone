@@ -1272,6 +1272,24 @@ def _saw_end_event(event: str) -> bool:
     return payload.get("type") == "end"
 
 
+def _fallback_terminal_status(run: Optional[ActiveChatRun]) -> tuple[str, str, str]:
+    """(status, reason_category, message) for a fallback terminal event
+    when `source` ended without ever yielding one of its own.
+
+    `run` is cancellable_chat_stream's own ActiveChatRun - its `outcome`
+    field is set in cancellable_chat_stream's own `finally` block, which
+    (per Python generator semantics) always finishes running before this
+    function's `async for` can observe the stream ending, cancelled or
+    not. Reading it here is label-only: it picks an accurate status for
+    a fallback event that was going to be sent regardless, never a second
+    source of cancellation logic, and never consulted for anything other
+    than which label to use.
+    """
+    if run is not None and run.outcome == "cancelled":
+        return "cancelled", "client_cancellation", "Generation stopped."
+    return "generation_failed", "generation_failed", "Response failed before completion. Please retry."
+
+
 def _terminal_event_pair(status: str, reason_category: str, message: str) -> tuple[str, str]:
     return (
         f"data: {json.dumps({'content': message, 'type': 'error', 'status': status, 'reason_category': reason_category})}\n\n",
@@ -1279,7 +1297,10 @@ def _terminal_event_pair(status: str, reason_category: str, message: str) -> tup
     )
 
 
-async def _guaranteed_terminal_stream(source: AsyncIterator[str]) -> AsyncIterator[str]:
+async def _guaranteed_terminal_stream(
+    source: AsyncIterator[str],
+    run: Optional[ActiveChatRun] = None,
+) -> AsyncIterator[str]:
     """Defense-in-depth around the whole SSE pipeline (resilient_runner,
     cancellable_chat_stream, or any future wrapper): regardless of how or
     why `source` ends - a clean finish, an ordinary exception, or a
@@ -1302,10 +1323,9 @@ async def _guaranteed_terminal_stream(source: AsyncIterator[str]) -> AsyncIterat
     Live-verified separately: cancellable_chat_stream's OWN deliberate
     cancellation-race branch (an explicit Stop Generating click) ends its
     generator via a plain `break` - ordinary StopAsyncIteration, no
-    exception at all - which reaches this same fallback below. It is
-    currently labeled "generation_failed" even though it was a genuine
-    cancellation; precise labeling for this specific case is a known,
-    deliberately deferred follow-up, not fixed by this pass.
+    exception at all - which first surfaced as this fallback mislabeling a
+    genuine cancellation as "generation_failed". `run` closes that: passed
+    only when wrapping cancellable_chat_stream, ignored otherwise.
 
     This is deliberately the single, outermost point of guarantee - fixing
     each individual internal call site that could raise would only cover
@@ -1332,9 +1352,7 @@ async def _guaranteed_terminal_stream(source: AsyncIterator[str]) -> AsyncIterat
             exc_info=True,
         )
         if not saw_end:
-            for fallback_event in _terminal_event_pair(
-                "generation_failed", "generation_failed", "Response failed before completion. Please retry.",
-            ):
+            for fallback_event in _terminal_event_pair(*_fallback_terminal_status(run)):
                 yield fallback_event
         return
     if not saw_end:
@@ -1344,9 +1362,7 @@ async def _guaranteed_terminal_stream(source: AsyncIterator[str]) -> AsyncIterat
         # backstop for resilient_runner's own contract being violated by a
         # future change.
         logger.error("Chat stream ended without a terminal event; a fallback was sent")
-        for fallback_event in _terminal_event_pair(
-            "generation_failed", "generation_failed", "Response failed before completion. Please retry.",
-        ):
+        for fallback_event in _terminal_event_pair(*_fallback_terminal_status(run)):
             yield fallback_event
 
 
@@ -1479,7 +1495,7 @@ async def run(
         except ValueError:
             raise HTTPException(status_code=409, detail="Chat run identifier is already active")
         stream = cancellable_chat_stream(active_run, **runner_kwargs)
-        guarded_stream = _guaranteed_terminal_stream(stream)
+        guarded_stream = _guaranteed_terminal_stream(stream, run=active_run)
     else:
         stream = resilient_runner(**runner_kwargs)
         guarded_stream = _guaranteed_terminal_stream(stream)

@@ -43,6 +43,7 @@ from unittest.mock import MagicMock, patch
 with patch("langchain_neo4j.Neo4jGraph"), \
      patch("backend.shared.utils.gemini_embedding_service.embedding"):
     from backend.main import (
+        ActiveChatRun,
         ChatRunRegistry,
         _guaranteed_terminal_stream,
         cancellable_chat_stream,
@@ -135,7 +136,59 @@ class GuaranteedTerminalStreamUnitTests(unittest.IsolatedAsyncioTestCase):
 
         payloads = self._payloads(events)
         self.assertEqual(payloads[-1]["type"], "end")
+        self.assertEqual(payloads[-1]["status"], "generation_failed", "no run was passed, so there is nothing to say this was a cancellation")
+
+    async def test_silent_stream_end_reports_cancelled_when_run_outcome_says_so(self):
+        """Label-precision fix: cancellable_chat_stream's own deliberate
+        cancellation-race branch ends via a plain `break` (ordinary
+        StopAsyncIteration, no exception) - previously mislabeled
+        'generation_failed' by the generic backstop. run.outcome, set by
+        cancellable_chat_stream's own finally block before this function's
+        `async for` can observe the stream ending, now picks the accurate
+        label instead."""
+        run = ActiveChatRun(run_id="r", tenant_id="t", session_id="s", outcome="cancelled")
+
+        async def silently_cancelled_stream():
+            yield 'data: {"content": "partial", "type": "tool_message"}\n\n'
+
+        events = await self._collect(_guaranteed_terminal_stream(silently_cancelled_stream(), run=run))
+
+        payloads = self._payloads(events)
+        self.assertEqual(payloads[-2]["type"], "error")
+        self.assertEqual(payloads[-2]["status"], "cancelled")
+        self.assertEqual(payloads[-1]["type"], "end")
+        self.assertEqual(payloads[-1]["status"], "cancelled")
+        self.assertEqual(payloads[-1]["reason_category"], "client_cancellation")
+
+    async def test_silent_stream_end_still_reports_generation_failed_when_run_outcome_is_not_cancelled(self):
+        """Regression guard: passing a run whose outcome is something other
+        than 'cancelled' (e.g. a genuinely unexpected silent stop, not a
+        cancellation) must not be mislabeled either."""
+        run = ActiveChatRun(run_id="r", tenant_id="t", session_id="s", outcome="completed_or_unpersisted")
+
+        async def silently_incomplete_stream():
+            yield 'data: {"content": "partial", "type": "tool_message"}\n\n'
+
+        events = await self._collect(_guaranteed_terminal_stream(silently_incomplete_stream(), run=run))
+
+        payloads = self._payloads(events)
         self.assertEqual(payloads[-1]["status"], "generation_failed")
+
+    async def test_raised_cancellederror_reports_cancelled_regardless_of_run_outcome(self):
+        """The raised-CancelledError branch is always accurate on its own
+        (a CancelledError genuinely reaching here always means cancelled) -
+        confirming `run` is never even consulted for this branch, unlike
+        the silent-end branch above."""
+        run = ActiveChatRun(run_id="r", tenant_id="t", session_id="s", outcome=None)
+
+        async def spuriously_cancelled_stream():
+            raise asyncio.CancelledError()
+            yield  # pragma: no cover
+
+        events = await self._collect(_guaranteed_terminal_stream(spuriously_cancelled_stream(), run=run))
+
+        payloads = self._payloads(events)
+        self.assertEqual(payloads[-1]["status"], "cancelled")
 
 
 class GuaranteedTerminalStreamThroughRealPipelineTests(unittest.IsolatedAsyncioTestCase):
@@ -169,6 +222,7 @@ class GuaranteedTerminalStreamThroughRealPipelineTests(unittest.IsolatedAsyncioT
              patch("backend.main.resilient_runner", spuriously_cancelled_resilient_runner):
             events = await self._collect(_guaranteed_terminal_stream(
                 cancellable_chat_stream(run, model="gemini-2.5-flash", tenant_id="tenant-a", chat_session_id="SESSION_A"),
+                run=run,
             ))
 
         self.assertFalse(run.cancel_requested.is_set(), "this must reproduce WITHOUT an explicit cancel request")
@@ -207,6 +261,7 @@ class GuaranteedTerminalStreamThroughRealPipelineTests(unittest.IsolatedAsyncioT
              patch("backend.main.resilient_runner", slow_resilient_runner):
             collection = asyncio.create_task(self._collect(_guaranteed_terminal_stream(
                 cancellable_chat_stream(run, model="gemini-2.5-flash", tenant_id="tenant-a", chat_session_id="SESSION_C"),
+                run=run,
             )))
             await entered_slow_phase.wait()
             outcome = await registry.request_cancel("run-c", "tenant-a", "SESSION_C", timeout_seconds=1)
@@ -216,6 +271,10 @@ class GuaranteedTerminalStreamThroughRealPipelineTests(unittest.IsolatedAsyncioT
         payloads = self._payloads(events)
         self.assertNotIn("late", json.dumps(payloads), "a cancelled run must never release a later assistant answer")
         self.assertEqual(payloads[-1]["type"], "end", f"client must receive a terminal event, got: {payloads}")
+        self.assertEqual(
+            payloads[-1]["status"], "cancelled",
+            f"run.outcome was 'cancelled' by the time the stream ended silently - the fallback label must say so, got: {payloads}",
+        )
 
     async def test_genuine_stall_through_the_real_pipeline_still_fires_the_timeout(self):
         """Closes the real coverage gap: the pre-existing stall-timeout
