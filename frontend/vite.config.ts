@@ -39,5 +39,9 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: './src/test/setup.ts',
     restoreMocks: true,
+    // e2e/ holds real Playwright specs (playwright.config.ts, run via
+    // `npm run test:e2e` against a live dev stack) - a different test
+    // runner with its own test()/expect(), not part of this jsdom suite.
+    exclude: ['node_modules/**', 'e2e/**'],
   },
 })

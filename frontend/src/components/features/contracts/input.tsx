@@ -304,6 +304,24 @@ export function ChatInput() {
         );
         let streamFinished = false;
         let errorReported = false;
+        // Real, confirmed bug found live via a real Playwright browser
+        // reproduction (route-intercepted to truncate the SSE body right
+        // after a real "verifying" event, simulating a dropped connection
+        // or proxy truncation): if the stream's body ends for ANY reason
+        // without ever delivering a terminal "end" event, fetchEventSource
+        // calls onclose() and its own promise resolves normally (not a
+        // rejection) - onclose() previously had no fallback at all, unlike
+        // onerror() below, so the affected message was left permanently
+        // showing "Verifying response..." (or a bare spinner), forever,
+        // even though the request machinery itself (Stop Generating,
+        // Send button) had already cleaned up via the unconditional
+        // `finally` block. This is the client-side mirror of the exact gap
+        // _guaranteed_terminal_stream (backend/main.py) closes server-side
+        // - the backend now always SENDS a terminal event before its side
+        // of the stream closes, but that guarantee is meaningless if the
+        // client's own connection ends before that event is actually
+        // delivered.
+        let sawEnd = false;
         try {
             await fetchEventSource('/api/run/', {
                 method: 'POST',
@@ -331,6 +349,7 @@ export function ChatInput() {
                     }
                     if (data.type === "end") {
                         streamFinished = true;
+                        sawEnd = true;
                         updateMessageGenerating(aiMessage.id, false);
                         finishRequest(requestId);
                         setSubmiting(false);
@@ -355,6 +374,23 @@ export function ChatInput() {
                 },
                 onclose() {
                     streamFinished = true;
+                    // Guaranteed-terminal-event fallback, client side: the
+                    // stream's body ended without ever delivering an "end"
+                    // event. Skip when the user explicitly stopped
+                    // generation (that path already added its own
+                    // "cancelled" message part and flipped generating
+                    // false in provider.tsx's stopActiveRequest, before
+                    // this connection was ever aborted) or when onerror
+                    // already reported a failure for this same request.
+                    if (!sawEnd && !errorReported && !controller.signal.aborted) {
+                        errorReported = true;
+                        addMessagePart(aiMessage.id, {
+                            type: "error",
+                            status: "generation_failed",
+                            content: "Response failed before completion. Please retry.",
+                        });
+                        updateMessageGenerating(aiMessage.id, false);
+                    }
                 },
                 onerror(error) {
                     if (controller.signal.aborted) throw error;

@@ -135,4 +135,67 @@ describe('Contract Chat verifying phase', () => {
     expect(await screen.findByText('Payment is due within 90 days.')).toBeInTheDocument();
     expect(screen.queryByText('Verifying response…')).not.toBeInTheDocument();
   });
+
+  it('resolves to a clear error instead of a permanent hang when the stream ends without a terminal event', async () => {
+    // Real, confirmed live bug: a real Playwright browser reproduction
+    // (route-intercepted to truncate a real /api/run/ response right
+    // after a real "verifying" event) showed the message left stuck on
+    // "Verifying response..." forever - fetchEventSource's onclose()
+    // fires when the underlying stream just ends (a dropped connection,
+    // a proxy truncation, a dev-server reload killing an in-flight
+    // request), and unlike onerror(), onclose() previously had no
+    // fallback to flip the message's generating/verifying state at all.
+    let streamOptions!: FetchEventSourceInit;
+    let resolveStream!: () => void;
+    mocks.fetchEventSource.mockImplementation(async (_url, options) => {
+      streamOptions = options;
+      await options.onopen?.(new Response(null, { status: 200 }));
+      await new Promise<void>((resolve) => { resolveStream = resolve; });
+    });
+    renderChat();
+    await submit();
+    await waitFor(() => expect(streamOptions).toBeDefined());
+
+    streamOptions.onmessage?.({ id: '', event: '', data: JSON.stringify({
+      type: 'status', phase: 'verifying', content: '',
+    }) });
+    expect(await screen.findByText('Verifying response…')).toBeInTheDocument();
+
+    // The stream just ends - no "end" event, no thrown error - matching
+    // fetchEventSource's real behavior when the body's ReadableStream
+    // closes cleanly on its own.
+    streamOptions.onclose?.();
+    resolveStream();
+
+    expect(await screen.findByText('Response failed before completion. Please retry.')).toBeInTheDocument();
+    expect(screen.queryByText('Verifying response…')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: /Send your prompt now/i })).toBeEnabled());
+  });
+
+  it('does not report a spurious error when onclose fires after a real terminal event already arrived', async () => {
+    let streamOptions!: FetchEventSourceInit;
+    let resolveStream!: () => void;
+    mocks.fetchEventSource.mockImplementation(async (_url, options) => {
+      streamOptions = options;
+      await options.onopen?.(new Response(null, { status: 200 }));
+      await new Promise<void>((resolve) => { resolveStream = resolve; });
+    });
+    renderChat();
+    await submit();
+    await waitFor(() => expect(streamOptions).toBeDefined());
+
+    streamOptions.onmessage?.({ id: '', event: '', data: JSON.stringify({
+      type: 'ai_message', status: 'passed', content: 'Payment is due within 90 days.',
+    }) });
+    streamOptions.onmessage?.({ id: '', event: '', data: JSON.stringify({ type: 'end', status: 'passed', content: '' }) });
+    expect(await screen.findByText('Payment is due within 90 days.')).toBeInTheDocument();
+
+    // The library's own onclose still fires after a normal completion -
+    // must not overwrite the real answer with a spurious error.
+    streamOptions.onclose?.();
+    resolveStream();
+
+    expect(screen.queryByText('Response failed before completion. Please retry.')).not.toBeInTheDocument();
+    expect(screen.getByText('Payment is due within 90 days.')).toBeInTheDocument();
+  });
 });
