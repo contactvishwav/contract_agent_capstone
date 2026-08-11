@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from prometheus_client import CONTENT_TYPE_LATEST
 
-from langchain_core.messages import HumanMessage, ToolMessage, AIMessage, AIMessageChunk
+from langchain_core.messages import HumanMessage, ToolMessage, AIMessage
 from backend.llm_manager import LLMManager
 from backend.model_registry import ModelSelectionError, model_spec, validate_model
 from backend.contract_chat_agent import CHAT_PROMPT_VERSION
@@ -428,6 +428,22 @@ def rebuild_history(history):
     return messages
 
 
+# Real, confirmed bug found live (multi-turn image context): a session's
+# persisted content is always plain text, even for a turn that carried an
+# image (ADR-008 - only the HAS_ATTACHMENT relationship records that), so a
+# later turn's model had zero way to know an image was ever attached at
+# all, and would either hallucinate about it or get confused into a forced,
+# irrelevant tool call. This marker restores just enough context - not the
+# image itself (see _messages_from_stored's docstring for why images
+# deliberately stay per-turn-only) - for the model to give an honest "I
+# don't have access to that anymore" answer instead. contract_chat_agent.py's
+# BASE_SYSTEM_PROMPT quotes this exact string so the model recognizes it.
+_HISTORICAL_IMAGE_MARKER = (
+    "\n\n[This message included an attached image that is not available in "
+    "the current turn.]"
+)
+
+
 def _messages_from_stored(stored_messages):
     """Rebuilds LangChain history for the LLM from persisted ChatMessage
     rows (Neo4jChatSessionRepository.list_messages), used instead of
@@ -444,13 +460,30 @@ def _messages_from_stored(stored_messages):
     migration, but isn't done here. Practical effect: a restored session's
     model sees its own prior natural-language answers, not its own prior
     raw tool arguments/results, in later turns of that same session.
+
+    Deliberate design decision (not a gap): an attached image stays
+    "in context" only for the turn it was attached to, matching this
+    codebase's already-established restraint for tool evidence above -
+    re-fetching and re-encoding every attachment from a session's full
+    history on every later turn would grow unboundedly with conversation
+    length and provider cost/latency, a real architectural tradeoff not
+    evaluated for this pass. A user_message row that had an attachment
+    (has_attachment, from list_messages' OPTIONAL MATCH) gets a plain-text
+    marker appended instead, so a later turn's model can honestly decline
+    ("I don't have access to that image anymore, please re-attach it")
+    rather than silently hallucinating or getting confused into an
+    irrelevant forced tool call - see BASE_SYSTEM_PROMPT in
+    contract_chat_agent.py for the matching instruction.
     """
     role_to_class = {"user_message": HumanMessage, "ai_message": AIMessage}
     messages = []
     for row in stored_messages:
         message_class = role_to_class.get(row.get("role"))
         if message_class:
-            messages.append(message_class(content=row.get("content") or ""))
+            content = row.get("content") or ""
+            if row.get("role") == "user_message" and row.get("has_attachment"):
+                content += _HISTORICAL_IMAGE_MARKER
+            messages.append(message_class(content=content))
     return messages
 
 
@@ -834,6 +867,30 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
             if "assistant" in message[1]:
                 for history_message in message[1]["assistant"]["messages"]:
                     context.append(history_message.model_dump_json())
+                    # Real, confirmed bug found live (multi-turn image
+                    # context investigation): the assistant node can invoke
+                    # the LLM more than once per turn (e.g. a real first
+                    # answer with no tool_calls, discarded and overridden by
+                    # the forced-retrieval fallback below - see
+                    # contract_chat_agent.py's assistant()). "messages"
+                    # stream mode streams tokens from EVERY underlying LLM
+                    # call inside the node, regardless of what the node
+                    # ultimately returns, so accumulating ai_full_content
+                    # from raw "messages" chunks double-counted the
+                    # discarded first answer's text alongside the real
+                    # final answer - reproduced live as the exact same
+                    # sentence appearing twice, concatenated with no space,
+                    # which HallucinationValidator then correctly (from its
+                    # own perspective) flagged as an unsupported/
+                    # contradicted claim. This "updates" stream's assistant
+                    # message content is the graph's own authoritative
+                    # per-step return value (same source tool_calls below
+                    # already trusts over the raw token stream) - assigning
+                    # (not appending) here means only the LAST assistant
+                    # step's content survives, which is always the true
+                    # final answer: the graph only stops once a response
+                    # has no further tool_calls.
+                    ai_full_content = _normalize_ai_message_content(history_message.content)
                     if chat_session_repo:
                         # These are the real, final AIMessage.tool_calls -
                         # the authoritative source (not re-parsed SSE
@@ -864,23 +921,6 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
                             content=_normalize_ai_message_content(tool_message.content),
                             tool_call_id=getattr(tool_message, "tool_call_id", None),
                         )
-        
-        # Capture AI content for post-check
-        if message[0] == "messages":
-            chunk = message[1][0]
-            if isinstance(chunk, AIMessageChunk):
-                # Real, confirmed bug found live during final verification
-                # of this exact fix: a second, separate accumulation site
-                # for the same chunk[0].content - missed in the first pass
-                # (which only normalized the two `yield` sites) - crashed
-                # with the identical "can only concatenate str (not list)
-                # to str" TypeError whenever content was the list-of-
-                # content-blocks shape, killing the whole streaming
-                # response mid-generation with no 'end' event ever sent
-                # (reproduced live: HTTP request completed in ~6s, real
-                # answer text truncated mid-sentence, no server error
-                # surfaced to the client at all - a silent, hard failure).
-                ai_full_content += _normalize_ai_message_content(chunk.content)
 
     # The exact structured envelopes that the answer model saw are combined
     # for Output Guard and citation validation.  Historical tool messages are

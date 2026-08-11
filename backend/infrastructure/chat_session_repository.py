@@ -165,10 +165,20 @@ class Neo4jChatSessionRepository:
         """Empty list for a missing/cross-tenant session - the MATCH's
         tenant_id filter makes a cross-tenant read naturally return
         nothing, same defense-in-depth posture as every other tenant-scoped
-        read in this codebase."""
+        read in this codebase.
+
+        has_attachment (OPTIONAL MATCH + count(...) > 0) tells the caller
+        whether a user_message row had an image linked, without a second
+        per-row query - main.py's _messages_from_stored uses it to tell the
+        model an earlier turn's image is no longer available in the
+        current turn's context (ADR-008 multi-turn image-context fix),
+        since content itself never carries the image (see
+        link_attachment_to_message's docstring)."""
         cypher = """
         MATCH (s:ChatSession {session_id: $session_id, tenant_id: $tenant_id})-[r:HAS_MESSAGE]->(m:ChatMessage)
         WHERE s.archived_at IS NULL
+        OPTIONAL MATCH (m)-[:HAS_ATTACHMENT]->(a:ChatAttachment)
+        WITH s, r, m, count(a) AS attachment_count
         RETURN m.message_id AS message_id, m.role AS role, m.content AS content, m.model AS model,
                m.requested_model AS requested_model, m.actual_model AS actual_model,
                m.requested_provider AS requested_provider, m.actual_provider AS actual_provider,
@@ -176,7 +186,7 @@ class Neo4jChatSessionRepository:
                m.prompt_version AS prompt_version, m.execution_path AS execution_path,
                m.tool_name AS tool_name, m.tool_call_id AS tool_call_id, m.citations AS citations,
                m.terminal_status AS terminal_status, m.terminal_reason AS terminal_reason,
-               m.created_at AS created_at,
+               m.created_at AS created_at, attachment_count > 0 AS has_attachment,
                r.sequence AS sequence
         ORDER BY r.sequence ASC
         """

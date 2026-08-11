@@ -28,6 +28,19 @@ class FakeChatAttachmentGraph(FakeChatSessionGraph):
     def query(self, cypher, params=None):
         params = params or {}
 
+        if "OPTIONAL MATCH (m)-[:HAS_ATTACHMENT]->(a:ChatAttachment)" in cypher:
+            session = self._lookup_session(params)
+            if not session:
+                return []
+            rows = []
+            for m in sorted(self.messages[params["session_id"]], key=lambda m: m["sequence"]):
+                row = dict(m)
+                row["has_attachment"] = any(
+                    self.links.get(attachment_id) == m["message_id"] for attachment_id in self.attachments
+                )
+                rows.append(row)
+            return rows
+
         if "CREATE (a:ChatAttachment" in cypher:
             session = self._lookup_session(params)
             if not session:

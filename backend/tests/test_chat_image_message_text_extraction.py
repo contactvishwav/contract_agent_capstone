@@ -66,13 +66,23 @@ class MessageTextExtractionTests(unittest.TestCase):
 class ForcedEvidenceRoutingWithImageContentTests(unittest.TestCase):
     """End-to-end through the real graph node (get_agent), matching
     test_chat_contract_selection.py's pattern - proves the actual bug
-    scenario is fixed, not just the helper in isolation."""
+    scenario is fixed, not just the helper in isolation.
 
-    def test_image_bearing_turn_never_leaks_base64_into_the_forced_search_term(self):
+    Real, confirmed bug found live AFTER this base64-leak fix (separate
+    multi-turn investigation): forced-evidence retrieval fired
+    unconditionally whenever the model didn't call a tool, including for a
+    turn whose only real evidence was an attached image - discarding the
+    model's direct, correct vision answer and replacing it with a forced,
+    irrelevant EnhancedContractSearch call. contract_chat_agent.py's
+    assistant node now skips forcing when the current turn's HumanMessage
+    carries an image (_current_turn_has_image) - this test's expectation is
+    updated to match: an image-only turn no longer forces any search at
+    all, which trivially also satisfies the original base64-leak
+    protection this test was written for (no search term is ever built)."""
+
+    def test_image_only_turn_never_forces_a_search_and_the_direct_answer_stands(self):
         fake_llm = MagicMock()
         fake_llm.bind_tools.return_value = fake_llm
-        # No tool_calls -> triggers the exact forced-evidence path the live
-        # bug was found in.
         fake_llm.invoke.return_value = AIMessage(content="I can see a blue circle and a red square.")
 
         long_base64 = "Q" * 5000
@@ -80,6 +90,40 @@ class ForcedEvidenceRoutingWithImageContentTests(unittest.TestCase):
             {"type": "text", "text": "Describe the shapes in this image."},
             {"type": "image", "base64": long_base64, "mime_type": "image/png"},
         ])
+
+        with patch(
+            "backend.shared.utils.enhanced_contract_search_tool.EnhancedContractSearchTool._run",
+            return_value={"result": {"total_count": 0, "contracts": []}},
+        ) as fake_run:
+            graph = get_agent(fake_llm)
+            result = graph.invoke(
+                {"messages": [image_message]},
+                config={"configurable": {"tenant_id": "tenant_a"}},
+            )
+
+        fake_run.assert_not_called()
+        self.assertEqual(result["messages"][-1].content, "I can see a blue circle and a red square.")
+
+    def test_a_forced_search_that_does_happen_still_never_leaks_base64(self):
+        """A plain-text turn with no image still needs the original
+        forced-retrieval safety net (a model answering a factual question
+        from prior knowledge instead of calling a tool) - and if forcing
+        does happen, the search term must still never contain raw base64,
+        proven here via a mixed scenario where the CURRENT turn's own
+        HumanMessage has no image (so forcing still applies) but the
+        conversation history does - _current_turn_has_image only looks at
+        the latest HumanMessage, matching _current_turn_has_tool_evidence's
+        same "current turn only" scoping."""
+        fake_llm = MagicMock()
+        fake_llm.bind_tools.return_value = fake_llm
+        fake_llm.invoke.return_value = AIMessage(content="Payment is due within 90 days.")
+
+        long_base64 = "Q" * 5000
+        earlier_image_message = HumanMessage(content=[
+            {"type": "text", "text": "Describe the shapes in this image."},
+            {"type": "image", "base64": long_base64, "mime_type": "image/png"},
+        ])
+        followup_text_message = HumanMessage(content="What are the payment terms?")
 
         with patch(
             "backend.shared.utils.enhanced_contract_search_tool.EnhancedContractSearchTool._run",
@@ -93,7 +137,7 @@ class ForcedEvidenceRoutingWithImageContentTests(unittest.TestCase):
         ):
             graph = get_agent(fake_llm)
             graph.invoke(
-                {"messages": [image_message]},
+                {"messages": [earlier_image_message, followup_text_message]},
                 config={"configurable": {"tenant_id": "tenant_a"}},
             )
 
@@ -102,7 +146,7 @@ class ForcedEvidenceRoutingWithImageContentTests(unittest.TestCase):
         search_term = kwargs.get("summary_search") or ""
         self.assertNotIn(long_base64, search_term, "the raw base64 image data must never reach a search term")
         self.assertNotIn("base64", search_term)
-        self.assertIn("Describe the shapes", search_term)
+        self.assertIn("payment terms", search_term)
 
 
 if __name__ == "__main__":

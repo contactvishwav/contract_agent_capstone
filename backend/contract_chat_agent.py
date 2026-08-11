@@ -85,6 +85,31 @@ def _current_turn_has_tool_evidence(messages) -> bool:
     return False
 
 
+def _current_turn_has_image(messages) -> bool:
+    """True when the current turn's own HumanMessage carries an attached
+    image (main.py's _build_prompt_message content-block shape). Real,
+    confirmed bug found live: the forced-evidence fallback below existed to
+    catch a model answering a *contract* question from prior knowledge
+    instead of calling a tool - it had no concept of attachments and fired
+    unconditionally, discarding a model's direct, correct examination of an
+    attached image and replacing it with a nonsense EnhancedContractSearch
+    call built from the image question's own text (e.g. "what page is this
+    image from?" as a semantic search term against contract chunks) -
+    producing the confused, ungrounded answers observed live. An attached
+    image is itself real evidence for an image-describing claim (see
+    ADR-004's addendum / image_attachment_evidence_item in
+    chat_evidence_service.py), so a turn that has one needs no forced
+    retrieval just because the model chose not to call a tool.
+    """
+    for message in reversed(messages):
+        if isinstance(message, HumanMessage):
+            content = message.content
+            return isinstance(content, list) and any(
+                isinstance(block, dict) and block.get("type") == "image" for block in content
+            )
+    return False
+
+
 def get_agent(llm):
     # Define tools/llm
     tools = [ContractSearchTool(), EnhancedContractSearchTool(), *MCP_CHAT_TOOLS]
@@ -107,6 +132,19 @@ def get_agent(llm):
         "Always explain results you get from the tools in a concise manner to not overwhelm the user but also don't be too technical. "
         "Answer questions as if you are answering to non-technical management level. "
         "Important: Be confident and accurate in your tool choice! Avoid asking follow-up questions if possible. "
+        "An attached image is only available to you in the turn it was attached - a note in an earlier "
+        "message like '[This message included an attached image that is not available in the current "
+        "turn.]' means exactly that: you cannot see that image anymore, even if the user is now asking "
+        "about it. If the user asks about an image from an earlier turn and no image is attached to the "
+        "current turn, tell them plainly you no longer have access to it and ask them to re-attach it - "
+        "do not guess or invent what it might have shown, and do not treat retrieved contract text as a "
+        "substitute for it. "
+        "When an image IS attached to the current turn, you can genuinely see and examine it directly - "
+        "never claim you cannot process images or cannot see it, that is false and will be rejected. If "
+        "the image itself cannot answer part of the question (for example, which page of a larger source "
+        "document it came from, when no page number or other locator is visible in the image), say plainly "
+        "that the image doesn't show that specific information, rather than claiming you cannot process "
+        "images at all. "
         f"Today is {date.today()}"
     )
 
@@ -171,9 +209,20 @@ def get_agent(llm):
         # Force one tenant-scoped evidence retrieval, then let the same model
         # answer from the resulting envelope.  After a ToolMessage exists for
         # this turn we never force another call, preventing loops.
+        #
+        # Real, confirmed bug found live: this fired unconditionally,
+        # including for a turn whose only evidence need was an attached
+        # image (e.g. "what page is this image from?") - discarding the
+        # model's real, direct examination of the image and replacing it
+        # with a forced EnhancedContractSearch call built from the image
+        # question's own text, producing a confused, ungrounded answer.
+        # _current_turn_has_image (an image is real evidence for an
+        # image-describing claim - ADR-004's addendum) is checked alongside
+        # has_current_evidence for this reason.
         if (
             not getattr(response, "tool_calls", None)
             and not has_current_evidence
+            and not _current_turn_has_image(state["messages"])
         ):
             response = AIMessage(
                 content="",
