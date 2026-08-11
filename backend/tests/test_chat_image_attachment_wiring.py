@@ -304,6 +304,71 @@ class RunnerEndToEndImageTurnTests(unittest.IsolatedAsyncioTestCase):
         # ADR-008.
         self.assertEqual(user_message["content"], "What is this?")
 
+    async def test_history_sse_event_omits_the_raw_base64_image_payload(self):
+        """Real, confirmed bug: the terminal "history" SSE event echoed
+        the full raw image data back to the client for zero benefit -
+        input.tsx's onmessage handler no-ops on type "history" entirely
+        now that session persistence is authoritative. This proves the
+        fix (_history_safe_json) actually reaches that real event, not
+        just the helper in isolation."""
+        graph = FakeChatAttachmentGraph()
+        repo = Neo4jChatSessionRepository()
+        repo.graph = graph
+        session = repo.create_session("tenant_a", None, "Image chat")
+        sid = session["session_id"]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = ChatAttachmentStorage(root=tmpdir, key_provider=_FixedKeyProvider())
+            storage_key, mime_type = storage.store("tenant_a", sid, "ATTACH_1", PNG_1X1)
+            repo.create_attachment(sid, "tenant_a", "ATTACH_1", mime_type, len(PNG_1X1), storage_key)
+
+            async def capturing_astream(*args, **kwargs):
+                from langchain_core.messages import AIMessage, AIMessageChunk
+                final_chunk = AIMessageChunk(content="This is a small red square.")
+                final_assistant = AIMessage(content="This is a small red square.", tool_calls=[])
+                yield ("messages", (final_chunk, {}))
+                yield ("updates", {"assistant": {"messages": [final_assistant]}})
+
+            fake_model = MagicMock()
+            fake_model.astream = capturing_astream
+            fake_llm_mgr = MagicMock()
+            fake_llm_mgr.get_model_by_name.return_value = fake_model
+
+            with patch.object(main, "Neo4jChatSessionRepository", return_value=repo), \
+                 patch.object(main, "chat_attachment_storage", storage), \
+                 patch("backend.main.PromptGuard") as MockGuard, \
+                 patch("backend.main.OutputGuard") as MockOutputGuard, \
+                 patch("backend.main.AuditLogger"), \
+                 patch("backend.infrastructure.agent_audit_service.AgentAuditService"):
+                MockGuard.return_value.validate.return_value = MagicMock(is_safe=True, violation_type=None, message=None)
+                MockOutputGuard.return_value.validate.return_value = MagicMock(is_safe=True, violation_type=None, metadata={})
+
+                events = await self._collect(main.runner(
+                    model="gemini-2.5-flash", prompt="What is this?", history="[]",
+                    llm_mgr=fake_llm_mgr, tenant_id="tenant_a", chat_session_id=sid,
+                    attachment_ids=["ATTACH_1"],
+                ))
+
+        raw_b64 = base64.b64encode(PNG_1X1).decode("ascii")
+        history_events = [e for e in events if json.loads(e.removeprefix("data: ").strip())["type"] == "history"]
+        self.assertEqual(len(history_events), 1)
+        history_payload = json.loads(history_events[0].removeprefix("data: ").strip())
+
+        # The raw image bytes never appear anywhere in the emitted event...
+        self.assertNotIn(raw_b64, json.dumps(history_payload))
+        # ...but the human turn's own entry is still present, with its
+        # non-image metadata intact (text content, mime_type).
+        human_entries = [
+            json.loads(item) for item in history_payload["content"]
+            if json.loads(item).get("type") == "human"
+        ]
+        self.assertEqual(len(human_entries), 1)
+        blocks = human_entries[0]["content"]
+        self.assertEqual(blocks[0], {"type": "text", "text": "What is this?"})
+        self.assertEqual(blocks[1]["type"], "image")
+        self.assertEqual(blocks[1]["mime_type"], "image/png")
+        self.assertEqual(blocks[1]["base64"], "[omitted]")
+
 
 if __name__ == "__main__":
     unittest.main()

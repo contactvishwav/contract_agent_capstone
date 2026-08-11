@@ -1,11 +1,15 @@
 import React, { createContext, useContext, useState, useCallback } from "react";
 
-export type MessagePartType = "user_message" | "ai_message" | "tool_call" | "tool_message" | "citations" | "attachments" | "error" | "history" | "end";
+export type MessagePartType = "user_message" | "ai_message" | "tool_call" | "tool_message" | "citations" | "attachments" | "error" | "history" | "status" | "end";
 
 export type MessagePart = {
     type: MessagePartType;
     content: string;
     status?: 'passed' | 'rejected' | 'validation_failed' | 'timed_out' | 'cancelled' | 'empty' | 'generation_failed' | 'persistence_failed';
+    // Only populated on type "status" - a UX-only phase signal (e.g.
+    // "verifying" once generation has finished and Output Guard's audit
+    // step has started), never a state transition of its own.
+    phase?: string;
     reason_category?: string | null;
     requested_model?: string | null;
     actual_model?: string | null;
@@ -22,6 +26,12 @@ export type Message = {
     type: "user" | "ai";
     parts: Array<MessagePart>;
     generating: boolean;
+    // True once the backend has finished generating and moved into Output
+    // Guard's audit/verification step (still within the same `generating`
+    // window - there is no separate terminal state for this). Lets the UI
+    // show "Verifying response..." instead of a plain spinner that looks
+    // identical to a stuck request during a legitimate multi-second audit.
+    verifying: boolean;
 };
 
 type ChatProviderProps = {
@@ -50,6 +60,7 @@ type ChatProviderState = {
     addMessage: (message: Message) => void;
     addMessagePart: (id: string, part: MessagePart) => void;
     updateMessageGenerating: (id: string, generating: boolean) => void;
+    updateMessageVerifying: (id: string, verifying: boolean) => void;
     reset: () => void;
     // Loads a persisted chat session's full history in one shot - used
     // when the user opens a prior session from the switcher, distinct
@@ -77,6 +88,7 @@ const initialState: ChatProviderState = {
     addMessage: () => null,
     addMessagePart: () => null,
     updateMessageGenerating: () => null,
+    updateMessageVerifying: () => null,
     reset: () => null,
     replaceMessages: () => null,
     promptRequest: null,
@@ -119,6 +131,14 @@ export function ChatProvider({ children }: ChatProviderProps) {
         setMessages((prevMessages) =>
             prevMessages.map((message) =>
                 message.id === id ? { ...message, generating } : message
+            )
+        );
+    }, []);
+
+    const updateMessageVerifying = useCallback((id: string, verifying: boolean) => {
+        setMessages((prevMessages) =>
+            prevMessages.map((message) =>
+                message.id === id ? { ...message, verifying } : message
             )
         );
     }, []);
@@ -272,6 +292,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         addMessage,
         addMessagePart,
         updateMessageGenerating,
+        updateMessageVerifying,
         reset,
         replaceMessages,
         promptRequest,

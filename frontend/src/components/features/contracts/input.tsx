@@ -58,6 +58,7 @@ export function ChatInput() {
         addMessage,
         addMessagePart,
         updateMessageGenerating,
+        updateMessageVerifying,
         reset,
         promptRequest,
         consumePromptRequest,
@@ -256,14 +257,16 @@ export function ChatInput() {
                 }] : []),
                 { content: prompt, type: "user_message" as const },
             ],
-            generating: false
+            generating: false,
+            verifying: false
         };
 
         const aiMessage: Message = {
             id: Date.now().toString() + "ai",
             type: "ai",
             parts: [],
-            generating: true
+            generating: true,
+            verifying: false
         };
 
         addMessage(userMessage);
@@ -334,6 +337,12 @@ export function ChatInput() {
                     } else if (data.type === "history") {
                         // The backend persists every turn; history is restored
                         // from the authenticated session detail endpoint.
+                    } else if (data.type === "status" && data.phase === "verifying") {
+                        // Generation itself is done; Output Guard's audit step
+                        // has started. A distinct, visible phase so a
+                        // legitimate multi-second wait here doesn't look like
+                        // a stuck spinner.
+                        updateMessageVerifying(aiMessage.id, true);
                     } else {
                         addMessagePart(aiMessage.id, data);
                     }

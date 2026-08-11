@@ -171,7 +171,7 @@ function renderPart(part: RenderGroup, index: number, sessionId: string | null):
 }
 
 export function ChatMessage({ message }: Props) {
-    const { type, parts, generating } = message;
+    const { type, parts, generating, verifying } = message;
     const { activeSession } = useChatSession();
     const hasAnswer = parts.some((part) => part.type === "ai_message");
     const hasCitations = parts.some((part) => part.type === "citations" && parseCitations(part.content).length > 0);
@@ -193,7 +193,15 @@ export function ChatMessage({ message }: Props) {
                 {type === "ai" && hasAnswer && !generating && !hasCitations && (
                     <p className="mt-2 text-xs text-muted-foreground">No verified source citations were produced for this answer.</p>
                 )}
-                {generating && <Loader className="inline-flex" />}
+                {generating && (
+                    verifying ? (
+                        <p className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                            <Loader className="inline-flex" /> Verifying response…
+                        </p>
+                    ) : (
+                        <Loader className="inline-flex" />
+                    )
+                )}
             </div>
         </div>
     );

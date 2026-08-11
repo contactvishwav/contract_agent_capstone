@@ -324,6 +324,45 @@ class RunnerSessionPersistenceTests(unittest.IsolatedAsyncioTestCase):
         persisted = session_repo.list_messages(session["session_id"], "tenant_a")[-1]
         self.assertEqual(persisted["terminal_status"], "passed")
 
+    async def test_a_verifying_status_event_is_emitted_between_generation_and_the_final_answer(self):
+        """Retry-latency UX pass: generation finishing and Output Guard's
+        own audit step starting previously looked identical to the client
+        (a bare spinner) for however long that step took. A "status"/
+        "verifying" event must appear once generation is done and before
+        the terminal ai_message/error event, with no retry internals
+        exposed in its payload."""
+        session_repo, _ = _make_shared_repo()
+        session = session_repo.create_session("tenant_a", "UPLOADED_MSA_1", "Payment")
+
+        with patch("backend.main.Neo4jChatSessionRepository", return_value=session_repo), \
+             patch("backend.main.PromptGuard") as MockPromptGuard, \
+             patch("backend.main.OutputGuard") as MockOutputGuard, \
+             patch("backend.main.AuditLogger"), \
+             patch("backend.main.record_output_guard_outcome"), \
+             patch("backend.infrastructure.agent_audit_service.AgentAuditService"):
+            MockPromptGuard.return_value.validate.return_value = GuardResult(is_safe=True)
+            MockOutputGuard.return_value.validate.return_value = GuardResult(
+                is_safe=True,
+                metadata={"redacted_content": "Payment is due within 90 days."},
+            )
+            events = await self._collect(runner(
+                model="gemini-2.5-flash", prompt="What are the payment terms?", history="[]",
+                llm_mgr=self._fake_llm_mgr_with_full_turn(), tenant_id="tenant_a",
+                chat_session_id=session["session_id"],
+            ))
+
+        payloads = [json.loads(event.removeprefix("data: ").strip()) for event in events]
+        status_events = [p for p in payloads if p["type"] == "status"]
+        self.assertEqual(len(status_events), 1)
+        self.assertEqual(status_events[0]["phase"], "verifying")
+        self.assertEqual(status_events[0], {"content": "", "type": "status", "phase": "verifying"})
+
+        verifying_index = payloads.index(status_events[0])
+        answer_index = next(i for i, p in enumerate(payloads) if p["type"] == "ai_message")
+        end_index = next(i for i, p in enumerate(payloads) if p["type"] == "end")
+        self.assertLess(verifying_index, answer_index)
+        self.assertLess(answer_index, end_index)
+
     async def test_rejected_output_never_reaches_sse_or_persistence(self):
         session_repo, _ = _make_shared_repo()
         session = session_repo.create_session("tenant_a", "UPLOADED_MSA_1", "Payment")

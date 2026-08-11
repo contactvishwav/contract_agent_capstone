@@ -330,6 +330,18 @@ class BaseGuard(ABC):
             for name, result in results
         ]
         metadata.setdefault("validator", chosen_name)
+        # HallucinationValidator's own audit-retry telemetry (ADR-004
+        # addendum) must survive here regardless of which validator's result
+        # "wins" the tie-break above - when every validator passes (the
+        # common case), max()'s first-encountered tie-break picks whichever
+        # validator runs first in the chain (LlamaGuardValidator today), not
+        # necessarily HallucinationValidator, which would otherwise silently
+        # drop this visibility data on every passing turn that needed a
+        # retry. This is pure telemetry, not part of the pass/fail decision.
+        for _, result in results:
+            if "audit_attempts" in result.metadata:
+                metadata["audit_attempts"] = result.metadata["audit_attempts"]
+                metadata["audit_retry_used"] = result.metadata.get("audit_retry_used", False)
         return GuardResult(
             is_safe=all(result.status == GuardStatus.PASSED for _, result in results),
             status=chosen.status,

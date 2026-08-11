@@ -535,6 +535,34 @@ def _build_prompt_message(
     return HumanMessage(content=content_blocks), loaded_attachments
 
 
+def _history_safe_json(message: HumanMessage) -> str:
+    """Same wire content as message.model_dump_json(), but with any
+    "image" content block's raw base64 payload stripped out.
+
+    Real, confirmed bug: the terminal "history" SSE event (yielded near the
+    end of runner(), below) echoes this exact serialization back to the
+    client, and for an image-attached turn that meant embedding the full
+    multi-MB base64 image payload a second time, on the wire, for zero
+    benefit - input.tsx's onmessage handler no-ops on type "history"
+    entirely now that session persistence (chat_session_repo) is the
+    authoritative restore path. Only prompt_message (the current turn's own
+    HumanMessage) can ever carry an image block here - attachment_ids
+    requires session_id (see RunPayload.attachment_ids's docstring), and
+    the session_id path never round-trips a client-supplied `history`
+    string back through rebuild_history() at all, so there is no path by
+    which a stripped block could ever come back and be fed to a model as
+    real image content.
+    """
+    if not isinstance(message.content, list):
+        return message.model_dump_json()
+    dumped = message.model_dump(mode="json")
+    dumped["content"] = [
+        {**block, "base64": "[omitted]"} if isinstance(block, dict) and block.get("type") == "image" else block
+        for block in dumped["content"]
+    ]
+    return json.dumps(dumped)
+
+
 def _normalize_ai_message_content(content):
     """LangChain's AIMessageChunk.content is not consistently shaped -
     real, confirmed bug found live during a full Contract Chat functional
@@ -808,7 +836,7 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
 
     # Context management
     context = json.loads(history)
-    context.append(prompt_message.model_dump_json())
+    context.append(_history_safe_json(prompt_message))
     
     # Buffer for post-check
     ai_full_content = ""
@@ -953,6 +981,16 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
         ai_full_content = deterministic_metadata_answer
         logger.info("Using deterministic metadata answer from validated evidence")
 
+    # UX signal only, not a state transition of its own: generation has
+    # finished (nothing left to stream) but the answer isn't done yet -
+    # Output Guard's audit step is about to run and can legitimately take
+    # several, sometimes tens of, seconds (bounded by
+    # OUTPUT_GUARD_TIMEOUT_SECONDS/AUDIT_ATTEMPT_TIMEOUT_SECONDS below).
+    # Without this, that wait looked identical to a stuck request. No retry
+    # internals are exposed to the client - just "generating" vs "checking
+    # the answer" as two distinct, visible phases.
+    yield f"data: {json.dumps({'content': '', 'type': 'status', 'phase': 'verifying'})}\n\n"
+
     output_guard = OutputGuard(audit_logger=audit_logger, model_manager=llm_mgr)
     post_check_result = await _validate_output_guard(
         output_guard,
@@ -976,6 +1014,13 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
         model=model,
         chat_session_id=chat_session_id,
         reason_category=reason_category,
+        # ADR-004 addendum: HallucinationValidator's audit-retry telemetry,
+        # surfaced regardless of aggregation tie-breaking (base.py's
+        # _aggregate_validator_results) - None when this turn's evidence was
+        # rejected before the audit step ever ran (e.g. missing evidence),
+        # since only the audit judgment call itself is retried.
+        audit_attempts=(post_check_result.metadata or {}).get("audit_attempts"),
+        audit_retry_used=(post_check_result.metadata or {}).get("audit_retry_used"),
     )
 
     if output_status != GuardStatus.PASSED:

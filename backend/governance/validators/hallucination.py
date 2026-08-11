@@ -1,4 +1,7 @@
+import asyncio
+import concurrent.futures
 import json
+import os
 import re
 from typing import Dict, Any, Optional
 from ..base import GuardStatus, IGuardValidator, GuardResult
@@ -12,12 +15,64 @@ from backend.shared.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# ADR-004 addendum: real, confirmed via repeated live calls during the
+# Issue 1/Issue 2 fix pass - the exact same candidate answer plus the exact
+# same evidence envelope, re-submitted to this audit prompt unchanged,
+# sometimes came back "supported" and sometimes "unsupported"/"contradicted"
+# across independent calls (temperature=0 does not guarantee determinism on
+# hosted multi-tenant LLM APIs). Observed ~20% single-call false-rejection
+# rate on genuinely correct, fully-evidenced answers.
+#
+# REVISED (retry-latency UX pass): originally 3 total attempts (1 initial +
+# 2 retries), which measured out to ~45-55s worst-case audit latency alone
+# and was a real contributor to a live request hanging well past every
+# other timeout in the system. Cut to 2 total attempts (1 initial + 1
+# retry): at the same measured ~20% single-call false-rejection rate, 2
+# independent attempts' combined failure probability is 0.2^2 = 4%, i.e. a
+# ~96% pass rate for a genuinely supported claim - close enough to 3
+# attempts' ~99%+ that the extra ~15-20s of worst-case latency a third
+# attempt adds was not judged worth it, while still cutting worst-case
+# audit latency by roughly a third versus the original 3-attempt design.
+# This retries ONLY this audit judgment call, against the exact same
+# input_text/evidence envelope already fixed by the caller - never a new
+# candidate answer, never a relaxed evidence requirement, and never applied
+# to _validate_envelope's deterministic pre-checks above (those are pure
+# logic, not LLM judgment, and have no flip-flop to absorb). An
+# infrastructure failure (a raised exception - malformed JSON, provider
+# error, or now a per-attempt timeout - see AUDIT_ATTEMPT_TIMEOUT_SECONDS
+# below) is a different failure mode from a verdict flip-flop and is
+# deliberately NOT retried by this mechanism - it still fails closed via
+# _failure_result exactly as before.
+MAX_AUDIT_ATTEMPTS = 2
+
+# Real, confirmed via live process introspection: nothing previously bounded
+# a single audit attempt's own worst case, so the retry loop's own total
+# latency (each attempt was free to take however long the provider call
+# took) was one of the few things NOT independently timed out, relying
+# entirely on the outer OUTPUT_GUARD_TIMEOUT_SECONDS (60s, wrapping the
+# whole guard chain, not just this one validator's retry loop) as the only
+# backstop. Real observed per-attempt audit latency during live testing was
+# ~15-20s; 25s gives each attempt ~25-50% margin above that observed
+# ceiling before being treated as an infrastructure failure rather than a
+# slow response. With MAX_AUDIT_ATTEMPTS=2, two sequential attempts can now
+# mathematically reach at most 50s combined, leaving a real ~10s margin
+# under the 60s outer bound for the rest of the validator chain
+# (LlamaGuard, DomainCompliance, PII redaction) - previously that margin
+# existed only by observed convention, not by any actual bound. A timeout
+# here is surfaced and handled exactly like any other raised exception from
+# the audit call (malformed JSON, provider error): an infrastructure
+# failure, not a verdict flip-flop, so it is NOT itself retried by this
+# mechanism - it fails closed immediately, same as any other exception
+# already did before this addition.
+AUDIT_ATTEMPT_TIMEOUT_SECONDS = float(os.getenv("AUDIT_ATTEMPT_TIMEOUT_SECONDS", "25"))
+
+
 class HallucinationValidator(IGuardValidator):
     """
     Detects and flags factually incorrect or unsupported AI-generated content.
     Uses an LLM-based "Critic" to compare the output against provided source context.
     """
-    
+
     def __init__(self, llm_mgr=None):
         super().__init__()
         self._llm_mgr = llm_mgr
@@ -262,6 +317,29 @@ class HallucinationValidator(IGuardValidator):
             )
         return envelope
 
+    @staticmethod
+    def _invoke_with_timeout(model: Any, prompt: str) -> Any:
+        """Bounds one synchronous audit call to AUDIT_ATTEMPT_TIMEOUT_SECONDS.
+
+        model.invoke is a blocking call with no native timeout parameter, so
+        it is run on a helper thread and awaited with a timeout via
+        Future.result(). On timeout, the caller's wait is bounded (raises
+        promptly) but the underlying blocking call itself cannot be forced
+        to stop mid-flight - the same real, accepted limitation as bounding
+        any blocking call from another thread. executor.shutdown(wait=False)
+        deliberately does not block the caller on that orphaned call.
+        """
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(model.invoke, prompt)
+        try:
+            return future.result(timeout=AUDIT_ATTEMPT_TIMEOUT_SECONDS)
+        except concurrent.futures.TimeoutError as exc:
+            raise TimeoutError(
+                f"audit attempt exceeded {AUDIT_ATTEMPT_TIMEOUT_SECONDS}s"
+            ) from exc
+        finally:
+            executor.shutdown(wait=False)
+
     def _failure_result(self, exc: Exception) -> GuardResult:
         logger.error(
             f"Hallucination check failed ({type(exc).__name__}); prompt and source omitted"
@@ -293,9 +371,22 @@ class HallucinationValidator(IGuardValidator):
         try:
             model_id = (context or {}).get("model", "gemini-2.5-flash")
             model = self.llm_mgr.get_raw_model_by_name(model_id)
-            return self._result_from_response(
-                model.invoke(self._prompt(input_text, envelope))
-            )
+            prompt = self._prompt(input_text, envelope)
+            result = None
+            for attempt in range(1, MAX_AUDIT_ATTEMPTS + 1):
+                result = self._result_from_response(self._invoke_with_timeout(model, prompt))
+                if result.is_safe:
+                    break
+                if attempt < MAX_AUDIT_ATTEMPTS:
+                    logger.warning(
+                        "HallucinationValidator: audit attempt %d rejected (%s); "
+                        "retrying the same audit question against the same "
+                        "candidate/evidence (ADR-004 addendum)",
+                        attempt, result.violation_type,
+                    )
+            result.metadata["audit_attempts"] = attempt
+            result.metadata["audit_retry_used"] = attempt > 1
+            return result
         except Exception as exc:
             return self._failure_result(exc)
 
@@ -313,8 +404,29 @@ class HallucinationValidator(IGuardValidator):
         try:
             model_id = (context or {}).get("model", "gemini-2.5-flash")
             model = self.llm_mgr.get_raw_model_by_name(model_id)
-            return self._result_from_response(
-                await model.ainvoke(self._prompt(input_text, envelope))
-            )
+            prompt = self._prompt(input_text, envelope)
+            result = None
+            for attempt in range(1, MAX_AUDIT_ATTEMPTS + 1):
+                try:
+                    response = await asyncio.wait_for(
+                        model.ainvoke(prompt), timeout=AUDIT_ATTEMPT_TIMEOUT_SECONDS,
+                    )
+                except asyncio.TimeoutError as exc:
+                    raise TimeoutError(
+                        f"audit attempt {attempt} exceeded {AUDIT_ATTEMPT_TIMEOUT_SECONDS}s"
+                    ) from exc
+                result = self._result_from_response(response)
+                if result.is_safe:
+                    break
+                if attempt < MAX_AUDIT_ATTEMPTS:
+                    logger.warning(
+                        "HallucinationValidator: audit attempt %d rejected (%s); "
+                        "retrying the same audit question against the same "
+                        "candidate/evidence (ADR-004 addendum)",
+                        attempt, result.violation_type,
+                    )
+            result.metadata["audit_attempts"] = attempt
+            result.metadata["audit_retry_used"] = attempt > 1
+            return result
         except Exception as exc:
             return self._failure_result(exc)

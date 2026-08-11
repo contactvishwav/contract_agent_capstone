@@ -204,3 +204,106 @@ citation builder (which requires a `contract_id`) automatically skips
 this evidence type - no bogus "citation" is ever fabricated for an
 attached image, the same existing behavior `deterministic_aggregation`
 evidence already relies on.
+
+## Addendum (2026-08-11): bounded retry for `HallucinationValidator`'s audit step
+
+While investigating a separate multi-turn image-context issue, repeated
+live calls surfaced a real, distinct problem: the exact same candidate
+answer plus the exact same evidence envelope, resubmitted unchanged to
+`HallucinationValidator`'s audit prompt, sometimes came back `"supported"`
+and sometimes `"unsupported"`/`"contradicted"` across independent real API
+calls. `temperature=0` is set on the auditor's model construction
+(`llm_manager.py`), but that does not guarantee determinism on hosted
+multi-tenant LLM APIs - a documented limitation, not a bug in this
+codebase. Measured directly: ~20% single-call false-rejection rate on
+genuinely correct, fully-evidenced answers, most visibly on single-turn
+"what's in this image?" questions with no history at all.
+
+This is auditor measurement noise, not an evidence-sufficiency problem -
+the fix must absorb the noise without touching what counts as sufficient
+evidence or weakening the fail-closed guarantee itself.
+
+**Design.** `HallucinationValidator.validate()`/`avalidate()` retry only
+the audit judgment call - the same `_prompt(input_text, evidence_envelope)`
+built from the exact same candidate and evidence already fixed by the
+caller - up to `MAX_AUDIT_ATTEMPTS = 2` total attempts (1 initial + 1
+retry), stopping at the first passing verdict. Nothing upstream of the
+audit call is retried: the generating model is never re-invoked, no new
+candidate answer is ever produced, and `_validate_envelope`'s deterministic
+pre-checks (missing evidence, fabricated evidence IDs, cross-tenant
+evidence, missing text evidence for legal terms, etc.) run once, before the
+retry loop, exactly as before - those are pure logic, not LLM judgment,
+and have no flip-flop to absorb. An infrastructure failure (a raised
+exception - malformed JSON, provider error, or a per-attempt timeout - see
+below) is a different failure mode from a verdict flip-flop and is
+deliberately not retried by this mechanism; it still fails closed on the
+first occurrence via `_failure_result`, unchanged.
+
+If every attempt rejects, the turn still fails closed exactly as before -
+no change to that guarantee. This reads as "the auditor's verdict was
+inconsistent, ask again," never "keep trying until we get a passing
+answer": the question and its inputs are fixed throughout, only the
+auditor's own independent judgment call is repeated.
+
+**Why 2 total attempts (revised down from 3).** The first version of this
+mechanism used `MAX_AUDIT_ATTEMPTS = 3` (1 initial + 2 retries), modeled
+directly from the measured ~20% single-call failure rate: if each
+independent attempt is ~80% likely to correctly recognize a genuinely
+supported claim, the chance all 3 independently misjudge it is roughly
+`0.2^3 ≈ 0.8%`, i.e. a combined ~99%+ pass rate. That version was live
+load-tested and found to produce a worst-case audit latency of
+~45-55 seconds on its own - a real, measured contributor to a live request
+that hung well past every other timeout in the system (see the
+`generation_timeout` addendum above; the hang itself turned out to be a
+separate, unrelated bug in the SSE layer, but the audit retry's own
+worst-case latency was still judged too costly relative to its marginal
+benefit). Revised to `MAX_AUDIT_ATTEMPTS = 2`: at the same measured ~20%
+single-call failure rate, 2 independent attempts' combined failure
+probability is `0.2^2 = 4%`, i.e. a ~96% pass rate for a genuinely
+supported claim - close enough to 3 attempts' ~99%+ that the additional
+~15-20s of worst-case latency a third attempt adds was not judged worth
+it, while cutting the mechanism's own worst-case latency contribution by
+roughly a third.
+
+**Per-attempt timeout.** The original design bounded only the *count* of
+attempts, not any individual attempt's own duration - each attempt was
+free to take however long the underlying provider call took, with the
+outer `OUTPUT_GUARD_TIMEOUT_SECONDS` (60s, wrapping the entire Output
+Guard chain, not just this one validator's retry loop) as the only
+backstop. `AUDIT_ATTEMPT_TIMEOUT_SECONDS` (default `25`, env-overridable)
+now bounds each individual audit call: real observed per-attempt audit
+latency during live testing was ~15-20s, so 25s gives real margin
+(~25-50%) above that observed ceiling before an attempt is treated as an
+infrastructure failure rather than a slow response. With
+`MAX_AUDIT_ATTEMPTS = 2`, two sequential attempts can now mathematically
+reach at most 50s combined - leaving a real, enforced ~10s margin under
+the 60s outer bound for the rest of the validator chain (`LlamaGuard`,
+`DomainCompliance`, PII redaction), rather than a margin that existed only
+by observed convention. A timed-out attempt is handled exactly like any
+other raised exception from the audit call: an infrastructure failure, not
+a verdict flip-flop, so it is not itself retried - it fails closed
+immediately via `_failure_result`, same as before this addition.
+
+**Visibility.** `audit_attempts` (1-2) and `audit_retry_used` (bool) are
+attached to the result's metadata regardless of the outcome.
+`base.py`'s `_aggregate_validator_results` explicitly preserves these two
+keys from whichever validator set them, since the normal tie-break (first
+validator wins when all pass) would otherwise silently drop this
+visibility data on every passing turn that needed a retry -
+`HallucinationValidator` runs last in Output Guard's chain and is rarely
+the "chosen" result when everything passes. `AgentAuditService.
+log_guard_check` persists both fields to the existing Neo4j-backed
+`AuditLog` audit trail on every Output Guard check (pass or fail) -
+queryable via the existing `GET /api/audit/trail/{resource_id}` route, not
+just visible in transient request logs. Prompt Guard's own audit call site
+is untouched and always logs these fields as `None`.
+
+**Scope.** This retry lives entirely inside `HallucinationValidator`'s own
+audit step. No other validator (`LlamaGuardValidator`,
+`DomainComplianceValidator`), no other guard (`PromptGuard`), and no other
+part of the generation pipeline gained retry logic as part of this change.
+
+Live-verified: the exact 15-iteration single-turn "what's in this image?"
+test used to diagnose the ~20% flip-flop rate was re-run against the fix -
+see `docs/tasks/active/chat-attachments-and-quote-reply.md` for the before/
+after pass-rate numbers.

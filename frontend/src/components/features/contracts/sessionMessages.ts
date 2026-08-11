@@ -27,12 +27,13 @@ export function groupStoredMessagesIntoUiMessages(stored: ChatSessionMessage[]):
                 type: "user",
                 parts,
                 generating: false,
+                verifying: false,
             });
             continue;
         }
 
         if (!current) {
-            current = { id: row.message_id, type: "ai", parts: [], generating: false };
+            current = { id: row.message_id, type: "ai", parts: [], generating: false, verifying: false };
             messages.push(current);
         }
         current.parts.push({

@@ -19,7 +19,7 @@ vi.mock('../../../contexts/ChatSessionContext', () => ({
 describe('ChatMessage', () => {
   it('combines streamed chunks before rendering sanitized GFM', () => {
     const { container } = render(<ChatMessage message={{
-      id: 'a', type: 'ai', generating: false,
+      id: 'a', type: 'ai', generating: false, verifying: false,
       parts: [
         { type: 'ai_message', content: '**Payment' },
         { type: 'ai_message', content: '**\n\n- Net 90\n\n| Term | Value |\n|---|---|\n| Fee | $50,000 |\n\n[bad](javascript:alert(1))\n\n<script>alert(1)</script>' },
@@ -34,7 +34,7 @@ describe('ChatMessage', () => {
 
   it('renders malformed model markdown safely and citations separately', () => {
     render(<ChatMessage message={{
-      id: 'b', type: 'ai', generating: false,
+      id: 'b', type: 'ai', generating: false, verifying: false,
       parts: [
         { type: 'ai_message', content: '* **Payment**:**** within 90 days' },
         { type: 'citations', content: JSON.stringify([{
@@ -53,7 +53,7 @@ describe('ChatMessage', () => {
 
   it('renders a verified page as a compact accessible source button', () => {
     render(<ChatMessage message={{
-      id: 'verified', type: 'ai', generating: false,
+      id: 'verified', type: 'ai', generating: false, verifying: false,
       parts: [
         { type: 'ai_message', content: 'Payment is due within 90 days.' },
         { type: 'citations', content: JSON.stringify([{
@@ -75,7 +75,7 @@ describe('ChatMessage', () => {
 
   it('labels a completed answer that has no verified evidence', () => {
     render(<ChatMessage message={{
-      id: 'c', type: 'ai', generating: false,
+      id: 'c', type: 'ai', generating: false, verifying: false,
       parts: [{ type: 'ai_message', content: 'I could not find supporting records.' }],
     }} />);
     expect(screen.getByText('No verified source citations were produced for this answer.')).toBeInTheDocument();

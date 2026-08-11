@@ -79,8 +79,19 @@ class AgentAuditService:
         model: Optional[str] = None,
         chat_session_id: Optional[str] = None,
         reason_category: Optional[str] = None,
+        audit_attempts: Optional[int] = None,
+        audit_retry_used: Optional[bool] = None,
     ):
-        """Log a governance guard check (Prompt/Output Guard)"""
+        """Log a governance guard check (Prompt/Output Guard).
+
+        audit_attempts/audit_retry_used (ADR-004 addendum) are only ever
+        populated for Output Guard checks that went through
+        HallucinationValidator's audit-retry - None for Prompt Guard and any
+        other caller. Persisted here (not just in application logs) so real
+        auditor reliability over time is queryable via the existing
+        GET /api/audit/trail/{resource_id} route, not just visible in a
+        single request's transient logs.
+        """
         self.audit_logger.log_event(
             event_type=AuditEventType.MODEL_GUARD_CHECK,
             resource_id=session_id,
@@ -96,6 +107,8 @@ class AgentAuditService:
                 "model": model,
                 "chat_session_id": chat_session_id,
                 "reason_category": reason_category,
+                "audit_attempts": audit_attempts,
+                "audit_retry_used": audit_retry_used,
                 "correlation_id": self.correlation_id,
             }
         )
