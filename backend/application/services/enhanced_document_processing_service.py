@@ -5,6 +5,8 @@ from backend.agents.agent_workflow_tracker import workflow_tracker
 from backend.embeddings.orchestrator import EmbeddingOrchestrator
 from backend.embeddings.validator import EmbeddingValidator
 from backend.shared.utils.contract_search_tool import graph
+from backend.governance.pii_engine import PIIEngine
+from backend.infrastructure.encryption import field_encryptor
 import os
 import logging
 
@@ -79,6 +81,7 @@ class EnhancedDocumentProcessingService:
 
         initial_state = {
             "file_path": request.file_path,
+            "filename": request.filename,
             "tenant_id": request.tenant_id,
             "extracted_text": None,
             "contract_data": None,
@@ -218,7 +221,8 @@ class EnhancedDocumentProcessingService:
             if doc_embedding.metadata.get("level") == "document":
                 self.graph.query("""
                     MATCH (c:Contract {file_id: $file_id, tenant_id: $tenant_id})
-                    SET c.document_embedding = $embedding,
+                    SET c.embedding = $embedding,
+                        c.document_embedding = $embedding,
                         c.summary_embedding = $embedding
                 """, {
                     "file_id": contract_id,
@@ -249,6 +253,9 @@ class EnhancedDocumentProcessingService:
         # Store clause embeddings
         for clause_embedding in processing_result.clause_embeddings:
             clause_id = f"{contract_id}_clause_{clause_embedding.metadata.get('start_position', 0)}"
+            raw_content = clause_embedding.content or ""
+            redacted_content = PIIEngine.redact(raw_content)
+            encrypted_content = field_encryptor.encrypt(redacted_content)
             self.graph.query("""
                 MATCH (c:Contract {file_id: $file_id, tenant_id: $tenant_id})
                 MERGE (cl:Clause {id: $clause_id, tenant_id: $tenant_id})
@@ -264,7 +271,7 @@ class EnhancedDocumentProcessingService:
                 "tenant_id": tenant_id,
                 "clause_id": clause_id,
                 "clause_type": clause_embedding.metadata.get("clause_type", "unknown"),
-                "content": clause_embedding.content,
+                "content": encrypted_content,
                 "embedding": clause_embedding.embedding,
                 "confidence": clause_embedding.metadata.get("confidence", 0.0),
                 "start_position": clause_embedding.metadata.get("start_position", 0),
@@ -278,7 +285,7 @@ class EnhancedDocumentProcessingService:
                 if party_name:
                     self.graph.query("""
                         MATCH (c:Contract {file_id: $file_id, tenant_id: $tenant_id})
-                        MATCH (c)<-[r:PARTY_TO]-(p:Party {name: $party_name, tenant_id: $tenant_id})
+                        MATCH (c)<-[r:PARTY_TO]-(p:Party {name: $party_name})
                         SET r.embedding = $embedding,
                             r.context = $context
                     """, {

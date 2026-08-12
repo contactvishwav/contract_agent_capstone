@@ -2,6 +2,7 @@ import React, { useState, useCallback } from 'react';
 import { Card } from '../../shared/ui/card';
 import { Loader } from '../../shared/ui/loader';
 import { apiFetch } from '../../../lib/apiClient';
+import { enhancedSearchApi } from '../../../services/enhancedSearchApi';
 
 interface DocumentUploadProps {
   onUploadComplete?: (result: UploadResult) => void;
@@ -17,6 +18,7 @@ interface UploadResult {
   existing_contract_id?: string;
   details: string;
   model_used: string;
+  enhanced_embeddings?: boolean;
 }
 
 export const DocumentUpload: React.FC<DocumentUploadProps> = ({
@@ -27,6 +29,7 @@ export const DocumentUpload: React.FC<DocumentUploadProps> = ({
 }) => {
   const [isUploading, setIsUploading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
+  const [enableEnhanced, setEnableEnhanced] = useState(true);
   const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
 
   const handleFiles = useCallback(async (files: FileList) => {
@@ -63,31 +66,42 @@ export const DocumentUpload: React.FC<DocumentUploadProps> = ({
     }, 500);
 
     try {
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('model', modelSelection);
-
-      const response = await apiFetch('/api/documents/upload', {
-        method: 'POST',
-        body: formData
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        // removed console error
-        throw new Error(`Upload failed: ${response.status} - ${errorText}`);
-      }
-
-      const responseText = await response.text();
-      // removed console log
-
       let result: UploadResult;
-      try {
-        result = JSON.parse(responseText);
-      } catch (parseError) {
-        // removed console error
-        throw new Error(`Invalid response format: ${responseText.substring(0, 100)}`);
+      if (enableEnhanced) {
+        const enhancedData = await enhancedSearchApi.uploadEnhancedDocument(file, modelSelection, true);
+        result = {
+          filename: enhancedData.filename || file.name,
+          status: enhancedData.status || 'success',
+          contract_id: enhancedData.contract_id,
+          existing_contract_id: enhancedData.existing_contract_id,
+          details: enhancedData.details || enhancedData.message || 'Enhanced multi-level embeddings generated',
+          model_used: enhancedData.model_used || modelSelection,
+          enhanced_embeddings: enhancedData.enhanced_embeddings ?? true
+        };
+      } else {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('model', modelSelection);
+
+        const response = await apiFetch('/api/documents/upload', {
+          method: 'POST',
+          body: formData
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`Upload failed: ${response.status} - ${errorText}`);
+        }
+
+        const responseText = await response.text();
+
+        try {
+          result = JSON.parse(responseText);
+        } catch (parseError) {
+          throw new Error(`Invalid response format: ${responseText.substring(0, 100)}`);
+        }
       }
+
       setUploadResult(result);
 
       if (onUploadComplete) {
@@ -108,7 +122,6 @@ export const DocumentUpload: React.FC<DocumentUploadProps> = ({
       }, 1000);
 
     } catch (error) {
-      // removed console error
       setUploadResult({
         filename: file.name,
         status: 'error',
@@ -119,7 +132,7 @@ export const DocumentUpload: React.FC<DocumentUploadProps> = ({
       clearInterval(pollWorkflow);
       setIsUploading(false);
     }
-  }, [modelSelection, onUploadComplete]);
+  }, [enableEnhanced, modelSelection, onUploadComplete, onWorkflowUpdate, onUploadStart]);
 
   const handleDrag = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -159,9 +172,10 @@ export const DocumentUpload: React.FC<DocumentUploadProps> = ({
   };
 
   const getStatusMessage = (result: UploadResult) => {
+    const enhancedTag = result.enhanced_embeddings ? ' (Multi-level Embeddings Active)' : '';
     switch (result.status) {
       case 'success':
-        return `✅ Contract created successfully! ID: ${result.contract_id}`;
+        return `✅ Contract created successfully${enhancedTag}! ID: ${result.contract_id}`;
       case 'error':
         return `❌ Processing failed: ${result.details}`;
       case 'review_required':
@@ -169,7 +183,7 @@ export const DocumentUpload: React.FC<DocumentUploadProps> = ({
       case 'skipped':
         return `ℹ️ Document skipped: ${result.details}`;
       case 'duplicate':
-        return `ℹ️ Already uploaded - showing the existing contract (ID: ${result.contract_id})`;
+        return `ℹ️ Already uploaded - showing the existing contract (ID: ${result.contract_id})${enhancedTag}`;
       default:
         return `📄 Processing completed: ${result.details}`;
     }
@@ -180,6 +194,26 @@ export const DocumentUpload: React.FC<DocumentUploadProps> = ({
       <Card className="p-6">
         <div className="space-y-4">
           <h3 className="text-lg font-semibold">Upload PDF Contract</h3>
+
+          {/* Enhanced Multi-Level Embeddings Toggle */}
+          <div className="flex items-center justify-between p-3 bg-slate-50 border border-slate-200 rounded-lg">
+            <div className="space-y-0.5 pr-2">
+              <label htmlFor="enhanced-upload-toggle" className="text-sm font-semibold text-slate-800 cursor-pointer">
+                Multi-Level Embeddings
+              </label>
+              <p className="text-xs text-slate-500">
+                Generate document, section, clause & relationship embeddings
+              </p>
+            </div>
+            <input
+              id="enhanced-upload-toggle"
+              type="checkbox"
+              checked={enableEnhanced}
+              onChange={(e) => setEnableEnhanced(e.target.checked)}
+              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+              disabled={isUploading}
+            />
+          </div>
 
           {/* Upload Area */}
           <div
@@ -197,7 +231,9 @@ export const DocumentUpload: React.FC<DocumentUploadProps> = ({
             {isUploading ? (
               <div className="space-y-2">
                 <Loader className="mx-auto" />
-                <p className="text-sm text-gray-600">Processing PDF...</p>
+                <p className="text-sm text-gray-600">
+                  {enableEnhanced ? 'Processing PDF with Multi-Level Embeddings...' : 'Processing PDF...'}
+                </p>
               </div>
             ) : (
               <div className="space-y-2">

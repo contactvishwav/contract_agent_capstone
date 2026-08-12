@@ -94,6 +94,13 @@ class EnhancedSearchService:
         all_results = {}
         total_count = 0
         
+        plural_keys = {
+            SearchLevel.DOCUMENT: "documents",
+            SearchLevel.SECTION: "sections",
+            SearchLevel.CLAUSE: "clauses",
+            SearchLevel.RELATIONSHIP: "relationships",
+        }
+
         for level, strategy in self._strategies.items():
             if level != SearchLevel.ALL:
                 level_params = SearchParams(
@@ -102,10 +109,17 @@ class EnhancedSearchService:
                     query=params.query,
                     clause_types=params.clause_types if level == SearchLevel.CLAUSE else None,
                     section_types=params.section_types if level == SearchLevel.SECTION else None,
-                    parties=params.parties if level == SearchLevel.RELATIONSHIP else None
+                    parties=params.parties if level == SearchLevel.RELATIONSHIP else None,
+                    contract_type=params.contract_type,
+                    active=params.active,
+                    min_effective_date=params.min_effective_date,
+                    max_effective_date=params.max_effective_date,
+                    min_end_date=params.min_end_date,
+                    max_end_date=params.max_end_date,
                 )
                 result = strategy.execute(level_params)
-                all_results[level.value] = result.items
+                key = plural_keys.get(level, level.value)
+                all_results[key] = result.items
                 total_count += result.total_count
         
         return SearchResult(

@@ -28,7 +28,12 @@ export const SearchPage: React.FC = () => {
 
     try {
       const apiResponse = await enhancedSearchApi.searchContracts(searchParams);
-      // removed log
+
+      if (apiResponse && (apiResponse.success === false || (apiResponse as any).error)) {
+        const errorMessage = (apiResponse as any).error || (apiResponse as any).message || 'Search failed on backend';
+        setSearchState({ results: null, isLoading: false, error: errorMessage });
+        return;
+      }
 
       // Handle different response structures
       let results;

@@ -66,25 +66,45 @@ export const EnhancedSearchResults: React.FC<EnhancedSearchResultsProps> = ({
 
   // removed console logs
 
+  // Check if results object contains a backend error
+  if (results && typeof results === 'object' && !Array.isArray(results) && (results.error || results.success === false)) {
+    const errorMsg = results.error || results.message || 'Search error occurred';
+    return (
+      <div className={`p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 ${className}`} role="alert">
+        <p className="font-semibold">Search Error</p>
+        <p className="text-sm mt-1">{errorMsg}</p>
+      </div>
+    );
+  }
+
   // Convert results to expected format
   if (Array.isArray(results)) {
     processedResults = results;
-    // removed console log
   } else if (typeof results === 'object') {
-    // Handle single result object
     processedResults = [results];
-    // removed console log
   }
 
-  // removed console log
+  const hasItems = processedResults.some((res) => {
+    if (!res) return false;
+    if (searchLevel === 'document') return Boolean(res.documents && res.documents.length > 0);
+    if (searchLevel === 'section') return Boolean(res.sections && res.sections.length > 0);
+    if (searchLevel === 'clause') return Boolean(res.clauses && res.clauses.length > 0);
+    if (searchLevel === 'relationship') return Boolean(res.relationships && res.relationships.length > 0);
+    if (searchLevel === 'all') {
+      return Boolean(
+        (res.documents && res.documents.length > 0) ||
+        (res.sections && res.sections.length > 0) ||
+        (res.clauses && res.clauses.length > 0) ||
+        (res.relationships && res.relationships.length > 0)
+      );
+    }
+    return false;
+  });
 
-  if (processedResults.length === 0) {
+  if (processedResults.length === 0 || !hasItems) {
     return (
-      <div className={`text-center py-8 text-slate-500 ${className}`}>
+      <div className={`text-center py-8 text-slate-500 bg-white rounded-lg border border-slate-200 p-6 ${className}`}>
         No results found. Try adjusting your search criteria.
-        <div className="mt-2 text-xs">
-          Debug: Received {typeof results} - {JSON.stringify(results)}
-        </div>
       </div>
     );
   }

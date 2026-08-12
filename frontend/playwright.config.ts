@@ -14,8 +14,13 @@ export default defineConfig({
   fullyParallel: false,
   reporter: 'list',
   use: {
-    baseURL: process.env.E2E_BASE_URL || 'http://localhost:3000',
+    baseURL: process.env.E2E_BASE_URL || 'http://localhost:5173',
     screenshot: 'only-on-failure',
+  },
+  webServer: {
+    command: 'npx vite preview --port 5173',
+    url: 'http://localhost:5173',
+    reuseExistingServer: true,
   },
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },

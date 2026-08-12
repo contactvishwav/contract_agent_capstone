@@ -68,6 +68,7 @@ AUTH_INVITE_ACCEPT_RATE_LIMIT = os.getenv("AUTH_INVITE_ACCEPT_RATE_LIMIT", "10/m
 # a runaway client-side retry loop or a scripted-abuse burst within seconds,
 # rather than after it has already run up a large multi-provider LLM bill.
 CHAT_RUN_RATE_LIMIT = os.getenv("CHAT_RUN_RATE_LIMIT", "30/minute")
+ENHANCED_SEARCH_RATE_LIMIT = os.getenv("ENHANCED_SEARCH_RATE_LIMIT", "30/minute")
 
 # Image attachment uploads (ADR-008) are a real disk-write operation
 # reachable independent of /api/run/ - CHAT_RUN_RATE_LIMIT bounds generation

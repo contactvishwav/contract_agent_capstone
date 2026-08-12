@@ -22,16 +22,21 @@ class SearchResponseMapper:
             elif search_level == "all":
                 formatted_results = result.items  # Already formatted by service
         
+        has_error = bool(result.search_metadata and result.search_metadata.get("error"))
+        error_msg = result.search_metadata.get("error") if has_error else None
+
         response = {
-            "success": True,
+            "success": not has_error,
             "search_level": search_level,
             "results": formatted_results,
             "contracts_found": result.total_count,
             "metadata": result.search_metadata
         }
         
-        # Add helpful message for empty results
-        if result.total_count == 0:
+        if has_error:
+            response["error"] = error_msg
+            response["message"] = f"Search error occurred: {error_msg}"
+        elif result.total_count == 0:
             response["message"] = "No contracts found matching your search criteria."
             response["suggestions"] = [
                 "Try removing some filters to broaden your search",

@@ -221,11 +221,12 @@ async def upload_pdf_enhanced(
             finalized = repo.graph.query(
                 "MATCH (c:Contract {file_id: $contract_id, tenant_id: $tenant_id}) "
                 "WHERE coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE' "
-                "SET c.source_hash = $source_hash RETURN c.file_id AS contract_id",
+                "SET c.source_hash = $source_hash, c.filename = coalesce(c.filename, $filename) RETURN c.file_id AS contract_id",
                 {
                     "contract_id": contract_id,
                     "tenant_id": tenant_id,
                     "source_hash": source_hash,
+                    "filename": file.filename,
                 },
             )
             if not finalized:
@@ -290,6 +291,7 @@ async def get_embedding_status(
         OPTIONAL MATCH (c)-[:CONTAINS_CLAUSE]->(cl:Clause {tenant_id: $tenant_id})
         OPTIONAL MATCH (c)<-[r:PARTY_TO]-()
         RETURN 
+            c.embedding IS NOT NULL as has_contract_embedding,
             c.document_embedding IS NOT NULL as has_document_embedding,
             c.summary_embedding IS NOT NULL as has_summary_embedding,
             count(DISTINCT s) as section_count,
@@ -307,11 +309,13 @@ async def get_embedding_status(
             raise HTTPException(status_code=404, detail="Contract not found")
         
         data = result[0]
+        has_doc_embed = data["has_contract_embedding"] or data["has_document_embedding"]
         
         return {
             "contract_id": contract_id,
             "embedding_status": {
-                "document_embedding": data["has_document_embedding"],
+                "contract_embedding": data["has_contract_embedding"],
+                "document_embedding": has_doc_embed,
                 "summary_embedding": data["has_summary_embedding"],
                 "sections": {
                     "count": data["section_count"],
@@ -328,7 +332,7 @@ async def get_embedding_status(
                 }
             },
             "total_embeddings": (
-                (1 if data["has_document_embedding"] else 0) +
+                (1 if has_doc_embed else 0) +
                 (1 if data["has_summary_embedding"] else 0) +
                 data["section_count"] +
                 data["clause_count"] +
