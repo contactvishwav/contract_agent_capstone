@@ -10,6 +10,7 @@ interface SearchResult {
 
 interface DocumentResult {
   file_id: string;
+  filename?: string;
   summary: string;
   contract_type: string;
   effective_date: string;
@@ -19,6 +20,7 @@ interface DocumentResult {
 
 interface SectionResult {
   contract_id: string;
+  filename?: string;
   section_type: string;
   content: string;
   order: number;
@@ -26,6 +28,7 @@ interface SectionResult {
 
 interface ClauseResult {
   contract_id: string;
+  filename?: string;
   clause_type: string;
   content: string;
   confidence: number;
@@ -35,6 +38,7 @@ interface ClauseResult {
 
 interface RelationshipResult {
   contract_id: string;
+  filename?: string;
   party_name: string;
   role: string;
   context: string;
@@ -118,7 +122,7 @@ export const EnhancedSearchResults: React.FC<EnhancedSearchResultsProps> = ({
       {documents.map((doc, idx) => (
         <div key={idx} className="border border-slate-200 rounded-lg p-4 hover:shadow-md transition-shadow">
           <div className="flex justify-between items-start mb-2">
-            <h4 className="font-medium text-slate-800">{doc.file_id}</h4>
+            <h4 className="font-medium text-slate-800">{doc.filename || doc.file_id}</h4>
             <span className="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded">{doc.contract_type}</span>
           </div>
           <p className="text-sm text-slate-600 mb-3">{doc.summary}</p>
@@ -141,7 +145,7 @@ export const EnhancedSearchResults: React.FC<EnhancedSearchResultsProps> = ({
       {sections.map((section, idx) => (
         <div key={idx} className="border border-slate-200 rounded-lg p-4 hover:shadow-md transition-shadow">
           <div className="flex justify-between items-start mb-2">
-            <h4 className="font-medium text-slate-800">{section.contract_id}</h4>
+            <h4 className="font-medium text-slate-800">{section.filename || section.contract_id}</h4>
             <span className="px-2 py-1 bg-green-100 text-green-800 text-xs rounded">{section.section_type}</span>
           </div>
           <p className="text-sm text-slate-600">{section.content}</p>
@@ -162,7 +166,7 @@ export const EnhancedSearchResults: React.FC<EnhancedSearchResultsProps> = ({
       {clauses.map((clause, idx) => (
         <div key={idx} className="border border-slate-200 rounded-lg p-4 hover:shadow-md transition-shadow">
           <div className="flex justify-between items-start mb-2">
-            <h4 className="font-medium text-slate-800">{clause.contract_id}</h4>
+            <h4 className="font-medium text-slate-800">{clause.filename || clause.contract_id}</h4>
             <div className="flex gap-2">
               <span className="px-2 py-1 bg-purple-100 text-purple-800 text-xs rounded">{clause.clause_type}</span>
               <span className="px-2 py-1 bg-slate-100 text-slate-700 text-xs rounded">
@@ -188,7 +192,7 @@ export const EnhancedSearchResults: React.FC<EnhancedSearchResultsProps> = ({
       {relationships.map((rel, idx) => (
         <div key={idx} className="border border-slate-200 rounded-lg p-4 hover:shadow-md transition-shadow">
           <div className="flex justify-between items-start mb-2">
-            <h4 className="font-medium text-slate-800">{rel.contract_id}</h4>
+            <h4 className="font-medium text-slate-800">{rel.filename || rel.contract_id}</h4>
             <span className="px-2 py-1 bg-orange-100 text-orange-800 text-xs rounded">{rel.role}</span>
           </div>
           <div className="flex items-center gap-2 mb-2">

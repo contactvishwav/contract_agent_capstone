@@ -16,5 +16,10 @@
 # ACME issuance against an IP address or no address at all would just
 # fail loudly for no benefit during that phase.
 {$DOMAIN} {
-	reverse_proxy ui:80
+	reverse_proxy ui:80 {
+		transport http {
+			read_timeout 600s
+			write_timeout 600s
+		}
+	}
 }

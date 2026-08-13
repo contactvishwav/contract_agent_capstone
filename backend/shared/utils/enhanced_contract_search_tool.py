@@ -248,6 +248,14 @@ def _search_documents(embeddings, tenant_id, summary_search, filters, params,
         operator = ">=" if active else "<"
         filters.append(f"c.end_date {operator} date()")
 
+    if contract_type:
+        filters.append("toUpper(c.contract_type) CONTAINS toUpper($contract_type)")
+        params["contract_type"] = contract_type
+
+    if parties:
+        filters.append("EXISTS { MATCH (c)<-[:PARTY_TO]-(p:Party) WHERE any(party IN $parties WHERE toLower(p.name) CONTAINS toLower(party)) }")
+        params["parties"] = [p.lower() for p in parties]
+
     if summary_search:
         summary_embedding = embeddings.embed_query(summary_search)
         params["summary_embedding"] = summary_embedding

@@ -370,4 +370,50 @@ test.describe('Enhanced Search & Multi-Level Indexing E2E Verification', () => {
     expect(bodyText).not.toContain('Debug:');
   });
 
+  test('Verification 6: Search UI displays human-readable filename in search result cards', async ({ page }) => {
+    await setupMockedAuthAndSignIn(page);
+
+    // Navigate to Search tab
+    await page.getByRole('button', { name: 'Enhanced Search' }).click();
+    await expect(page.getByRole('heading', { level: 1, name: 'Enhanced Contract Search' })).toBeVisible({ timeout: 10000 });
+
+    // Intercept search API returning contracts with filename
+    await page.route('**/api/contracts/search/enhanced*', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          search_level: 'document',
+          contracts_found: 1,
+          results: [
+            {
+              documents: [
+                {
+                  file_id: 'UPLOADED_3F38D6E8_20260813',
+                  filename: 'Clean_SOW.pdf',
+                  summary: 'Statement of Work for software development services',
+                  contract_type: 'SOW',
+                  effective_date: '2025-01-01',
+                  end_date: '2025-12-31',
+                  parties: [{ name: 'Acme Corp', role: 'Client' }]
+                }
+              ]
+            }
+          ],
+          metadata: { search_level: 'document' }
+        })
+      });
+    });
+
+    // Explicitly select Document search level
+    await page.getByText('Document', { exact: true }).click();
+
+    await page.getByPlaceholder('Enter your search query...').fill('Clean SOW');
+    await page.getByRole('button', { name: 'Search Contracts' }).click();
+
+    // Verify human-readable filename is rendered prominently in document result header
+    await expect(page.getByText('Clean_SOW.pdf').first()).toBeVisible({ timeout: 10000 });
+  });
+
 });

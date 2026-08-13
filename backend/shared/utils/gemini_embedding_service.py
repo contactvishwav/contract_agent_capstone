@@ -41,20 +41,35 @@ class GeminiEmbeddingService:
         self._initialized = True
     
     def embed_query(self, text: str) -> List[float]:
-        """Generate 1536-dimensional embedding for text"""
-        try:
-            result = self.client.models.embed_content(
-                model=self.model,
-                contents=text,
-                config=types.EmbedContentConfig(output_dimensionality=self.dimensions)
-            )
-            
-            [embedding_obj] = result.embeddings
-            return list(embedding_obj.values)
-            
-        except Exception as e:
-            logger.error(f"Gemini embedding failed: {e}")
-            raise RuntimeError(f"Embedding generation failed: {e}")
+        """Generate 1536-dimensional embedding for text with retry backoff"""
+        import time
+        max_retries = 4
+        delay = 1.0
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                result = self.client.models.embed_content(
+                    model=self.model,
+                    contents=text,
+                    config=types.EmbedContentConfig(output_dimensionality=self.dimensions)
+                )
+                [embedding_obj] = result.embeddings
+                return list(embedding_obj.values)
+            except Exception as e:
+                err_msg = str(e).lower()
+                is_rate_limit = any(k in err_msg for k in ["429", "resourceexhausted", "quota", "rate limit", "temporarily unavailable"])
+                if is_rate_limit and attempt < max_retries:
+                    logger.warning(f"Gemini embedding rate-limited (attempt {attempt}/{max_retries}), retrying in {delay}s: {e}")
+                    time.sleep(delay)
+                    delay *= 2.0
+                elif attempt < max_retries and ("timeout" in err_msg or "connection" in err_msg):
+                    logger.warning(f"Gemini embedding network glitch (attempt {attempt}/{max_retries}), retrying in {delay}s: {e}")
+                    time.sleep(delay)
+                    delay *= 2.0
+                else:
+                    logger.error(f"Gemini embedding failed on attempt {attempt}: {e}")
+                    raise RuntimeError(f"Embedding generation failed: {e}")
+        raise RuntimeError("Embedding generation failed after max retries")
     
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         """Generate embeddings for multiple texts"""

@@ -62,6 +62,25 @@ _BROAD_SCOPE_INTENT = re.compile(
 )
 
 
+def _extract_prompt_filters(prompt: str) -> dict:
+    """Extract metadata filters (like contract_type) from user prompt text."""
+    args = {"search_level": "document"}
+    p_lower = prompt.lower()
+    
+    if re.search(r"\b(sow|statement of works?|statements of work)\b", p_lower):
+        args["contract_type"] = "SOW"
+    elif re.search(r"\b(msa|master services? agreements?|master sales agreements?)\b", p_lower):
+        args["contract_type"] = "MSA"
+    elif re.search(r"\b(nda|non[- ]disclosure agreements?)\b", p_lower):
+        args["contract_type"] = "NDA"
+    elif re.search(r"\b(sla|service level agreements?)\b", p_lower):
+        args["contract_type"] = "SLA"
+    elif re.search(r"\b(mesa|master executive services agreements?)\b", p_lower):
+        args["contract_type"] = "MESA"
+
+    return args
+
+
 def _forced_evidence_args(prompt: str) -> dict:
     """Choose a bounded evidence query when the model answered without tools.
 
@@ -72,7 +91,7 @@ def _forced_evidence_args(prompt: str) -> dict:
     if _BROAD_SCOPE_INTENT.search(prompt):
         return {"search_level": "all"}
     if _METADATA_INTENT.search(prompt):
-        return {"search_level": "document"}
+        return _extract_prompt_filters(prompt)
     return {"search_level": "all", "summary_search": prompt[:500]}
 
 
@@ -215,11 +234,12 @@ def get_agent(llm):
             and not _BROAD_SCOPE_INTENT.search(latest_prompt)
             and not has_current_evidence
         ):
+            forced_args = _extract_prompt_filters(latest_prompt)
             response = AIMessage(
                 content="",
                 tool_calls=[{
                     "name": "EnhancedContractSearch",
-                    "args": {"search_level": "document"},
+                    "args": forced_args,
                     "id": f"forced_{uuid.uuid4().hex}",
                 }],
             )

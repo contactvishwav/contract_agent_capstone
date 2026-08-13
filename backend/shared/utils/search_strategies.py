@@ -148,6 +148,7 @@ class DocumentSearchStrategy(SearchStrategy):
                 total_count: count(c),
                 contracts: collect({
                     file_id: c.file_id,
+                    filename: c.filename,
                     summary: c.summary,
                     contract_type: c.contract_type,
                     effective_date: c.effective_date,
@@ -215,6 +216,7 @@ class ClauseSearchStrategy(SearchStrategy):
                 total_count: count(cl),
                 clauses: collect({
                     contract_id: c.file_id,
+                    filename: c.filename,
                     clause_type: cl.clause_type,
                     content: cl.content,
                     confidence: cl.confidence
@@ -289,6 +291,7 @@ class SectionSearchStrategy(SearchStrategy):
                 total_count: count(s),
                 sections: collect({
                     contract_id: c.file_id,
+                    filename: c.filename,
                     section_type: s.section_type,
                     content: s.content,
                     order: s.order
@@ -349,6 +352,7 @@ class RelationshipSearchStrategy(SearchStrategy):
                 total_count: count(r),
                 relationships: collect({
                     contract_id: c.file_id,
+                    filename: c.filename,
                     party_name: p.name,
                     role: r.role,
                     context: r.context
