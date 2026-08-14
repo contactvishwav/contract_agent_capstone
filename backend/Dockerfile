@@ -67,6 +67,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     poppler-utils \
     tesseract-ocr \
+    gosu \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --uid 1000 appuser
@@ -75,12 +76,19 @@ RUN mkdir -p /var/lib/contract-agent/source-pdfs /var/lib/contract-agent/data /a
 
 COPY --from=production-build --chown=appuser:appuser /app/.venv /app/.venv
 COPY --from=production-build --chown=appuser:appuser /app/backend ./backend
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-USER appuser
-
+# No USER directive here (deliberately): the container must boot as root so
+# docker-entrypoint.sh can fix ownership of whatever gets mounted at
+# /var/lib/contract-agent/chat-attachments (a Docker named volume's mount
+# point is created root-owned by the daemon, independent of this image's own
+# appuser). The entrypoint drops to appuser via gosu before running the real
+# command - the process that actually serves traffic is still non-root.
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=15s --start-period=40s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/monitoring/health', timeout=15)"
 
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
