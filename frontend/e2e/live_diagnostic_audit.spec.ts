@@ -3,12 +3,18 @@
  * Target: https://contract-intel.duckdns.org/
  * Credentials: demo / password123
  *
- * DIAGNOSTIC ONLY — steps document outcomes but don't hard-fail.
+ * Stages 1-3 document outcomes without hard-failing. Stages 4-5 (real chat
+ * responses) hard-fail: every response is asserted to contain none of the
+ * known guard/error strings, and to carry at least one citation - a
+ * keyword-in-body check can't tell a real answer from an echoed prompt or
+ * a block message (confirmed live: an earlier "PASS" here was actually a
+ * safety-policy block, matched only because the block screen still shows
+ * the user's own question text, which happened to contain the keywords).
  * Screenshots captured at every stage as visual evidence.
  * Run: npx playwright test e2e/live_diagnostic_audit.spec.ts --headed
  */
 
-import { test, Page } from '@playwright/test';
+import { test, expect, Page } from '@playwright/test';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -98,7 +104,24 @@ async function newChat(page: Page) {
   }
 }
 
-/** Type a message and send it; return body text after response or timeout. */
+// Strings that must never appear in a real AI response — each one means
+// the request was blocked, withheld, or the model contradicted itself
+// instead of answering. A response containing any of these is a failure,
+// not a diagnostic note.
+const FORBIDDEN_RESPONSE_STRINGS = [
+  'blocked by the Contract Chat safety policy',
+  'No relevant contract evidence was found',
+  'specific clause was not found',
+  'Response withheld',
+];
+
+/**
+ * Type a message and send it; wait for generation to finish, then assert
+ * the AI's own response (not the whole page — the page also contains the
+ * echoed user prompt, which can spuriously match a keyword check) contains
+ * none of FORBIDDEN_RESPONSE_STRINGS and has at least one citation.
+ * Returns the AI response text for callers that want to inspect it further.
+ */
 async function sendMessage(page: Page, query: string, waitForResponseMs = 90000): Promise<string> {
   const textarea = page.locator('textarea[placeholder="Type your prompt here!"]').first();
   try {
@@ -107,7 +130,7 @@ async function sendMessage(page: Page, query: string, waitForResponseMs = 90000)
     console.log(`[MSG] typed: "${query.slice(0, 80)}"`);
   } catch (e: any) {
     console.error(`[MSG FAIL] No textarea: ${e.message?.slice(0, 80)}`);
-    return 'NO_INPUT';
+    throw new Error(`No chat textarea found: ${e.message}`);
   }
 
   // Send
@@ -135,9 +158,21 @@ async function sendMessage(page: Page, query: string, waitForResponseMs = 90000)
   await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
   await page.waitForTimeout(3000);
 
-  const body = await page.textContent('body').catch(() => '');
-  if (body?.includes('Response withheld')) return 'WITHHELD';
-  return 'OK';
+  // The AI's own message bubble only — not the whole page, which also
+  // contains the echoed user prompt (a keyword check against page-wide
+  // text can match words in the QUESTION, not the answer).
+  const aiMessage = page.locator('div:has(> strong:text-is("AI"))').last();
+  const responseText = (await aiMessage.textContent().catch(() => '')) ?? '';
+  console.log(`[MSG] AI response (first 200 chars): "${responseText.slice(0, 200)}"`);
+
+  for (const forbidden of FORBIDDEN_RESPONSE_STRINGS) {
+    expect(responseText, `AI response must not contain "${forbidden}"`).not.toContain(forbidden);
+  }
+
+  const citationCount = await page.locator('aside[aria-label="Sources"] button').count().catch(() => 0);
+  expect(citationCount, 'AI response must carry at least one citation').toBeGreaterThan(0);
+
+  return responseText;
 }
 
 // ── Test Suite ───────────────────────────────────────────────────────────────
@@ -271,7 +306,7 @@ test.describe('LIVE PRODUCTION AUDIT', () => {
     await page.waitForTimeout(3000);
 
     const QUERY_INPUT  = 'input#search-query, input[placeholder="Enter your search query..."]';
-    const SEARCH_BTN   = 'button:has-text("Search")';
+    const SEARCH_BTN   = 'button:has-text("Search Contracts")';
 
     async function runSearch(level: 'document' | 'section' | 'clause' | 'relationship', query: string, snapName: string) {
       // Select search level via radio label
@@ -348,17 +383,16 @@ test.describe('LIVE PRODUCTION AUDIT', () => {
     await page.waitForTimeout(1000);
 
     const NOTICE_QUERY = 'Across the Policy Playbook, the Salesforce MSA, the Clean MSA, and the Clean SOW, summarize the differing notice periods required for termination.';
-    const result = await sendMessage(page, NOTICE_QUERY, 120000);
+    // sendMessage already asserts the response is free of forbidden
+    // strings and carries a citation - a keyword check here only checks
+    // against the AI's own response text (not page-wide, which also
+    // contains the echoed question and would spuriously match).
+    const responseText = await sendMessage(page, NOTICE_QUERY, 120000);
 
-    const body = await page.textContent('body').catch(() => '');
     const keywords = ['notice', 'days', 'termination', 'period', 'Playbook', 'Salesforce', 'MSA', 'SOW', 'written'];
-    const hitCount = keywords.filter(k => body?.toLowerCase().includes(k.toLowerCase())).length;
+    const hitCount = keywords.filter(k => responseText.toLowerCase().includes(k.toLowerCase())).length;
 
-    if (result === 'NO_INPUT') {
-      console.error('[S4 FAIL] No chat input found');
-    } else if (result === 'WITHHELD') {
-      console.error('[S4 FAIL] Response withheld by guardrails');
-    } else if (hitCount >= 4) {
+    if (hitCount >= 4) {
       console.log(`[S4 PASS] Response synthesizes multi-doc data — ${hitCount}/${keywords.length} keywords hit`);
     } else {
       console.warn(`[S4 WARN] Response present but keyword hits low (${hitCount}/${keywords.length})`);
@@ -388,9 +422,9 @@ test.describe('LIVE PRODUCTION AUDIT', () => {
 
       console.log(`\n[S5] === ${scope} ===`);
 
-      // Q1
+      // Q1 — sendMessage asserts no forbidden strings and >=1 citation
       const r1 = await sendMessage(page, q1, 90000);
-      console.log(`[S5] Q1="${q1.slice(0, 60)}" → ${r1}`);
+      console.log(`[S5] Q1="${q1.slice(0, 60)}" → OK (${r1.length} chars)`);
       await page.waitForTimeout(2000);
 
       // Check for citations after Q1
@@ -398,7 +432,7 @@ test.describe('LIVE PRODUCTION AUDIT', () => {
 
       // Q2
       const r2 = await sendMessage(page, q2, 90000);
-      console.log(`[S5] Q2="${q2.slice(0, 60)}" → ${r2}`);
+      console.log(`[S5] Q2="${q2.slice(0, 60)}" → OK (${r2.length} chars)`);
       await page.waitForTimeout(2000);
 
       // Check for citations after Q2
@@ -520,11 +554,10 @@ test.describe('LIVE PRODUCTION AUDIT', () => {
         'Does the indemnification language shown in this redlined image conflict with the indemnification clause in this contract? Explain any discrepancies.',
         120000
       );
-      console.log(`[S5-MM] response=${mmResult}`);
+      console.log(`[S5-MM] response OK (${mmResult.length} chars)`);
 
-      const body = await page.textContent('body').catch(() => '');
       const mmKeywords = ['indemnification', 'redline', 'conflict', 'clause', 'image', 'discrepan', 'language'];
-      const mmHits = mmKeywords.filter(k => body?.toLowerCase().includes(k.toLowerCase())).length;
+      const mmHits = mmKeywords.filter(k => mmResult.toLowerCase().includes(k.toLowerCase())).length;
       console.log(`[S5-MM] keyword hits: ${mmHits}/${mmKeywords.length}`);
       if (mmHits >= 2) console.log('[S5-MM PASS] Multimodal response references relevant content');
       else console.warn('[S5-MM WARN] Low keyword match in multimodal response');
