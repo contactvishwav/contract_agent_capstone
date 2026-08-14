@@ -152,15 +152,8 @@ function renderPart(part: RenderGroup, index: number, sessionId: string | null):
                 </div>
             );
         case "tool_call":
-            return <details key={index} className="my-3 cursor-pointer">
-                <summary>Tool call</summary>
-                <code className="block p-1 bg-muted rounded-sm overflow-x-auto font-mono text-sm whitespace-pre-wrap">{part.content}</code>
-            </details>;
         case "tool_message":
-            return <details key={index} className="my-3 cursor-pointer">
-                <summary>Tool message</summary>
-                <code className="block p-1 bg-muted rounded-sm overflow-x-auto font-mono text-sm whitespace-pre-wrap">{part.content}</code>
-            </details>;
+            return null;
         case "citations":
             return <CitationPanel key={index} content={part.content} />;
         case "error":

@@ -62,9 +62,17 @@ class ChatAttachmentStorage:
         root: Optional[str] = None,
         key_provider: Optional[IKeyProvider] = None,
     ):
-        self.root = Path(
-            root or os.getenv("CHAT_ATTACHMENT_STORAGE_DIR", DEFAULT_CHAT_ATTACHMENT_STORAGE_DIR)
-        )
+        target_root = root or os.getenv("CHAT_ATTACHMENT_STORAGE_DIR")
+        if not target_root:
+            default_path = Path(DEFAULT_CHAT_ATTACHMENT_STORAGE_DIR)
+            try:
+                default_path.mkdir(parents=True, exist_ok=True)
+                target_root = str(default_path)
+            except (PermissionError, OSError):
+                fallback_path = Path.cwd() / "data" / "chat-attachments"
+                fallback_path.mkdir(parents=True, exist_ok=True)
+                target_root = str(fallback_path)
+        self.root = Path(target_root)
         self._key_provider = key_provider or get_key_provider()
 
     @staticmethod

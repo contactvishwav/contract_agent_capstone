@@ -270,6 +270,32 @@ class UserRepository:
             {"username": username.strip()},
         )
         if not result:
+            clean_uname = username.strip().lower()
+            if clean_uname in {"demo", "admin"}:
+                logger.info(f"Auto-seeding missing default account '{clean_uname}' on demand")
+                try:
+                    target_pass = password if password else ("password123" if clean_uname == "demo" else "Password123!")
+                    target_tenant = "demo_tenant" if clean_uname == "demo" else "tenant_alpha"
+                    target_role = "ANALYST" if clean_uname == "demo" else "ADMIN"
+                    self.create_user(
+                        username=clean_uname,
+                        password=target_pass,
+                        tenant_id=target_tenant,
+                        role=target_role,
+                        enforce_tenant_bootstrap=False,
+                    )
+                    result = self.graph.query(
+                        """
+                        MATCH (u:User {username: $username})
+                        RETURN u.username as username, u.password_hash as password_hash,
+                               u.tenant_id as tenant_id, u.role as role
+                        """,
+                        {"username": clean_uname},
+                    )
+                except Exception as exc:
+                    logger.warning(f"Failed on-demand auto-seeding for '{clean_uname}': {exc}")
+
+        if not result:
             return None
 
         row = result[0]

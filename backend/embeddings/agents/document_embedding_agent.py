@@ -29,14 +29,18 @@ class DocumentEmbeddingAgent(EmbeddingAgent):
             embedding_type="document"
         ))
         
-        # Section embeddings (split by double newlines for sections)
-        sections = content.split("\n\n")
+        # Section embeddings (split by numbered section headers or double newlines)
+        import re
+        raw_sections = re.split(r'\n+(?=\d+\.\s+[A-Z])|\n\n+', content)
+        sections = [s.strip() for s in raw_sections if s.strip()]
+
         for i, section in enumerate(sections):
-            if len(section.strip()) > 100:  # Only process substantial sections
+            if len(section) > 30:  # Process sections with content
+                sec_type = self._identify_section_type(section)
                 section_embedding = self.strategy.generate_embedding(section, {
                     **(metadata or {}), 
                     "section_index": i,
-                    "section_type": self._identify_section_type(section)
+                    "section_type": sec_type
                 })
                 results.append(EmbeddingResult(
                     embedding=section_embedding,
@@ -44,7 +48,7 @@ class DocumentEmbeddingAgent(EmbeddingAgent):
                         **(metadata or {}), 
                         "level": "section",
                         "section_index": i,
-                        "section_type": self._identify_section_type(section)
+                        "section_type": sec_type
                     },
                     content=section,
                     embedding_type="section"
@@ -53,18 +57,40 @@ class DocumentEmbeddingAgent(EmbeddingAgent):
         return results
     
     def _identify_section_type(self, section: str) -> str:
-        """Identify section type based on content"""
+        """Identify section type based on header title and content"""
         section_lower = section.lower()
+        first_line = section_lower.split("\n")[0]
         
-        if any(term in section_lower for term in ["payment", "fee", "cost", "price"]):
-            return "payment"
-        elif any(term in section_lower for term in ["termination", "terminate", "end"]):
-            return "termination"
-        elif any(term in section_lower for term in ["liability", "damages", "loss"]):
+        # Check first line / title first
+        if any(term in first_line for term in ["indemnifi", "indemnity", "hold harmless"]):
+            return "indemnification"
+        if any(term in first_line for term in ["liability", "damages", "loss"]):
             return "liability"
-        elif any(term in section_lower for term in ["intellectual property", "ip", "patent", "copyright"]):
+        if any(term in first_line for term in ["terminat"]):
+            return "termination"
+        if any(term in first_line for term in ["payment", "fee", "invoice"]):
+            return "payment"
+        if any(term in first_line for term in ["intellectual", "ip", "patent", "copyright"]):
             return "intellectual_property"
-        elif any(term in section_lower for term in ["confidential", "non-disclosure", "proprietary"]):
+        if any(term in first_line for term in ["confidential"]):
             return "confidentiality"
+        if any(term in first_line for term in ["governing law", "jurisdiction"]):
+            return "governing_law"
+
+        # Fallback to full section body search
+        if any(term in section_lower for term in ["indemnify", "indemnification", "hold harmless"]):
+            return "indemnification"
+        elif any(term in section_lower for term in ["limitation of liability", "liable", "damages"]):
+            return "liability"
+        elif any(term in section_lower for term in ["termination", "terminate"]):
+            return "termination"
+        elif any(term in section_lower for term in ["payment", "invoice", "fee"]):
+            return "payment"
+        elif any(term in section_lower for term in ["intellectual property", "patent", "copyright"]):
+            return "intellectual_property"
+        elif any(term in section_lower for term in ["confidential", "non-disclosure"]):
+            return "confidentiality"
+        elif any(term in section_lower for term in ["governing law", "jurisdiction"]):
+            return "governing_law"
         else:
             return "general"

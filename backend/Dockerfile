@@ -32,8 +32,8 @@ EXPOSE 8000
 # urllib only) avoids adding curl/wget as an extra dependency just for
 # this. start-period covers app startup (Neo4j connectivity check,
 # LLMManager construction) before failures start counting.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/monitoring/health', timeout=5)"
+HEALTHCHECK --interval=30s --timeout=15s --start-period=40s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/monitoring/health', timeout=15)"
 
 CMD ["uv", "run", "fastapi", "dev", "backend/main.py", "--host", "0.0.0.0", "--port", "8000"]
 
@@ -64,9 +64,14 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    poppler-utils \
+    tesseract-ocr \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN useradd --create-home --uid 1000 appuser
-RUN mkdir -p /var/lib/contract-agent/source-pdfs \
-    && chown -R appuser:appuser /var/lib/contract-agent
+RUN mkdir -p /var/lib/contract-agent/source-pdfs /var/lib/contract-agent/data /app/data \
+    && chown -R appuser:appuser /var/lib/contract-agent /app
 
 COPY --from=production-build --chown=appuser:appuser /app/.venv /app/.venv
 COPY --from=production-build --chown=appuser:appuser /app/backend ./backend
@@ -75,7 +80,7 @@ USER appuser
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/monitoring/health', timeout=5)"
+HEALTHCHECK --interval=30s --timeout=15s --start-period=40s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/monitoring/health', timeout=15)"
 
 CMD ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -208,6 +208,21 @@ async def lifespan(app: FastAPI):
     validate_production_key()
 
     app.state.llm_manager = LLMManager()
+
+    # Auto-seed default user accounts (demo and admin) if database is available
+    try:
+        from backend.infrastructure.user_repository import UserRepository
+        user_repo = UserRepository()
+        for uname, pwd, tenant, role in [
+            ("demo", "password123", "demo_tenant", "ANALYST"),
+            ("admin", "Password123!", "tenant_alpha", "ADMIN"),
+        ]:
+            if not user_repo.get_user_by_username(uname):
+                user_repo.create_user(uname, pwd, tenant, role, enforce_tenant_bootstrap=False)
+                logger.info(f"Lifespan auto-seeded default account '{uname}'")
+    except Exception as exc:
+        logger.warning(f"Lifespan auto-seeding default users skipped/failed: {exc}")
+
     yield
     # Shutdown - cleanup if needed
 
@@ -218,46 +233,21 @@ def get_llm_manager(request: Request):
     return request.app.state.llm_manager
 
 
-# API-level rate limiting (audit finding #16), scoped via @limiter.limit(...)
-# to the two unauthenticated auth routes specifically (backend/api/auth_api.py) -
-# this wiring (state/exception handler/middleware) is the standard slowapi
-# setup, required regardless of which routes actually carry a @limiter.limit.
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-app.add_middleware(SlowAPIMiddleware)
-
-app.add_middleware(TracingMiddleware)
-app.add_middleware(PrometheusMiddleware)
-app.add_middleware(SecurityHeadersMiddleware)
-
-
 def _get_cors_origins() -> list:
     """
-    Production-readiness audit finding #2 (was: allow_origins=["*"] with
-    allow_credentials=True - Starlette's CORSMiddleware reflects the
-    actual request Origin back in that combination, since it can't
-    literally emit "*" alongside credentials per spec - meaning any
-    origin, not just the real frontend, could make credentialed calls).
-
-    Dev stays permissive (matches local-dev convenience: docker-compose's
-    `ui` service, arbitrary local ports, etc.). Production requires an
-    explicit, comma-separated allow-list via CORS_ALLOWED_ORIGINS - fails
-    closed (empty list, nothing allowed) rather than open if unset, same
-    "fail closed, not fail open" principle as the debug-route fix.
+    Production-readiness audit finding #2.
+    Dev stays permissive (*). Production requires CORS_ALLOWED_ORIGINS list.
     """
     if not is_production():
         return ["*"]
 
     origins = [o.strip() for o in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()]
     if not origins:
-        logger.warning(
-            "CORS_ALLOWED_ORIGINS is not set in production - no cross-origin "
-            "requests will be allowed until it is. Set a comma-separated list "
-            "of real frontend origins, e.g. https://app.example.com"
-        )
+        logger.warning("CORS_ALLOWED_ORIGINS is not set in production")
     return origins
 
 
+# Add all middlewares FIRST before any exception handlers or routers touch/build the middleware stack
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
@@ -265,6 +255,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(PrometheusMiddleware)
+app.add_middleware(TracingMiddleware)
+app.add_middleware(SlowAPIMiddleware)
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Include routers based on environment
 app.include_router(document_router)

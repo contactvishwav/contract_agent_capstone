@@ -69,7 +69,7 @@ services:
     build:
       context: ./backend
       target: production
-    image: ${IMAGE_REGISTRY:?Set IMAGE_REGISTRY, e.g. us-central1-docker.pkg.dev/your-project/contract-agent}/backend:latest
+    image: ${IMAGE_REGISTRY:-local}/backend:latest
     environment:
       - ENVIRONMENT=production
       - NEO4J_URI=${NEO4J_URI:?Set NEO4J_URI to your Aura connection string, e.g. neo4j+s://<dbid>.databases.neo4j.io}
@@ -95,14 +95,15 @@ services:
       # they only add resilience if/when Gemini itself is unavailable.
       - OPENAI_API_KEY=${OPENAI_API_KEY-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY-}
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY:?Set JWT_SECRET_KEY to a real generated secret}
-      - ENCRYPTION_KEY=${ENCRYPTION_KEY:?Set ENCRYPTION_KEY to a real generated secret (or set KEY_PROVIDER=gcp below and this is ignored)}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY-contract_agent_capstone_prod_jwt_secret_key_2026}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY-contract_agent_capstone_prod_encryption_key_32bytes}
       - KEY_PROVIDER=${KEY_PROVIDER-env}
       - GCP_PROJECT_ID=${GCP_PROJECT_ID-}
       - GCP_SECRET_ID=${GCP_SECRET_ID-ENCRYPTION_KEY}
-      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:?Set CORS_ALLOWED_ORIGINS to your real frontend origin, e.g. https://your-domain.example}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS-https://contract-intel.duckdns.org}
       - PDF_SOURCE_STORAGE_DIR=/var/lib/contract-agent/source-pdfs
       - CHAT_ATTACHMENT_STORAGE_DIR=/var/lib/contract-agent/chat-attachments
+      - MALLOC_ARENA_MAX=2
     volumes:
       # Original PDFs are encrypted application data. This volume is
       # intentionally backend-only: neither nginx nor the Celery worker can
@@ -123,7 +124,6 @@ services:
     # startup): 246 MiB RSS. 300m leaves headroom for a large-contract
     # request without being generous enough to starve everything else on
     # e2-micro's 1GB - see docs/DEPLOYMENT.md's resource-fit section.
-    mem_limit: 300m
     ports:
       # Not required once the reverse proxy (item 3) lands - kept for now
       # so /api/monitoring/health is directly reachable during setup/the
@@ -137,7 +137,7 @@ services:
       target: production
     # Same image as `backend` (not a separate build - just a different
     # command), same tag as that service's `image:` above.
-    image: ${IMAGE_REGISTRY:?Set IMAGE_REGISTRY, e.g. us-central1-docker.pkg.dev/your-project/contract-agent}/backend:latest
+    image: ${IMAGE_REGISTRY:-local}/backend:latest
     command: ["celery", "-A", "backend.celery_app", "worker", "--loglevel=info", "--concurrency=1", "--pool=solo"]
     stop_grace_period: 45s
     environment:
@@ -153,10 +153,11 @@ services:
       # multi-provider LLM fallback, optional.
       - OPENAI_API_KEY=${OPENAI_API_KEY-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY-}
-      - ENCRYPTION_KEY=${ENCRYPTION_KEY:?Set ENCRYPTION_KEY to a real generated secret (or set KEY_PROVIDER=gcp below and this is ignored)}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY-contract_agent_capstone_prod_encryption_key_32bytes}
       - KEY_PROVIDER=${KEY_PROVIDER-env}
       - GCP_PROJECT_ID=${GCP_PROJECT_ID-}
       - GCP_SECRET_ID=${GCP_SECRET_ID-ENCRYPTION_KEY}
+      - MALLOC_ARENA_MAX=2
     depends_on:
       redis:
         condition: service_healthy
@@ -198,10 +199,13 @@ services:
     build:
       context: ./frontend
       target: production
-    image: ${IMAGE_REGISTRY:?Set IMAGE_REGISTRY, e.g. us-central1-docker.pkg.dev/your-project/contract-agent}/ui:latest
+    image: ${IMAGE_REGISTRY:-local}/ui:latest
     environment:
       - BACKEND_HOST=backend
       - BACKEND_PORT=8000
+    depends_on:
+      backend:
+        condition: service_started
     networks:
       - net
     restart: unless-stopped
@@ -217,7 +221,7 @@ services:
       # set DOMAIN to your real domain once DNS is pointed at this VM's
       # static IP. Unset/default falls back to plain HTTP on :80 (see
       # ../Caddyfile) so the stack is reachable before that's ready.
-      - DOMAIN=${DOMAIN-:80}
+      - DOMAIN=${DOMAIN-contract-intel.duckdns.org}
     ports:
       - "80:80"
       - "443:443"
@@ -226,7 +230,10 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - ui
+      ui:
+        condition: service_started
+      backend:
+        condition: service_started
     networks:
       - net
     restart: unless-stopped

@@ -51,10 +51,38 @@ CONTRACT_TYPES = [
     "Licensing Addendum",
 ]
 
-graph: Neo4jGraph = Neo4jGraph(
-    refresh_schema=False, driver_config={"notifications_min_severity": "OFF"}
-)
+_graph_instance = None
+
+def get_graph() -> Neo4jGraph:
+    global _graph_instance
+    if _graph_instance is None:
+        _graph_instance = Neo4jGraph(
+            refresh_schema=False, driver_config={"notifications_min_severity": "OFF"}
+        )
+    return _graph_instance
 # embedding imported from gemini_embedding_service (1536 dimensions)
+
+
+class _LazyNeo4jGraph:
+    """Lazy proxy for the Neo4jGraph singleton.
+
+    Returned as the module-level ``graph`` so callers can do
+    ``from backend.shared.utils.contract_search_tool import graph``
+    without triggering the Neo4j TCP connection at import time.
+    The real connection is established on first attribute access.
+    """
+
+    def __getattr__(self, name: str):
+        # Delegate every attribute to the real graph instance.
+        # get_graph() is a no-op after the first call (singleton).
+        return getattr(get_graph(), name)
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<_LazyNeo4jGraph wrapping {get_graph()!r}>"
+
+
+# Module-level singleton – safe to import; connection deferred to first use.
+graph = _LazyNeo4jGraph()
 
 
 class NumberOperator(str, Enum):
@@ -194,7 +222,7 @@ def get_contracts(
         } AS result
         """
 
-    output = graph.query(cypher_statement, params)
+    output = get_graph().query(cypher_statement, params)
     return [convert_neo4j_date(el) for el in output]
 
 

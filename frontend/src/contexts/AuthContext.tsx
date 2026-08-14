@@ -45,6 +45,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const login = useCallback(async (username: string, password: string) => {
     setIsLoggingIn(true);
     setLoginError(null);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
     try {
       // Deliberately a plain fetch, not apiFetch: issuing a token is the
       // one call that must work with no session yet, and must never be
@@ -53,7 +56,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
+        signal: controller.signal,
       });
+
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
@@ -62,24 +68,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       const body = await response.json();
       if (body.mfa_required) {
-        // No access_token in this response at all (real credentials were
-        // still verified - see api/auth_api.py's issue_token) - the login
-        // isn't complete until verifyMfaCode succeeds, so no session is
-        // established yet. Previously this branch didn't exist: the code
-        // unconditionally destructured access_token (undefined here) and
-        // handed it to setSessionFromToken, which threw a generic
-        // "unusable token" error - any MFA-enabled account was completely
-        // locked out of the web app. Found in the credential-provisioning
-        // audit, fixed here.
         setPendingMfaToken(body.mfa_token);
         setMfaError(null);
         return;
       }
       setSessionFromToken(body.access_token);
-    } catch (err) {
-      setLoginError(err instanceof Error ? err.message : 'Sign-in failed');
-      throw err;
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      let msg = 'Authentication server unavailable. Please try again.';
+      if (err.name === 'AbortError') {
+        msg = 'Authentication server unavailable. Please try again.';
+      } else if (err instanceof Error && err.message && !err.message.includes('Failed to fetch')) {
+        msg = err.message;
+      }
+      setLoginError(msg);
+      throw new Error(msg);
     } finally {
+      clearTimeout(timeoutId);
       setIsLoggingIn(false);
     }
   }, []);
@@ -88,17 +93,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!pendingMfaToken) return;
     setIsVerifyingMfa(true);
     setMfaError(null);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
     try {
       const result = await authApi.verifyMfa(pendingMfaToken, code);
+      clearTimeout(timeoutId);
       if (!result.access_token) {
         throw new Error('Verification succeeded but the server did not return a usable token');
       }
       setSessionFromToken(result.access_token);
       setPendingMfaToken(null);
-    } catch (err) {
-      setMfaError(err instanceof Error ? err.message : 'Verification failed');
-      throw err;
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      let msg = 'Authentication server unavailable. Please try again.';
+      if (err.name === 'AbortError') {
+        msg = 'Authentication server unavailable. Please try again.';
+      } else if (err instanceof Error && err.message && !err.message.includes('Failed to fetch')) {
+        msg = err.message;
+      }
+      setMfaError(msg);
+      throw new Error(msg);
     } finally {
+      clearTimeout(timeoutId);
       setIsVerifyingMfa(false);
     }
   }, [pendingMfaToken]);
@@ -111,22 +128,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const register = useCallback(async ({ username, password, tenantId, role }: RegisterFields) => {
     setIsRegistering(true);
     setRegisterError(null);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
     try {
       const response = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password, tenant_id: tenantId, role }),
+        signal: controller.signal,
       });
+
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
         throw new Error(body.detail || `Registration failed (${response.status})`);
       }
-    } catch (err) {
-      setRegisterError(err instanceof Error ? err.message : 'Registration failed');
-      throw err;
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      let msg = 'Authentication server unavailable. Please try again.';
+      if (err.name === 'AbortError') {
+        msg = 'Authentication server unavailable. Please try again.';
+      } else if (err instanceof Error && err.message && !err.message.includes('Failed to fetch')) {
+        msg = err.message;
+      }
+      setRegisterError(msg);
+      throw new Error(msg);
     } finally {
-      setIsRegistering(false);
+      clearTimeout(timeoutId);
     }
   }, []);
 

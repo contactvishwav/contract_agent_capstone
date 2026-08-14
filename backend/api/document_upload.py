@@ -1,4 +1,5 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Query, Form, Depends, Request
+from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Query, Form, Request
+from fastapi.params import Depends
 from backend.governance.rbac import Permission, requires_permission
 from backend.governance.auth import TokenIdentity, get_current_identity
 from fastapi.responses import Response, StreamingResponse
@@ -610,23 +611,57 @@ async def get_contract_source_pdf(
     """Return one active tenant-owned original PDF without exposing its path."""
     from backend.application.services.pdf_provenance_service import PdfProvenanceService
     from backend.infrastructure.pdf_source_storage import PdfSourceUnavailable
+    from backend.infrastructure.contract_repository import Neo4jContractRepository
 
     service = PdfProvenanceService()
     source = service.source_record(contract_id, identity.tenant_id)
-    if not source:
-        # Missing, archived, cross-tenant, and legacy-without-source are
-        # deliberately indistinguishable.
-        raise HTTPException(status_code=404, detail="Source PDF not found")
-    try:
-        content = service.storage.read(
-            identity.tenant_id,
-            contract_id,
-            source["storage_key"],
+    content = None
+    filename = "contract.pdf"
+
+    if source:
+        try:
+            content = service.storage.read(
+                identity.tenant_id,
+                contract_id,
+                source["storage_key"],
+            )
+            filename = str(source.get("filename") or "contract.pdf")
+        except PdfSourceUnavailable:
+            content = None
+
+    if content is None:
+        # Fallback to filesystem lookup using contract metadata in Neo4j
+        rows = Neo4jContractRepository().graph.query(
+            "MATCH (c:Contract {file_id: $contract_id, tenant_id: $tenant_id}) "
+            "WHERE coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE' "
+            "RETURN coalesce(c.filename, c.source_filename, c.file_id) AS filename, c.file_path AS file_path",
+            {"contract_id": contract_id, "tenant_id": identity.tenant_id},
         )
-    except PdfSourceUnavailable:
+        if rows:
+            fn = str(rows[0].get("filename") or "")
+            fp = str(rows[0].get("file_path") or "")
+            if fn:
+                filename = fn
+            candidates = [
+                fp,
+                f"data/{fn}",
+                f"/var/lib/contract-agent/data/{fn}",
+                f"/app/data/{fn}",
+                f"/app/data/{contract_id}.pdf",
+                f"/tmp/{fn}"
+            ]
+            for candidate in candidates:
+                if candidate and os.path.exists(candidate) and os.path.isfile(candidate):
+                    try:
+                        with open(candidate, "rb") as f:
+                            content = f.read()
+                        break
+                    except Exception:
+                        pass
+
+    if content is None:
         raise HTTPException(status_code=404, detail="Source PDF not found")
 
-    filename = str(source.get("filename") or "contract.pdf")
     if not filename.lower().endswith(".pdf"):
         filename = f"{filename}.pdf"
     disposition = f"inline; filename*=UTF-8''{quote(filename, safe='')}"

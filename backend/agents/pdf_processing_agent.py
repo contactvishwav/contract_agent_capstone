@@ -101,7 +101,14 @@ def get_pdf_processing_agent(llm):
                 error="No contract data to store"
             )}
         
-        # Business logic validation
+        # Business logic validation: treat playbooks/policy documents as valid contracts
+        filename_lower = (contract_data.filename or "").lower()
+        if "playbook" in filename_lower or "policy" in filename_lower:
+            contract_data.is_contract = True
+            contract_data.confidence_score = 1.0
+            if not contract_data.contract_type or contract_data.contract_type == "Unknown":
+                contract_data.contract_type = "Contract_Policy_Playbook"
+
         if not contract_data.is_contract:
             return {**state, "processing_result": ProcessingResult(
                 status=ProcessingStatus.SKIPPED,

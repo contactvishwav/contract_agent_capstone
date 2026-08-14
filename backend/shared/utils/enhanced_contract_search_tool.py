@@ -45,9 +45,15 @@ class Location(BaseModel):
     country: Optional[str] = Field(None, description="Use two-letter ISO standard")
     state: Optional[str]
 
-graph: Neo4jGraph = Neo4jGraph(
-    refresh_schema=False, driver_config={"notifications_min_severity": "OFF"}
-)
+_graph_instance = None
+
+def get_graph() -> Neo4jGraph:
+    global _graph_instance
+    if _graph_instance is None:
+        _graph_instance = Neo4jGraph(
+            refresh_schema=False, driver_config={"notifications_min_severity": "OFF"}
+        )
+    return _graph_instance
 # embedding imported from gemini_embedding_service (1536 dimensions)
 
 def _cypher_page_size(summary_search: Optional[str]) -> int:
@@ -198,20 +204,20 @@ def get_contracts_multi_level(
                                contract_type, parties, active, cypher_aggregation, monetary_value, governing_law)
 
     elif search_level == SearchLevel.SECTION:
-        result = _search_sections(embeddings, tenant_id, summary_search, section_types, filters, params)
+        result = _search_sections(embeddings, tenant_id, summary_search, section_types, filters, params, contract_type=contract_type, parties=parties)
 
     elif search_level == SearchLevel.CLAUSE:
-        result = _search_clauses(embeddings, tenant_id, summary_search, clause_types, filters, params)
+        result = _search_clauses(embeddings, tenant_id, summary_search, clause_types, filters, params, contract_type=contract_type, parties=parties)
 
     elif search_level == SearchLevel.RELATIONSHIP:
-        result = _search_relationships(embeddings, tenant_id, summary_search, parties, filters, params)
+        result = _search_relationships(embeddings, tenant_id, summary_search, parties, filters, params, contract_type=contract_type)
 
     elif search_level == SearchLevel.CHUNK:
-        result = _search_chunks(embeddings, tenant_id, summary_search, filters, params, contract_id=contract_id)
+        result = _search_chunks(embeddings, tenant_id, summary_search, filters, params, contract_id=contract_id, contract_type=contract_type, parties=parties)
 
     elif search_level == SearchLevel.ALL:
         result = _search_all_levels(embeddings, tenant_id, summary_search, clause_types, section_types,
-                                 filters, params, contract_id=contract_id)
+                                 filters, params, contract_id=contract_id, contract_type=contract_type, parties=parties)
     else:
         result = None
 
@@ -294,7 +300,7 @@ def _search_documents(embeddings, tenant_id, summary_search, filters, params,
     } AS result
     """
 
-    output = graph.query(cypher_statement, params)
+    output = get_graph().query(cypher_statement, params)
     converted = [convert_neo4j_date(el) for el in output]
     if converted and "result" in converted[0]:
         result_data = converted[0]["result"]
@@ -304,14 +310,29 @@ def _search_documents(embeddings, tenant_id, summary_search, filters, params,
             result_data["reranking"] = reranking
     return converted
 
-def _search_sections(embeddings, tenant_id, summary_search, section_types, filters, params):
-    """Search at section level with tenant isolation"""
-    # Add tenant filtering (Contract node has tenant_id)
+def _safe_decrypt(val: Optional[str]) -> str:
+    if not val:
+        return ""
+    try:
+        return field_encryptor.decrypt(val)
+    except Exception:
+        return val
+
+def _search_sections(embeddings, tenant_id, summary_search, section_types, filters, params, contract_type=None, parties=None):
+    """Search at section level with tenant isolation and metadata filtering"""
     filters.append("c.tenant_id = $tenant_id")
 
     if section_types:
         filters.append("s.section_type IN $section_types")
         params["section_types"] = section_types
+
+    if contract_type:
+        filters.append("(toUpper(c.contract_type) CONTAINS toUpper($contract_type) OR toUpper(c.filename) CONTAINS toUpper($contract_type))")
+        params["contract_type"] = contract_type
+
+    if parties:
+        filters.append("(EXISTS { MATCH (c)<-[:PARTY_TO]-(p:Party) WHERE any(party IN $parties WHERE toLower(p.name) CONTAINS toLower(party)) } OR any(party IN $parties WHERE toLower(c.filename) CONTAINS toLower(party)))")
+        params["parties"] = [p.lower() for p in parties]
 
     if summary_search:
         summary_embedding = embeddings.embed_query(summary_search)
@@ -322,7 +343,7 @@ def _search_sections(embeddings, tenant_id, summary_search, section_types, filte
         CALL db.index.vector.queryNodes('{SECTION_EMBEDDING_INDEX}', $k, $summary_embedding)
         YIELD node AS s, score AS section_score
         MATCH (c:Contract)-[:HAS_SECTION]->(s)
-        WHERE section_score > 0.8
+        WHERE section_score > 0.65
         """
         if filters:
             cypher_statement += f"AND {' AND '.join(filters)} "
@@ -347,24 +368,34 @@ def _search_sections(embeddings, tenant_id, summary_search, section_types, filte
     } AS result
     """
 
-    output = graph.query(cypher_statement, params)
+    output = get_graph().query(cypher_statement, params)
     converted = [convert_neo4j_date(el) for el in output]
     if converted and "result" in converted[0]:
         result_data = converted[0]["result"]
-        sections, reranking = _maybe_rerank(summary_search, result_data.get("sections", []), text_key="content")
+        sections = result_data.get("sections", [])
+        for sec in sections:
+            sec["content"] = _safe_decrypt(sec.get("content"))
+        sections, reranking = _maybe_rerank(summary_search, sections, text_key="content")
         result_data["sections"] = sections
         if reranking is not None:
             result_data["reranking"] = reranking
     return converted
 
-def _search_clauses(embeddings, tenant_id, summary_search, clause_types, filters, params):
-    """Search at clause level with tenant isolation"""
-    # Add tenant filtering
+def _search_clauses(embeddings, tenant_id, summary_search, clause_types, filters, params, contract_type=None, parties=None):
+    """Search at clause level with tenant isolation and metadata filtering"""
     filters.append("c.tenant_id = $tenant_id")
 
     if clause_types:
         filters.append("cl.clause_type IN $clause_types")
         params["clause_types"] = clause_types
+
+    if contract_type:
+        filters.append("(toUpper(c.contract_type) CONTAINS toUpper($contract_type) OR toUpper(c.filename) CONTAINS toUpper($contract_type))")
+        params["contract_type"] = contract_type
+
+    if parties:
+        filters.append("(EXISTS { MATCH (c)<-[:PARTY_TO]-(p:Party) WHERE any(party IN $parties WHERE toLower(p.name) CONTAINS toLower(party)) } OR any(party IN $parties WHERE toLower(c.filename) CONTAINS toLower(party)))")
+        params["parties"] = [p.lower() for p in parties]
 
     if summary_search:
         summary_embedding = embeddings.embed_query(summary_search)
@@ -375,7 +406,7 @@ def _search_clauses(embeddings, tenant_id, summary_search, clause_types, filters
         CALL db.index.vector.queryNodes('{CLAUSE_EMBEDDING_INDEX}', $k, $summary_embedding)
         YIELD node AS cl, score AS clause_score
         MATCH (c:Contract)-[:CONTAINS_CLAUSE]->(cl)
-        WHERE clause_score > 0.8
+        WHERE clause_score > 0.65
         """
         if filters:
             cypher_statement += f"AND {' AND '.join(filters)} "
@@ -402,46 +433,39 @@ def _search_clauses(embeddings, tenant_id, summary_search, clause_types, filters
     } AS result
     """
 
-    output = graph.query(cypher_statement, params)
+    output = get_graph().query(cypher_statement, params)
     converted = [convert_neo4j_date(el) for el in output]
     if converted and "result" in converted[0]:
         result_data = converted[0]["result"]
         clauses = result_data.get("clauses", [])
-        # cl.content is encrypted at rest (clause_repository.py's write
-        # path: PIIEngine.redact then field_encryptor.encrypt) - this raw
-        # Cypher read bypassed that repository's own decrypt-on-read
-        # entirely, so this path has been returning base64 ciphertext as
-        # "clause content" to Contract Chat. The exact same bug already
-        # found and fixed in search_strategies.py's ClauseSearchStrategy
-        # (docs/CAPSTONE_SUMMARY.md §18) - found here while wiring
-        # re-ranking, fixed for the same reason: re-ranking a still-
-        # encrypted candidate would score ciphertext, not real clause
-        # text, silently. Decrypted BEFORE re-ranking.
         for clause in clauses:
-            clause["content"] = field_encryptor.decrypt(clause.get("content") or "")
+            clause["content"] = _safe_decrypt(clause.get("content"))
         clauses, reranking = _maybe_rerank(summary_search, clauses, text_key="content")
         result_data["clauses"] = clauses
         if reranking is not None:
             result_data["reranking"] = reranking
     return converted
 
-def _search_relationships(embeddings, tenant_id, summary_search, parties, filters, params):
-    """Search at relationship level with tenant isolation"""
+def _search_relationships(embeddings, tenant_id, summary_search, parties, filters, params, contract_type=None):
+    """Search at relationship level with tenant isolation and metadata filtering"""
     cypher_statement = "MATCH (c:Contract)<-[r:PARTY_TO]-(p:Party) "
     
-    # Add tenant filtering
     filters.append("c.tenant_id = $tenant_id")
     
+    if contract_type:
+        filters.append("(toUpper(c.contract_type) CONTAINS toUpper($contract_type) OR toUpper(c.filename) CONTAINS toUpper($contract_type))")
+        params["contract_type"] = contract_type
+
     if parties:
-        filters.append("p.name IN $parties")
-        params["parties"] = parties
+        filters.append("(p.name IN $parties OR any(party IN $parties WHERE toLower(p.name) CONTAINS toLower(party)) OR any(party IN $parties WHERE toLower(c.filename) CONTAINS toLower(party)))")
+        params["parties"] = [p.lower() for p in parties]
     
     if summary_search:
         summary_embedding = embeddings.embed_query(summary_search)
         params["summary_embedding"] = summary_embedding
         
         cypher_statement += """
-        WHERE r.embedding IS NOT NULL AND vector.similarity.cosine(r.embedding, $summary_embedding) > 0.8
+        WHERE r.embedding IS NOT NULL AND vector.similarity.cosine(r.embedding, $summary_embedding) > 0.65
         """
         
         if filters:
@@ -463,7 +487,7 @@ def _search_relationships(embeddings, tenant_id, summary_search, parties, filter
     } AS result
     """
 
-    output = graph.query(cypher_statement, params)
+    output = get_graph().query(cypher_statement, params)
     converted = [convert_neo4j_date(el) for el in output]
     if converted and "result" in converted[0]:
         result_data = converted[0]["result"]
@@ -492,40 +516,34 @@ def _chunk_snippet(content: str) -> str:
     return content
 
 
-def _search_chunks(embeddings, tenant_id, summary_search, filters, params, contract_id=None):
+def _search_chunks(embeddings, tenant_id, summary_search, filters, params, contract_id=None, contract_type=None, parties=None):
     """
-    Enhanced search at chunk level with semantic capabilities and tenant
-    isolation. Chunk.content/DocumentChunk.content are encrypted at rest,
-    so neither the CONTAINS-based fallback match nor the preview-snippet
-    slice can happen in Cypher anymore - both now operate on content
-    decrypted in Python after a bounded, tenant-scoped fetch.
-
-    contract_id: optional - when the caller (Contract Chat, via a UI
-    contract selector) knows exactly which contract the user means,
-    scopes every query here to that one Document (Document.contract_id
-    was set correctly for this by an earlier fix - see storage_service.py/
-    document_upload.py). Server-injected only, same trust boundary as
-    tenant_id - see EnhancedContractInput's docstring.
+    Enhanced search at chunk level with semantic capabilities, metadata filtering,
+    and tenant isolation.
     """
+    chunk_filters = [
+        "coalesce(source_contract.lifecycle_status, 'ACTIVE') = 'ACTIVE'",
+        "d.tenant_id = $tenant_id",
+        "chunk_score > 0.65"
+    ]
+    if contract_id:
+        chunk_filters.append("d.contract_id = $contract_id")
+    if contract_type:
+        chunk_filters.append("(toUpper(source_contract.contract_type) CONTAINS toUpper($contract_type) OR toUpper(source_contract.filename) CONTAINS toUpper($contract_type))")
+        params["contract_type"] = contract_type
+    if parties:
+        chunk_filters.append("(EXISTS { MATCH (source_contract)<-[:PARTY_TO]-(p:Party) WHERE any(party IN $parties WHERE toLower(p.name) CONTAINS toLower(party)) } OR any(party IN $parties WHERE toLower(source_contract.filename) CONTAINS toLower(party)))")
+        params["parties"] = [p.lower() for p in parties]
 
     # Try semantic search first if available
     if summary_search:
         try:
-            # Query the vector index for candidates (instead of scoring
-            # every Chunk node), then enforce tenant scoping afterward - a
-            # vector index query has no way to pre-filter by tenant_id
-            # before ranking globally. This is the primary search path,
-            # not the fallback - snippet generation is now Python-side
-            # here too, so a plaintext preview is never derived from
-            # ciphertext.
             semantic_query = f"""
             CALL db.index.vector.queryNodes('{CHUNK_EMBEDDING_INDEX}', $k, $chunk_embedding)
             YIELD node AS c, score AS chunk_score
             MATCH (d:Document)-[:HAS_CHUNK]->(c)
             MATCH (source_contract:Contract {{file_id: d.contract_id, tenant_id: $tenant_id}})
-            WHERE coalesce(source_contract.lifecycle_status, 'ACTIVE') = 'ACTIVE'
-              AND d.tenant_id = $tenant_id AND chunk_score > 0.7
-            {"AND d.contract_id = $contract_id" if contract_id else ""}
+            WHERE {' AND '.join(chunk_filters)}
             RETURN d.id AS document_id, d.contract_id AS contract_id,
                    source_contract.filename AS filename, c.id AS chunk_id,
                    c.chunk_type AS chunk_type, c.content AS content,
@@ -537,11 +555,11 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params, contr
             """
 
             chunk_embedding = embeddings.embed_query(summary_search)
-            semantic_params = {"chunk_embedding": chunk_embedding, "tenant_id": tenant_id, "k": VECTOR_SEARCH_OVERFETCH}
+            semantic_params = {"chunk_embedding": chunk_embedding, "tenant_id": tenant_id, "k": VECTOR_SEARCH_OVERFETCH, **params}
             if contract_id:
                 semantic_params["contract_id"] = contract_id
 
-            rows = graph.query(semantic_query, semantic_params)
+            rows = get_graph().query(semantic_query, semantic_params)
             if rows:
                 chunks = [
                     {
@@ -566,14 +584,7 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params, contr
         except Exception as e:
             logger.error(f"Semantic chunk search failed, falling back to text search: {e}")
 
-    # Fallback to text search across both new and legacy chunks, enforcing
-    # tenant_id. A bounded, tenant-scoped candidate set is fetched (can't
-    # CONTAINS-match encrypted content in Cypher), decrypted, and matched
-    # in Python - the same known, standard bounded-approximation tradeoff
-    # as VECTOR_SEARCH_OVERFETCH: total_count reflects matches within the
-    # candidate set, not a true unbounded count, in exchange for never
-    # pulling an entire tenant's chunk corpus into memory on a cache-miss
-    # search.
+    # Fallback to text search across both new and legacy chunks, enforcing tenant_id.
     search_text = summary_search
     output = []
 
@@ -595,7 +606,7 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params, contr
     new_chunk_params = {"tenant_id": tenant_id, "candidate_limit": CHUNK_TEXT_SEARCH_CANDIDATE_LIMIT}
     if contract_id:
         new_chunk_params["contract_id"] = contract_id
-    new_chunk_rows = graph.query(new_chunk_query, new_chunk_params)
+    new_chunk_rows = get_graph().query(new_chunk_query, new_chunk_params)
 
     new_chunks_limit = 5 if search_text else 10
     new_chunks = []
@@ -636,7 +647,7 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params, contr
         legacy_chunk_params = {"tenant_id": tenant_id, "candidate_limit": CHUNK_TEXT_SEARCH_CANDIDATE_LIMIT}
         if contract_id:
             legacy_chunk_params["contract_id"] = contract_id
-        legacy_chunk_rows = graph.query(legacy_chunk_query, legacy_chunk_params)
+        legacy_chunk_rows = get_graph().query(legacy_chunk_query, legacy_chunk_params)
 
         legacy_chunks = []
         for r in legacy_chunk_rows:
@@ -661,15 +672,8 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params, contr
 
     return [convert_neo4j_date(el) for el in output]
 
-def _search_all_levels(embeddings, tenant_id, summary_search, clause_types, section_types, filters, params, contract_id=None):
-    """Search across all levels and combine results with tenant isolation.
-
-    contract_id: threaded into every sub-call so 'all' (the default
-    search_level as of this fix) stays scoped to a single contract when
-    the caller (Contract Chat, via a UI contract selector) has one
-    selected - each sub-call builds its own filters/params rather than
-    reusing this function's own (pre-existing, unrelated to this fix -
-    each level needs its own base filter list regardless)."""
+def _search_all_levels(embeddings, tenant_id, summary_search, clause_types, section_types, filters, params, contract_id=None, contract_type=None, parties=None):
+    """Search across all levels and combine results with tenant isolation."""
     base_filters = lambda: ([
         "c.tenant_id = $tenant_id",
         "coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE'",
@@ -681,11 +685,11 @@ def _search_all_levels(embeddings, tenant_id, summary_search, clause_types, sect
     base_params = lambda: ({"tenant_id": tenant_id, "contract_id": contract_id} if contract_id
                             else {"tenant_id": tenant_id})
     results = {
-        "documents": _search_documents(embeddings, tenant_id, summary_search, base_filters(), base_params(), None, None, None, None, None, None, None, None, None, None),
-        "sections": _search_sections(embeddings, tenant_id, summary_search, section_types, base_filters(), base_params()),
-        "clauses": _search_clauses(embeddings, tenant_id, summary_search, clause_types, base_filters(), base_params()),
-        "relationships": _search_relationships(embeddings, tenant_id, summary_search, None, base_filters(), base_params()),
-        "chunks": _search_chunks(embeddings, tenant_id, summary_search, base_filters(), base_params(), contract_id=contract_id)
+        "documents": _search_documents(embeddings, tenant_id, summary_search, base_filters(), base_params(), None, None, None, None, contract_type, parties, None, None, None, None),
+        "sections": _search_sections(embeddings, tenant_id, summary_search, section_types, base_filters(), base_params(), contract_type=contract_type, parties=parties),
+        "clauses": _search_clauses(embeddings, tenant_id, summary_search, clause_types, base_filters(), base_params(), contract_type=contract_type, parties=parties),
+        "relationships": _search_relationships(embeddings, tenant_id, summary_search, parties, base_filters(), base_params(), contract_type=contract_type),
+        "chunks": _search_chunks(embeddings, tenant_id, summary_search, base_filters(), base_params(), contract_id=contract_id, contract_type=contract_type, parties=parties)
     }
     return [results]
 

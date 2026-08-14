@@ -232,6 +232,9 @@ class EnhancedDocumentProcessingService:
             
             elif doc_embedding.metadata.get("level") == "section":
                 section_id = f"{contract_id}_section_{doc_embedding.metadata.get('section_index', 0)}"
+                raw_content = doc_embedding.content or ""
+                redacted_content = PIIEngine.redact(raw_content)
+                encrypted_content = field_encryptor.encrypt(redacted_content)
                 self.graph.query("""
                     MATCH (c:Contract {file_id: $file_id, tenant_id: $tenant_id})
                     MERGE (s:Section {id: $section_id, tenant_id: $tenant_id})
@@ -245,7 +248,7 @@ class EnhancedDocumentProcessingService:
                     "tenant_id": tenant_id,
                     "section_id": section_id,
                     "section_type": doc_embedding.metadata.get("section_type", "general"),
-                    "content": doc_embedding.content,
+                    "content": encrypted_content,
                     "embedding": doc_embedding.embedding,
                     "order": doc_embedding.metadata.get("section_index", 0)
                 })

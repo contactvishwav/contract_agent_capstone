@@ -5,7 +5,8 @@ from datetime import datetime
 import hashlib
 import json
 
-from backend.shared.utils.contract_search_tool import graph, embedding
+from backend.shared.utils.contract_search_tool import get_graph
+from backend.shared.utils.gemini_embedding_service import embedding
 from backend.domain.policies.entities import PolicyDocument, PolicyRule
 from backend.shared.utils.vector_index_config import POLICY_DOCUMENT_EMBEDDING_INDEX, VECTOR_SEARCH_OVERFETCH
 
@@ -14,7 +15,7 @@ class PolicyRepository:
     """Extends existing contract repository patterns for policies."""
     
     def __init__(self):
-        self.graph = graph  # Reuse existing connection
+        self.graph = get_graph()  # Reuse existing connection via factory
         self.embedding_service = embedding  # Reuse existing embedding service
     
     def store_policy_document(self, policy_data: Dict[str, Any]) -> str:
