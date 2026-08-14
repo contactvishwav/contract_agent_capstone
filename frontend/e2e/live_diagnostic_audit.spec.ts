@@ -105,15 +105,41 @@ async function newChat(page: Page) {
 }
 
 // Strings that must never appear in a real AI response — each one means
-// the request was blocked, withheld, or the model contradicted itself
-// instead of answering. A response containing any of these is a failure,
-// not a diagnostic note.
+// the request was blocked or withheld outright. A response containing any
+// of these is a failure, not a diagnostic note.
 const FORBIDDEN_RESPONSE_STRINGS = [
   'blocked by the Contract Chat safety policy',
   'No relevant contract evidence was found',
-  'specific clause was not found',
   'Response withheld',
 ];
+
+// "The specific clause was not found in the documents" is handled
+// separately from FORBIDDEN_RESPONSE_STRINGS, not banned outright:
+// honestly reporting a genuinely absent clause is correct behavior for a
+// legal contract tool, not a bug (confirmed live on Clean_SOW.pdf's cure-
+// period question - the model correctly said the clause wasn't found and
+// cited real, true, related context instead of fabricating one). The
+// actual bug this was written to catch is a *contradictory* appendage:
+// answering the question substantively, then also tacking on this exact
+// refusal sentence (confirmed live on Salesforce_MSA.pdf's IP-ownership
+// question). The deterministic signal that separates the two: how much
+// real content precedes the phrase. A short/empty lead-in means the
+// refusal came first and any trailing text is just honest context
+// (allowed); a long lead-in means the model already answered before
+// contradicting itself (failure).
+const NOT_FOUND_PHRASE = 'specific clause was not found';
+const NOT_FOUND_PRECEDING_CONTENT_LIMIT = 100;
+
+function assertNoContradictoryNotFoundAppendage(responseText: string) {
+  const idx = responseText.toLowerCase().indexOf(NOT_FOUND_PHRASE.toLowerCase());
+  if (idx === -1) return; // phrase absent entirely - nothing to check
+  const precedingContent = responseText.slice(0, idx).trim();
+  expect(
+    precedingContent.length,
+    `AI response answered substantively (${precedingContent.length} chars: "${precedingContent.slice(0, 150)}") ` +
+      `then still appended "The specific clause was not found in the documents" - contradictory, not honest refusal`,
+  ).toBeLessThanOrEqual(NOT_FOUND_PRECEDING_CONTENT_LIMIT);
+}
 
 /**
  * Type a message and send it; wait for generation to finish, then assert
@@ -168,6 +194,7 @@ async function sendMessage(page: Page, query: string, waitForResponseMs = 90000)
   for (const forbidden of FORBIDDEN_RESPONSE_STRINGS) {
     expect(responseText, `AI response must not contain "${forbidden}"`).not.toContain(forbidden);
   }
+  assertNoContradictoryNotFoundAppendage(responseText);
 
   const citationCount = await page.locator('aside[aria-label="Sources"] button').count().catch(() => 0);
   expect(citationCount, 'AI response must carry at least one citation').toBeGreaterThan(0);
