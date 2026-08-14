@@ -304,6 +304,16 @@ class SectionSearchStrategy(SearchStrategy):
             if output and len(output) > 0 and "result" in output[0]:
                 result_data = output[0]["result"]
                 sections = [convert_neo4j_date(section) for section in result_data.get("sections", [])]
+                # s.content is encrypted at rest, same as cl.content above
+                # (ClauseSearchStrategy) - this raw Cypher read had the
+                # identical gap: no decrypt-on-read, so this endpoint was
+                # returning base64 ciphertext as "section content" to the
+                # real caller, which is why downstream grounding/citation
+                # checks saw no usable evidence for section-level results.
+                # Decrypted BEFORE re-ranking - re-ranking a still-encrypted
+                # candidate would score ciphertext, not real section text.
+                for section in sections:
+                    section["content"] = field_encryptor.decrypt(section.get("content") or "")
                 metadata = {"search_level": "section", "section_types": params.section_types}
                 sections, metadata = _maybe_rerank(params, sections, text_key="content", metadata=metadata)
                 return SearchResult(
