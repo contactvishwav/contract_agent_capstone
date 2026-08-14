@@ -47,8 +47,11 @@ class FakeTenantScopedGraph:
     def __init__(self):
         self.queries = []
         self._data = {
-            "tenant_a": {"file_id": "contract_a", "summary": "Tenant A's confidential MSA"},
-            "tenant_b": {"file_id": "contract_b", "summary": "Tenant B's confidential NDA"},
+            # relevance_score present (dynamic_retrieval.py's score-delta
+            # filter runs on real query results and drops anything without
+            # a numeric score - see DocumentSearchStrategy.execute).
+            "tenant_a": {"file_id": "contract_a", "summary": "Tenant A's confidential MSA", "relevance_score": 0.9},
+            "tenant_b": {"file_id": "contract_b", "summary": "Tenant B's confidential NDA", "relevance_score": 0.9},
         }
 
     def query(self, cypher, params=None):

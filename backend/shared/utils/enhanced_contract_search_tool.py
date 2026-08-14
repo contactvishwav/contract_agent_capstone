@@ -13,8 +13,11 @@ from backend.shared.cache.redis_cache import cache
 from backend.shared.config.phase3_config import Phase3Config
 from backend.shared.utils.vector_index_config import (
     CONTRACT_EMBEDDING_INDEX, SECTION_EMBEDDING_INDEX, CLAUSE_EMBEDDING_INDEX,
-    CHUNK_EMBEDDING_INDEX, VECTOR_SEARCH_OVERFETCH, CHUNK_TEXT_SEARCH_CANDIDATE_LIMIT,
+    CHUNK_EMBEDDING_INDEX, CHUNK_TEXT_SEARCH_CANDIDATE_LIMIT,
     RERANK_POOL_SIZE, RERANK_TOP_K,
+)
+from backend.shared.utils.dynamic_retrieval import (
+    DYNAMIC_RETRIEVAL_TOP_K, DYNAMIC_RETRIEVAL_FLOOR, apply_dynamic_score_filter,
 )
 from backend.shared.utils.logger import get_logger
 
@@ -265,7 +268,13 @@ def _search_documents(embeddings, tenant_id, summary_search, filters, params,
     if summary_search:
         summary_embedding = embeddings.embed_query(summary_search)
         params["summary_embedding"] = summary_embedding
-        params["k"] = VECTOR_SEARCH_OVERFETCH
+        # Dynamic relative filtering (top-K then score-delta, see
+        # dynamic_retrieval.py) replaces the old fixed "doc_score > 0.8" -
+        # only a small top-K candidate pool is fetched here, so $k is the
+        # dynamic-retrieval K, not the broader VECTOR_SEARCH_OVERFETCH used
+        # elsewhere for a pre-any-filtering overfetch.
+        params["k"] = DYNAMIC_RETRIEVAL_TOP_K
+        params["score_floor"] = DYNAMIC_RETRIEVAL_FLOOR
 
         # Query the vector index for candidates (instead of scoring every
         # Contract node), then apply the same non-vector filters afterward -
@@ -274,7 +283,7 @@ def _search_documents(embeddings, tenant_id, summary_search, filters, params,
         cypher_statement = f"""
         CALL db.index.vector.queryNodes('{CONTRACT_EMBEDDING_INDEX}', $k, $summary_embedding)
         YIELD node AS c, score AS doc_score
-        WHERE doc_score > 0.8
+        WHERE doc_score > $score_floor
         """
         if filters:
             cypher_statement += f"AND {' AND '.join(filters)} "
@@ -285,26 +294,33 @@ def _search_documents(embeddings, tenant_id, summary_search, filters, params,
             cypher_statement += f"WHERE {' AND '.join(filters)} "
 
     params["page_size"] = _cypher_page_size(summary_search)
-    cypher_statement += """
-    RETURN {
+    relevance_field = ", relevance_score: doc_score" if summary_search else ""
+    cypher_statement += f"""
+    RETURN {{
         total_count: count(c),
-        contracts: collect({
+        contracts: collect({{
             file_id: c.file_id,
             filename: c.filename,
             summary: c.summary,
             contract_type: c.contract_type,
             effective_date: c.effective_date,
             end_date: c.end_date,
-            parties: [(c)<-[r:PARTY_TO]-(party) | {name: party.name, role: r.role}]
-        })[..$page_size]
-    } AS result
+            parties: [(c)<-[r:PARTY_TO]-(party) | {{name: party.name, role: r.role}}]{relevance_field}
+        }})
+    }} AS result
     """
 
     output = get_graph().query(cypher_statement, params)
     converted = [convert_neo4j_date(el) for el in output]
     if converted and "result" in converted[0]:
         result_data = converted[0]["result"]
-        contracts, reranking = _maybe_rerank(summary_search, result_data.get("contracts", []), text_key="summary")
+        contracts = result_data.get("contracts", [])
+        if summary_search:
+            contracts = apply_dynamic_score_filter(contracts)
+        contracts = contracts[:params["page_size"]]
+        for contract in contracts:
+            contract.pop("relevance_score", None)
+        contracts, reranking = _maybe_rerank(summary_search, contracts, text_key="summary")
         result_data["contracts"] = contracts
         if reranking is not None:
             result_data["reranking"] = reranking
@@ -337,13 +353,16 @@ def _search_sections(embeddings, tenant_id, summary_search, section_types, filte
     if summary_search:
         summary_embedding = embeddings.embed_query(summary_search)
         params["summary_embedding"] = summary_embedding
-        params["k"] = VECTOR_SEARCH_OVERFETCH
+        # Dynamic relative filtering, see dynamic_retrieval.py - replaces
+        # the old fixed "section_score > 0.65".
+        params["k"] = DYNAMIC_RETRIEVAL_TOP_K
+        params["score_floor"] = DYNAMIC_RETRIEVAL_FLOOR
 
         cypher_statement = f"""
         CALL db.index.vector.queryNodes('{SECTION_EMBEDDING_INDEX}', $k, $summary_embedding)
         YIELD node AS s, score AS section_score
         MATCH (c:Contract)-[:HAS_SECTION]->(s)
-        WHERE section_score > 0.65
+        WHERE section_score > $score_floor
         """
         if filters:
             cypher_statement += f"AND {' AND '.join(filters)} "
@@ -354,18 +373,19 @@ def _search_sections(embeddings, tenant_id, summary_search, section_types, filte
             cypher_statement += f"WHERE {' AND '.join(filters)} "
 
     params["page_size"] = _cypher_page_size(summary_search)
-    cypher_statement += """
-    RETURN {
+    relevance_field = ", relevance_score: section_score" if summary_search else ""
+    cypher_statement += f"""
+    RETURN {{
         total_count: count(s),
-        sections: collect({
+        sections: collect({{
             contract_id: c.file_id,
             filename: c.filename,
             section_id: s.section_id,
             section_type: s.section_type,
             content: s.content,
-            order: s.order
-        })[..$page_size]
-    } AS result
+            order: s.order{relevance_field}
+        }})
+    }} AS result
     """
 
     output = get_graph().query(cypher_statement, params)
@@ -373,7 +393,11 @@ def _search_sections(embeddings, tenant_id, summary_search, section_types, filte
     if converted and "result" in converted[0]:
         result_data = converted[0]["result"]
         sections = result_data.get("sections", [])
+        if summary_search:
+            sections = apply_dynamic_score_filter(sections)
+        sections = sections[:params["page_size"]]
         for sec in sections:
+            sec.pop("relevance_score", None)
             sec["content"] = _safe_decrypt(sec.get("content"))
         sections, reranking = _maybe_rerank(summary_search, sections, text_key="content")
         result_data["sections"] = sections
@@ -400,13 +424,16 @@ def _search_clauses(embeddings, tenant_id, summary_search, clause_types, filters
     if summary_search:
         summary_embedding = embeddings.embed_query(summary_search)
         params["summary_embedding"] = summary_embedding
-        params["k"] = VECTOR_SEARCH_OVERFETCH
+        # Dynamic relative filtering, see dynamic_retrieval.py - replaces
+        # the old fixed "clause_score > 0.65".
+        params["k"] = DYNAMIC_RETRIEVAL_TOP_K
+        params["score_floor"] = DYNAMIC_RETRIEVAL_FLOOR
 
         cypher_statement = f"""
         CALL db.index.vector.queryNodes('{CLAUSE_EMBEDDING_INDEX}', $k, $summary_embedding)
         YIELD node AS cl, score AS clause_score
         MATCH (c:Contract)-[:CONTAINS_CLAUSE]->(cl)
-        WHERE clause_score > 0.65
+        WHERE clause_score > $score_floor
         """
         if filters:
             cypher_statement += f"AND {' AND '.join(filters)} "
@@ -417,10 +444,11 @@ def _search_clauses(embeddings, tenant_id, summary_search, clause_types, filters
             cypher_statement += f"WHERE {' AND '.join(filters)} "
 
     params["page_size"] = _cypher_page_size(summary_search)
-    cypher_statement += """
-    RETURN {
+    relevance_field = ", relevance_score: clause_score" if summary_search else ""
+    cypher_statement += f"""
+    RETURN {{
         total_count: count(cl),
-        clauses: collect({
+        clauses: collect({{
             contract_id: c.file_id,
             filename: c.filename,
             clause_id: cl.clause_id,
@@ -428,9 +456,9 @@ def _search_clauses(embeddings, tenant_id, summary_search, clause_types, filters
             content: cl.content,
             confidence: cl.confidence,
             start_position: cl.start_position,
-            end_position: cl.end_position
-        })[..$page_size]
-    } AS result
+            end_position: cl.end_position{relevance_field}
+        }})
+    }} AS result
     """
 
     output = get_graph().query(cypher_statement, params)
@@ -438,7 +466,11 @@ def _search_clauses(embeddings, tenant_id, summary_search, clause_types, filters
     if converted and "result" in converted[0]:
         result_data = converted[0]["result"]
         clauses = result_data.get("clauses", [])
+        if summary_search:
+            clauses = apply_dynamic_score_filter(clauses)
+        clauses = clauses[:params["page_size"]]
         for clause in clauses:
+            clause.pop("relevance_score", None)
             clause["content"] = _safe_decrypt(clause.get("content"))
         clauses, reranking = _maybe_rerank(summary_search, clauses, text_key="content")
         result_data["clauses"] = clauses
@@ -463,35 +495,56 @@ def _search_relationships(embeddings, tenant_id, summary_search, parties, filter
     if summary_search:
         summary_embedding = embeddings.embed_query(summary_search)
         params["summary_embedding"] = summary_embedding
-        
+        # Dynamic relative filtering, see dynamic_retrieval.py - replaces
+        # the old fixed "> 0.65". No native vector-index top-K here (this
+        # is an inline cosine computation, not db.index.vector.queryNodes),
+        # so ORDER BY + LIMIT stands in for the top-K step.
+        params["score_floor"] = DYNAMIC_RETRIEVAL_FLOOR
+        params["top_k"] = DYNAMIC_RETRIEVAL_TOP_K
+
         cypher_statement += """
-        WHERE r.embedding IS NOT NULL AND vector.similarity.cosine(r.embedding, $summary_embedding) > 0.65
+        WHERE r.embedding IS NOT NULL AND vector.similarity.cosine(r.embedding, $summary_embedding) > $score_floor
         """
-        
+
         if filters:
             cypher_statement += f"AND {' AND '.join(filters)} "
     elif filters:
         cypher_statement += f"WHERE {' AND '.join(filters)} "
-    
+
     params["page_size"] = _cypher_page_size(summary_search)
-    cypher_statement += """
-    RETURN {
+    if summary_search:
+        cypher_statement += """
+        WITH c, r, p, vector.similarity.cosine(r.embedding, $summary_embedding) AS rel_score
+        ORDER BY rel_score DESC
+        LIMIT $top_k
+        """
+        relevance_field = ", relevance_score: rel_score"
+    else:
+        relevance_field = ""
+    cypher_statement += f"""
+    RETURN {{
         total_count: count(r),
-        relationships: collect({
+        relationships: collect({{
             contract_id: c.file_id,
             filename: c.filename,
             party_name: p.name,
             role: r.role,
-            context: r.context
-        })[..$page_size]
-    } AS result
+            context: r.context{relevance_field}
+        }})
+    }} AS result
     """
 
     output = get_graph().query(cypher_statement, params)
     converted = [convert_neo4j_date(el) for el in output]
     if converted and "result" in converted[0]:
         result_data = converted[0]["result"]
-        relationships, reranking = _maybe_rerank(summary_search, result_data.get("relationships", []), text_key="context")
+        relationships = result_data.get("relationships", [])
+        if summary_search:
+            relationships = apply_dynamic_score_filter(relationships)
+        relationships = relationships[:params["page_size"]]
+        for relationship in relationships:
+            relationship.pop("relevance_score", None)
+        relationships, reranking = _maybe_rerank(summary_search, relationships, text_key="context")
         result_data["relationships"] = relationships
         if reranking is not None:
             result_data["reranking"] = reranking
@@ -524,7 +577,9 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params, contr
     chunk_filters = [
         "coalesce(source_contract.lifecycle_status, 'ACTIVE') = 'ACTIVE'",
         "d.tenant_id = $tenant_id",
-        "chunk_score > 0.65"
+        # Dynamic relative filtering, see dynamic_retrieval.py - replaces
+        # the old fixed "chunk_score > 0.65".
+        "chunk_score > $score_floor"
     ]
     if contract_id:
         chunk_filters.append("d.contract_id = $contract_id")
@@ -555,11 +610,18 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params, contr
             """
 
             chunk_embedding = embeddings.embed_query(summary_search)
-            semantic_params = {"chunk_embedding": chunk_embedding, "tenant_id": tenant_id, "k": VECTOR_SEARCH_OVERFETCH, **params}
+            semantic_params = {
+                "chunk_embedding": chunk_embedding,
+                "tenant_id": tenant_id,
+                "k": DYNAMIC_RETRIEVAL_TOP_K,
+                "score_floor": DYNAMIC_RETRIEVAL_FLOOR,
+                **params,
+            }
             if contract_id:
                 semantic_params["contract_id"] = contract_id
 
             rows = get_graph().query(semantic_query, semantic_params)
+            rows = apply_dynamic_score_filter(rows, score_key="similarity_score")
             if rows:
                 chunks = [
                     {

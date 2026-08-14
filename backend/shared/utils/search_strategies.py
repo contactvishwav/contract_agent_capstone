@@ -9,7 +9,10 @@ from backend.shared.utils.logger import get_logger
 from backend.shared.utils.utils import convert_neo4j_date
 from backend.shared.utils.vector_index_config import (
     CONTRACT_EMBEDDING_INDEX, CLAUSE_EMBEDDING_INDEX, SECTION_EMBEDDING_INDEX,
-    VECTOR_SEARCH_OVERFETCH, RERANK_POOL_SIZE, RERANK_TOP_K,
+    RERANK_POOL_SIZE, RERANK_TOP_K,
+)
+from backend.shared.utils.dynamic_retrieval import (
+    DYNAMIC_RETRIEVAL_TOP_K, DYNAMIC_RETRIEVAL_FLOOR, apply_dynamic_score_filter,
 )
 
 logger = get_logger(__name__)
@@ -118,18 +121,21 @@ class DocumentSearchStrategy(SearchStrategy):
                 cypher_params["max_end_date"] = params.max_end_date
 
             # Add semantic search if query provided - queries the vector
-            # index for the top VECTOR_SEARCH_OVERFETCH candidates (instead
+            # index for the top DYNAMIC_RETRIEVAL_TOP_K candidates (instead
             # of scoring every Contract node), then applies the same
             # non-vector filters afterward.
             if params.query:
                 query_embedding = embedding.embed_query(params.query)
                 cypher_params["query_embedding"] = query_embedding
-                cypher_params["k"] = VECTOR_SEARCH_OVERFETCH
+                # Dynamic relative filtering (top-K then score-delta, see
+                # dynamic_retrieval.py) replaces the old fixed "score > 0.3".
+                cypher_params["k"] = DYNAMIC_RETRIEVAL_TOP_K
+                cypher_params["score_floor"] = DYNAMIC_RETRIEVAL_FLOOR
 
                 cypher_statement = f"""
                 CALL db.index.vector.queryNodes('{CONTRACT_EMBEDDING_INDEX}', $k, $query_embedding)
                 YIELD node AS c, score
-                WHERE score > 0.3
+                WHERE score > $score_floor
                 """
                 if filters:
                     cypher_statement += f"AND {' AND '.join(filters)} "
@@ -143,19 +149,20 @@ class DocumentSearchStrategy(SearchStrategy):
             # re-ranking will actually run for this request, else the
             # original top-10 page - see _cypher_page_size.
             cypher_params["page_size"] = _cypher_page_size(params)
-            cypher_statement += """
-            RETURN {
+            relevance_field = ", relevance_score: score" if params.query else ""
+            cypher_statement += f"""
+            RETURN {{
                 total_count: count(c),
-                contracts: collect({
+                contracts: collect({{
                     file_id: c.file_id,
                     filename: c.filename,
                     summary: c.summary,
                     contract_type: c.contract_type,
                     effective_date: c.effective_date,
                     end_date: c.end_date,
-                    parties: [(c)<-[r:PARTY_TO]-(party) | {name: party.name, role: r.role}]
-                })[..$page_size]
-            } AS result
+                    parties: [(c)<-[r:PARTY_TO]-(party) | {{name: party.name, role: r.role}}]{relevance_field}
+                }})
+            }} AS result
             """
 
             output = graph.query(cypher_statement, cypher_params)
@@ -163,6 +170,11 @@ class DocumentSearchStrategy(SearchStrategy):
             if output and len(output) > 0 and "result" in output[0]:
                 result_data = output[0]["result"]
                 contracts = [convert_neo4j_date(contract) for contract in result_data.get("contracts", [])]
+                if params.query:
+                    contracts = apply_dynamic_score_filter(contracts)
+                contracts = contracts[:cypher_params["page_size"]]
+                for contract in contracts:
+                    contract.pop("relevance_score", None)
                 metadata = {"search_level": "document", "query": params.query}
                 contracts, metadata = _maybe_rerank(params, contracts, text_key="summary", metadata=metadata)
                 return SearchResult(
@@ -194,13 +206,16 @@ class ClauseSearchStrategy(SearchStrategy):
             if params.query:
                 query_embedding = embedding.embed_query(params.query)
                 cypher_params["query_embedding"] = query_embedding
-                cypher_params["k"] = VECTOR_SEARCH_OVERFETCH
+                # Dynamic relative filtering, see dynamic_retrieval.py -
+                # replaces the old fixed "score > 0.3".
+                cypher_params["k"] = DYNAMIC_RETRIEVAL_TOP_K
+                cypher_params["score_floor"] = DYNAMIC_RETRIEVAL_FLOOR
 
                 cypher_statement = f"""
                 CALL db.index.vector.queryNodes('{CLAUSE_EMBEDDING_INDEX}', $k, $query_embedding)
                 YIELD node AS cl, score
                 MATCH (c:Contract)-[:CONTAINS_CLAUSE]->(cl)
-                WHERE score > 0.3
+                WHERE score > $score_floor
                 """
                 if filters:
                     cypher_statement += f"AND {' AND '.join(filters)} "
@@ -211,17 +226,18 @@ class ClauseSearchStrategy(SearchStrategy):
                     cypher_statement += f"WHERE {' AND '.join(filters)} "
 
             cypher_params["page_size"] = _cypher_page_size(params)
-            cypher_statement += """
-            RETURN {
+            relevance_field = ", relevance_score: score" if params.query else ""
+            cypher_statement += f"""
+            RETURN {{
                 total_count: count(cl),
-                clauses: collect({
+                clauses: collect({{
                     contract_id: c.file_id,
                     filename: c.filename,
                     clause_type: cl.clause_type,
                     content: cl.content,
-                    confidence: cl.confidence
-                })[..$page_size]
-            } AS result
+                    confidence: cl.confidence{relevance_field}
+                }})
+            }} AS result
             """
 
             output = graph.query(cypher_statement, cypher_params)
@@ -229,6 +245,11 @@ class ClauseSearchStrategy(SearchStrategy):
             if output and len(output) > 0 and "result" in output[0]:
                 result_data = output[0]["result"]
                 clauses = [convert_neo4j_date(clause) for clause in result_data.get("clauses", [])]
+                if params.query:
+                    clauses = apply_dynamic_score_filter(clauses)
+                clauses = clauses[:cypher_params["page_size"]]
+                for clause in clauses:
+                    clause.pop("relevance_score", None)
                 # cl.content is encrypted at rest (clause_repository.py's
                 # write path: PIIEngine.redact then field_encryptor.encrypt)
                 # - this raw Cypher read bypassed that repository's own
@@ -269,13 +290,16 @@ class SectionSearchStrategy(SearchStrategy):
             if params.query:
                 query_embedding = embedding.embed_query(params.query)
                 cypher_params["query_embedding"] = query_embedding
-                cypher_params["k"] = VECTOR_SEARCH_OVERFETCH
+                # Dynamic relative filtering, see dynamic_retrieval.py -
+                # replaces the old fixed "score > 0.3".
+                cypher_params["k"] = DYNAMIC_RETRIEVAL_TOP_K
+                cypher_params["score_floor"] = DYNAMIC_RETRIEVAL_FLOOR
 
                 cypher_statement = f"""
                 CALL db.index.vector.queryNodes('{SECTION_EMBEDDING_INDEX}', $k, $query_embedding)
                 YIELD node AS s, score
                 MATCH (c:Contract)-[:HAS_SECTION]->(s)
-                WHERE score > 0.3
+                WHERE score > $score_floor
                 """
                 if filters:
                     cypher_statement += f"AND {' AND '.join(filters)} "
@@ -286,17 +310,18 @@ class SectionSearchStrategy(SearchStrategy):
                     cypher_statement += f"WHERE {' AND '.join(filters)} "
 
             cypher_params["page_size"] = _cypher_page_size(params)
-            cypher_statement += """
-            RETURN {
+            relevance_field = ", relevance_score: score" if params.query else ""
+            cypher_statement += f"""
+            RETURN {{
                 total_count: count(s),
-                sections: collect({
+                sections: collect({{
                     contract_id: c.file_id,
                     filename: c.filename,
                     section_type: s.section_type,
                     content: s.content,
-                    order: s.order
-                })[..$page_size]
-            } AS result
+                    order: s.order{relevance_field}
+                }})
+            }} AS result
             """
 
             output = graph.query(cypher_statement, cypher_params)
@@ -304,6 +329,9 @@ class SectionSearchStrategy(SearchStrategy):
             if output and len(output) > 0 and "result" in output[0]:
                 result_data = output[0]["result"]
                 sections = [convert_neo4j_date(section) for section in result_data.get("sections", [])]
+                if params.query:
+                    sections = apply_dynamic_score_filter(sections)
+                sections = sections[:cypher_params["page_size"]]
                 # s.content is encrypted at rest, same as cl.content above
                 # (ClauseSearchStrategy) - this raw Cypher read had the
                 # identical gap: no decrypt-on-read, so this endpoint was
@@ -313,6 +341,7 @@ class SectionSearchStrategy(SearchStrategy):
                 # Decrypted BEFORE re-ranking - re-ranking a still-encrypted
                 # candidate would score ciphertext, not real section text.
                 for section in sections:
+                    section.pop("relevance_score", None)
                     section["content"] = field_encryptor.decrypt(section.get("content") or "")
                 metadata = {"search_level": "section", "section_types": params.section_types}
                 sections, metadata = _maybe_rerank(params, sections, text_key="content", metadata=metadata)
@@ -346,28 +375,44 @@ class RelationshipSearchStrategy(SearchStrategy):
             if params.query:
                 query_embedding = embedding.embed_query(params.query)
                 cypher_params["query_embedding"] = query_embedding
-                
+                # Dynamic relative filtering, see dynamic_retrieval.py -
+                # replaces the old fixed "> 0.3". No native vector-index
+                # top-K here (inline cosine computation, not
+                # db.index.vector.queryNodes), so ORDER BY + LIMIT below
+                # stands in for the top-K step.
+                cypher_params["score_floor"] = DYNAMIC_RETRIEVAL_FLOOR
+                cypher_params["top_k"] = DYNAMIC_RETRIEVAL_TOP_K
+
                 cypher_statement += """
-                WHERE r.embedding IS NOT NULL AND vector.similarity.cosine(r.embedding, $query_embedding) > 0.3
+                WHERE r.embedding IS NOT NULL AND vector.similarity.cosine(r.embedding, $query_embedding) > $score_floor
                 """
-                
+
                 if filters:
                     cypher_statement += f"AND {' AND '.join(filters)} "
             elif filters:
                 cypher_statement += f"WHERE {' AND '.join(filters)} "
-            
+
             cypher_params["page_size"] = _cypher_page_size(params)
-            cypher_statement += """
-            RETURN {
+            if params.query:
+                cypher_statement += """
+                WITH c, r, p, vector.similarity.cosine(r.embedding, $query_embedding) AS rel_score
+                ORDER BY rel_score DESC
+                LIMIT $top_k
+                """
+                relevance_field = ", relevance_score: rel_score"
+            else:
+                relevance_field = ""
+            cypher_statement += f"""
+            RETURN {{
                 total_count: count(r),
-                relationships: collect({
+                relationships: collect({{
                     contract_id: c.file_id,
                     filename: c.filename,
                     party_name: p.name,
                     role: r.role,
-                    context: r.context
-                })[..$page_size]
-            } AS result
+                    context: r.context{relevance_field}
+                }})
+            }} AS result
             """
 
             output = graph.query(cypher_statement, cypher_params)
@@ -375,6 +420,11 @@ class RelationshipSearchStrategy(SearchStrategy):
             if output and len(output) > 0 and "result" in output[0]:
                 result_data = output[0]["result"]
                 relationships = [convert_neo4j_date(rel) for rel in result_data.get("relationships", [])]
+                if params.query:
+                    relationships = apply_dynamic_score_filter(relationships)
+                relationships = relationships[:cypher_params["page_size"]]
+                for relationship in relationships:
+                    relationship.pop("relevance_score", None)
                 metadata = {"search_level": "relationship", "parties": params.parties}
                 relationships, metadata = _maybe_rerank(params, relationships, text_key="context", metadata=metadata)
                 return SearchResult(

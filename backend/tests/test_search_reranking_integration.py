@@ -81,8 +81,10 @@ class FakeTwoTenantGraph:
         # Simulate a real corpus where each tenant has 3 real contracts -
         # only ever returns the querying tenant's own contracts.
         contracts = [
+            # relevance_score present (dynamic_retrieval.py's score-delta
+            # filter drops anything without one).
             {"file_id": f"{tenant_id}_contract_{i}", "summary": f"{tenant_id}'s confidential contract {i}",
-             "contract_type": "MSA", "effective_date": None, "end_date": None, "parties": []}
+             "contract_type": "MSA", "effective_date": None, "end_date": None, "parties": [], "relevance_score": 0.9}
             for i in range(3)
         ] if tenant_id else []
         return [{"result": {"total_count": len(contracts), "contracts": contracts}}]

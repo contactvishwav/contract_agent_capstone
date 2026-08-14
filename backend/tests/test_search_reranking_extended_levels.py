@@ -101,8 +101,10 @@ class FakeSectionRelationshipGraph:
             ] if tenant_id else []
             return [{"result": {"total_count": len(sections), "sections": sections}}]
         relationships = [
+            # relevance_score present (dynamic_retrieval.py's score-delta
+            # filter drops anything without one).
             {"contract_id": f"{tenant_id}_c{i}", "party_name": f"Party{i}",
-             "role": "vendor", "context": f"{tenant_id} relationship context {i}"}
+             "role": "vendor", "context": f"{tenant_id} relationship context {i}", "relevance_score": 0.9}
             for i in range(2)
         ] if tenant_id else []
         return [{"result": {"total_count": len(relationships), "relationships": relationships}}]

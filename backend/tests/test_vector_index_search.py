@@ -119,6 +119,9 @@ class ClauseSearchStrategyVectorTests(unittest.TestCase):
                         "contract_id": "c1", "clause_type": "Governing Law",
                         "content": field_encryptor.encrypt("This Agreement is governed by Delaware law."),
                         "confidence": 0.9,
+                        # relevance_score present (dynamic_retrieval.py's
+                        # score-delta filter drops anything without one).
+                        "relevance_score": 0.9,
                     }],
                 }}]
 
