@@ -1,5 +1,16 @@
 function normalize(value: string): string {
-    return value.normalize("NFKC").replace(/\s+/g, " ").trim().toLocaleLowerCase();
+    // Strip punctuation (quote-style mismatches, dash variants, stray
+    // hyphens from PDF line-break artifacts) before collapsing whitespace -
+    // pdf.js's text-layer extraction and the backend's stored excerpt text
+    // frequently differ only in these characters, not in actual wording.
+    // \p{L}/\p{N} (Unicode letters/numbers) kept, everything else that
+    // isn't whitespace is dropped.
+    return value
+        .normalize("NFKC")
+        .replace(/[^\p{L}\p{N}\s]/gu, "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLocaleLowerCase();
 }
 
 /** Return text-layer items only for one deterministic, unambiguous match. */
