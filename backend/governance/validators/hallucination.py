@@ -122,12 +122,14 @@ class HallucinationValidator(IGuardValidator):
             "First reason step by step: identify each material factual claim in the Response, "
             "then check it against the Evidence Envelope one at a time, citing which evidence "
             "item (or lack thereof) supports or contradicts it. Only after that reasoning, decide.\n\n"
-            "Respond ONLY with one JSON object matching exactly, in this field order "
-            "(reasoning first - decide only after writing it out): "
-            "{\"reasoning\":\"step-by-step claim-by-claim analysis, 1-4 sentences\","
-            "\"decision\":\"supported|unsupported|contradicted\","
+            "Respond in exactly this two-part plain-text format, in order - the reasoning is "
+            "plain prose, NOT a JSON field, so it never needs quote-escaping:\n"
+            "REASONING: <your step-by-step claim-by-claim analysis, 1-4 sentences>\n"
+            "JSON: {\"decision\":\"supported|unsupported|contradicted\","
             "\"reason_category\":\"supported|unsupported_claim|contradicted_claim|insufficient_scope\","
-            "\"unsupported_material_claims\":0,\"confidence\":0.0}"
+            "\"unsupported_material_claims\":0,\"confidence\":0.0}\n"
+            "The JSON object after \"JSON:\" must contain ONLY those four fields - do not repeat "
+            "the reasoning inside it."
         )
         structured = json.dumps(evidence_envelope, sort_keys=True, default=str)
         evidence_prompt = (
@@ -141,21 +143,38 @@ class HallucinationValidator(IGuardValidator):
         content = _response_text(response.content).strip()
         if not content:
             raise ValueError("empty validator response")
-        if "```json" in content:
-            content = content.split("```json")[-1].split("```")[0].strip()
 
-        data = json.loads(content)
+        # Reasoning is elicited as plain prose BEFORE the JSON object, not
+        # as a JSON field, specifically so a multi-sentence free-form
+        # analysis (quotes, apostrophes, contract-language punctuation)
+        # never needs JSON-string escaping - confirmed live (JSONDecodeError
+        # on every turn) when reasoning was first tried nested inside the
+        # JSON object itself; a long natural-language sentence is exactly
+        # the kind of text a plain-text completion (no structured-output/
+        # tool-calling mode here) tends to under-escape.
+        marker = "JSON:"
+        if marker in content:
+            reasoning_part, json_part = content.split(marker, 1)
+        else:
+            reasoning_part, json_part = "", content
+        reasoning = reasoning_part.split("REASONING:", 1)[-1].strip()
+        if "```json" in json_part:
+            json_part = json_part.split("```json")[-1].split("```")[0]
+        elif "```" in json_part:
+            json_part = json_part.split("```")[1]
+        json_part = json_part.strip()
+
+        if not reasoning:
+            raise ValueError("missing grounding reasoning")
+        data = json.loads(json_part)
         if not isinstance(data, dict) or set(data) != {
-            "reasoning", "decision", "reason_category", "unsupported_material_claims", "confidence"
+            "decision", "reason_category", "unsupported_material_claims", "confidence"
         }:
             raise ValueError("invalid grounding validator schema")
-        reasoning = data.get("reasoning")
         decision = data.get("decision")
         reason_category = data.get("reason_category")
         unsupported_claims = data.get("unsupported_material_claims")
         confidence = data.get("confidence")
-        if not isinstance(reasoning, str) or not reasoning.strip():
-            raise ValueError("missing grounding reasoning")
         if decision not in {"supported", "unsupported", "contradicted"}:
             raise ValueError("invalid grounding decision")
         if reason_category not in {

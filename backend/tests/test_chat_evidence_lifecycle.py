@@ -70,8 +70,8 @@ def _envelope(tenant_id="tenant_a", items=None):
 def _validator(response=None):
     model = MagicMock()
     model.invoke.return_value = SimpleNamespace(content=response or (
-        '{"reasoning":"All claims are supported.",'
-        '"decision":"supported","reason_category":"supported",'
+        'REASONING: All claims are supported.\n'
+        'JSON: {"decision":"supported","reason_category":"supported",'
         '"unsupported_material_claims":0,"confidence":1.0}'
     ))
     manager = MagicMock()
@@ -295,8 +295,8 @@ def test_fabricated_archived_and_cross_tenant_evidence_fail_closed():
 
 def test_prompt_like_evidence_remains_data_and_strict_unsupported_decision_rejects():
     validator, model = _validator(
-        '{"reasoning":"The claim contradicts the evidence.",'
-        '"decision":"unsupported","reason_category":"unsupported_claim",'
+        'REASONING: The claim contradicts the evidence.\n'
+        'JSON: {"decision":"unsupported","reason_category":"unsupported_claim",'
         '"unsupported_material_claims":1,"confidence":0.9}'
     )
     item = _item(

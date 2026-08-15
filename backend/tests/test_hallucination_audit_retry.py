@@ -56,13 +56,11 @@ with patch("langchain_neo4j.Neo4jGraph"), \
 from backend.tests.test_chat_attachment_repository import FakeChatAttachmentGraph
 
 
-REJECTED_RESPONSE = json.dumps({
-    "reasoning": "The claim is not present in the evidence envelope.",
+REJECTED_RESPONSE = "REASONING: The claim is not present in the evidence envelope.\nJSON: " + json.dumps({
     "decision": "unsupported", "reason_category": "unsupported_claim",
     "unsupported_material_claims": 1, "confidence": 0.5,
 })
-PASSED_RESPONSE = json.dumps({
-    "reasoning": "Every claim is directly supported by the evidence envelope.",
+PASSED_RESPONSE = "REASONING: Every claim is directly supported by the evidence envelope.\nJSON: " + json.dumps({
     "decision": "supported", "reason_category": "supported",
     "unsupported_material_claims": 0, "confidence": 1.0,
 })
