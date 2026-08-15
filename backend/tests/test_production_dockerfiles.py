@@ -61,8 +61,19 @@ class BackendDockerfileTests(unittest.TestCase):
         self.assertIn("--no-dev", self.text)
 
     def test_production_stage_does_not_run_as_root(self):
+        # No static `USER appuser` line anymore (real fix, see docker-
+        # entrypoint.sh docstring): a Docker named volume's mount point is
+        # created root-owned by the daemon on first attach, independent of
+        # this image's own build-time chown, and a static USER directive
+        # can't fix that after the fact. The container now boots as root
+        # deliberately so the entrypoint can re-chown the mount, then drops
+        # to appuser via gosu before the real process ever runs - verified
+        # here by checking that hand-off actually happens, not by looking
+        # for a USER line that no longer reflects how privilege drop works.
         production_section = self.text.split("AS production\n")[-1]
-        self.assertIn("USER appuser", production_section)
+        self.assertIn('ENTRYPOINT ["docker-entrypoint.sh"]', production_section)
+        entrypoint_script = read(os.path.join(REPO_ROOT, "backend", "docker-entrypoint.sh"))
+        self.assertIn("gosu appuser", entrypoint_script)
 
     def test_production_stage_excludes_test_code(self):
         self.assertIn("rm -rf ./backend/tests", self.text)

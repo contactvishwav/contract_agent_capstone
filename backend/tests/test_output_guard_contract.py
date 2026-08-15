@@ -95,7 +95,7 @@ async def test_output_guard_validators_use_the_selected_provider_model():
     manager, raw_model = _manager_with_raw_response("unused")
     raw_model.ainvoke = AsyncMock(side_effect=[
         SimpleNamespace(content='{"is_safe": true, "violation_category": null, "reason": "ok"}'),
-        SimpleNamespace(content='{"decision":"supported","reason_category":"supported","unsupported_material_claims":0,"confidence":1.0}'),
+        SimpleNamespace(content='{"reasoning":"All claims are supported.","decision":"supported","reason_category":"supported","unsupported_material_claims":0,"confidence":1.0}'),
     ])
     guard = OutputGuard(model_manager=manager)
 
@@ -152,7 +152,7 @@ def test_hallucination_validator_rejects_missing_grounding_evidence():
 def test_hallucination_validator_treats_prompt_like_tool_text_as_untrusted_data():
     validator = HallucinationValidator()
     manager, raw_model = _manager_with_raw_response(
-        '{"decision":"supported","reason_category":"supported","unsupported_material_claims":0,"confidence":1.0}'
+        '{"reasoning":"All claims are supported.","decision":"supported","reason_category":"supported","unsupported_material_claims":0,"confidence":1.0}'
     )
     validator._llm_mgr = manager
 

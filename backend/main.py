@@ -182,6 +182,16 @@ load_dotenv()
 # engagement (EXTRACTION_TIMEOUT_SECONDS, RERANKER_TIMEOUT_SECONDS).
 GENERATION_STALL_TIMEOUT_SECONDS = float(os.getenv("GENERATION_STALL_TIMEOUT_SECONDS", "60"))
 
+# Agentic self-correction (runner()'s Output Guard retry): how many times a
+# CONTRADICTED_OUTPUT/HALLUCINATION_DETECTED verdict gets fed back to the
+# generator as revision feedback before falling back to the safe rejection
+# message. Each attempt is a single extra raw-model call (revise the answer
+# against the SAME already-retrieved evidence, never new tool calls), fully
+# re-validated by Output Guard - never a bypass, only another chance to pass
+# the same real check. 2 matches HallucinationValidator's own
+# MAX_AUDIT_ATTEMPTS order of magnitude (ADR-004 addendum).
+MAX_GENERATION_RETRIES = int(os.getenv("MAX_GENERATION_RETRIES", "2"))
+
 # Initialize Phoenix tracing (OpenTelemetry)
 phoenix_endpoint = os.environ.get("PHOENIX_COLLECTOR_ENDPOINT", "http://localhost:6006/v1/traces")
 try:
@@ -1057,6 +1067,64 @@ async def runner(model: str, prompt: str, history: str, llm_mgr: LLMManager, ten
         context_metadata,
     )
     output_status = _guard_status(post_check_result)
+
+    # Agentic self-correction: a CONTRADICTED_OUTPUT/HALLUCINATION_DETECTED
+    # verdict carries the judge's own step-by-step reasoning (hallucination.
+    # py's CoT "reasoning" field) - real, actionable feedback, not just a
+    # pass/fail bit. Retrying asks the generator to revise its own draft
+    # against the SAME already-retrieved evidence plus that feedback; it
+    # never re-runs tools, never sees new evidence, and the revision is
+    # re-validated by Output Guard from scratch every time - this widens
+    # what a genuinely correct answer looks like, it does not weaken what
+    # counts as passing. Deliberately excludes every other rejection reason
+    # (missing/cross-tenant/fabricated evidence, infrastructure failures,
+    # timeouts, deterministic pre-checks) - none of those are fixable by
+    # asking the same model to phrase the same evidence differently, and a
+    # deterministic metadata answer (below) is correct by construction, not
+    # a candidate for revision.
+    regeneration_attempt = 0
+    while (
+        output_status != GuardStatus.PASSED
+        and post_check_result.violation_type in {"CONTRADICTED_OUTPUT", "HALLUCINATION_DETECTED"}
+        and regeneration_attempt < MAX_GENERATION_RETRIES
+        and deterministic_metadata_answer is None
+    ):
+        regeneration_attempt += 1
+        judge_reasoning = (post_check_result.metadata or {}).get("reasoning")
+        logger.warning(
+            "Output Guard rejected draft (%s) on generation attempt %d/%d; "
+            "asking the generator to revise against the same evidence",
+            post_check_result.violation_type, regeneration_attempt, MAX_GENERATION_RETRIES,
+        )
+        try:
+            raw_model = llm_mgr.get_raw_model_by_name(model)
+            revision_prompt = (
+                "You are revising your own previous answer to a Contract Chat question. "
+                "A safety reviewer rejected your previous draft because it made a claim "
+                "not supported by the evidence you were given.\n\n"
+                f"Reviewer feedback: {judge_reasoning or 'The draft contained an unsupported or contradicted claim.'}\n\n"
+                "Rewrite your answer using ONLY the evidence envelope below. Remove or correct "
+                "any claim the reviewer flagged. If, after re-reading the evidence, no part of "
+                "the question can be answered, respond with exactly: 'The specific clause was "
+                "not found in the documents.'\n\n"
+                f"<EVIDENCE_ENVELOPE>\n{json.dumps(evidence_envelope, sort_keys=True, default=str)}\n</EVIDENCE_ENVELOPE>\n\n"
+                f"<YOUR_PREVIOUS_DRAFT>\n{ai_full_content}\n</YOUR_PREVIOUS_DRAFT>\n"
+            )
+            revised = await raw_model.ainvoke(revision_prompt)
+            revised_text = _normalize_ai_message_content(getattr(revised, "content", revised))
+        except Exception as exc:
+            logger.error(f"Self-correction regeneration failed ({type(exc).__name__}); keeping rejection")
+            break
+        if not revised_text or not revised_text.strip():
+            break
+        ai_full_content = revised_text
+        post_check_result = await _validate_output_guard(
+            output_guard,
+            ai_full_content,
+            context_metadata,
+        )
+        output_status = _guard_status(post_check_result)
+
     raw_reason_category = (post_check_result.metadata or {}).get("failure_category") or (
         post_check_result.violation_type or "none"
     ).lower()
