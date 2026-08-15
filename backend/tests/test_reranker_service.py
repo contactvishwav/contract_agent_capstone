@@ -163,6 +163,37 @@ class GracefulDegradationTests(unittest.TestCase):
 
         self.assertEqual([r["file_id"] for r in outcome.results], ["c", "a", "b"])
 
+    def test_debug_force_failure_env_var_falls_back_without_calling_the_llm(self):
+        """RERANKER_DEBUG_FORCE_FAILURE (Phase 3 of the master-upgrade plan)
+        - a dev/test-only hook proving the exact graceful-degradation path a
+        real failure takes, without needing to actually break the LLM.
+        Never set in docker-compose.prod.yml, so unreachable in production."""
+        import os
+
+        fake_llm, structured = _make_fake_llm()
+        service = RerankerService(fake_llm)
+
+        with patch.dict(os.environ, {"RERANKER_DEBUG_FORCE_FAILURE": "1"}):
+            outcome = service.rerank("query", CANDIDATES, text_key="summary", top_k=3)
+
+        self.assertFalse(outcome.reranked)
+        self.assertEqual(outcome.reason, "debug_forced_failure")
+        self.assertEqual([r["file_id"] for r in outcome.results], ["a", "b", "c"])
+        structured.invoke.assert_not_called()
+
+    def test_debug_force_failure_is_a_no_op_when_unset(self):
+        import os
+
+        response = _RerankResponse(rankings=[_RerankedItem(index=0, relevance_score=0.9)])
+        fake_llm, _ = _make_fake_llm(response)
+        service = RerankerService(fake_llm)
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("RERANKER_DEBUG_FORCE_FAILURE", None)
+            outcome = service.rerank("query", CANDIDATES, text_key="summary", top_k=3)
+
+        self.assertTrue(outcome.reranked)
+
 
 class TimeoutEnforcementTests(unittest.TestCase):
     def test_slow_call_falls_back_rather_than_hanging(self):

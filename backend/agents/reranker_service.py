@@ -182,6 +182,18 @@ class RerankerService:
             return self._fallback(candidates, top_k, "no_candidates")
         if not self._structured_llm and not self.use_fallback:
             return self._fallback(candidates, top_k, "no_llm_configured")
+        if os.getenv("RERANKER_DEBUG_FORCE_FAILURE") == "1":
+            # Dev/test-only fault injection, proving the exact same
+            # graceful-degradation path a real circuit-open/timeout/
+            # malformed-response failure already takes (see the except
+            # branches below) - never set in docker-compose.prod.yml, so
+            # this can't be triggered against the real deployment. Exists
+            # for local E2E verification (Phase 3 of the master-upgrade
+            # plan): the browser-visible search/chat UI must keep working,
+            # with vector-order results and no reranking, when the
+            # reranker is broken - not just prove it at the unit-test level.
+            logger.warning("Re-ranking force-failed via RERANKER_DEBUG_FORCE_FAILURE")
+            return self._fallback(candidates, top_k, "debug_forced_failure")
 
         prompt = self._build_prompt(query, candidates, text_key)
         model_used = self._model_name
