@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
+from backend.contract_chat_agent import CHAT_PROMPT_VERSION
 
 SENSITIVE_FAILURE = "failure contains raw prompt and contract"
 
@@ -40,7 +41,7 @@ class ChatStreamTerminalStateTests(unittest.IsolatedAsyncioTestCase):
             requested_provider=None,
             actual_provider=None,
             fallback_occurred=False,
-            prompt_version="contract-chat-v2-evidence",
+            prompt_version=CHAT_PROMPT_VERSION,
             execution_path="contract_chat_langgraph",
         )
 
@@ -86,7 +87,7 @@ class ChatStreamTerminalStateTests(unittest.IsolatedAsyncioTestCase):
             requested_provider=None,
             actual_provider=None,
             fallback_occurred=False,
-            prompt_version="contract-chat-v2-evidence",
+            prompt_version=CHAT_PROMPT_VERSION,
             execution_path="contract_chat_langgraph",
         )
         self.assertIn('"type": "error"', events[0])

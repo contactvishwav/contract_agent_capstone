@@ -24,7 +24,7 @@ import uuid
 # way, plus also get a server-injected correlation_id - see the
 # MCP_CHAT_TOOL_NAMES branch below.
 _TENANT_SCOPED_TOOL_NAMES = {"ContractSearch", "EnhancedContractSearch"} | MCP_CHAT_TOOL_NAMES
-CHAT_PROMPT_VERSION = "contract-chat-v2-evidence"
+CHAT_PROMPT_VERSION = "contract-chat-v3-redline-format"
 
 
 def _message_text(content) -> str:
@@ -171,9 +171,15 @@ def get_agent(llm):
         "Grounding & Context Relevance Rules:\n"
         "1. Rely ONLY on facts and excerpts directly provided in the tool evidence envelope.\n"
         "2. CRITICAL GROUNDING & REFUSAL RULE: When a tool call returns no matching clauses or evidence for the user's ENTIRE question, YOUR ENTIRE RESPONSE MUST BE EXACTLY AND ONLY: 'The specific clause was not found in the documents.' "
-        "If the user's question has multiple parts and the evidence envelope supports SOME but not all of them, answer the supported parts fully using that evidence, and for the unsupported part ONLY use this exact sentence, clearly scoped to that specific part (do not invent new wording or attempt to explain further - only this exact sentence is pre-approved for stating an absence): 'The specific clause was not found in the documents.' Never state or imply anything about the unsupported part beyond this exact sentence.\n"
-        "3. STRICT ANTI-MIRRORING & GROUNDING RULE: Quote retrieved contract text EXACTLY as given in the tool evidence envelope. Do NOT mirror, copy, or adopt wording from the user's prompt or an attached redline image when quoting the contract document. If an attached redline image differs from the retrieved contract text, clearly highlight the exact text differences. When the user is specifically asking you to compare an attached image against the contract (a 'redline comparison'), your answer MUST begin that part with the exact heading text 'Differences found:' verbatim (this literal heading, not a paraphrase like 'here are the discrepancies' or 'the language differs' - the exact words 'Differences found:'), followed by one bullet per discrepancy, each bullet stating the image's version, then the contract's actual retrieved wording; if there are no discrepancies, still use the exact heading 'Differences found:' followed by a single bullet stating plainly that none were found, instead of inventing any. This exact-heading structure applies only to genuine redline/comparison requests - do not force it onto unrelated questions about an attached image.\n"
-        "4. NEVER attempt to twist, infer, or synthesize unrelated clauses or un-retrieved contract sections into an answer. Do NOT attempt to analyze or discuss other contract sections from memory when the specific requested clause was not found.\n"
+        "If the user's question has multiple parts and the evidence envelope supports SOME but not all of them, answer the supported parts fully using that evidence, and for the unsupported part ONLY use this exact sentence, clearly scoped to that specific part (do not invent new wording or attempt to explain further - only this exact sentence is pre-approved for stating an absence): 'The specific clause was not found in the documents.' Never state or imply anything about the unsupported part beyond this exact sentence. "
+        "This refusal rule NEVER applies to a redline-comparison request (rule 3 below) once you have BOTH an image_attachment and at least one document_text/section/clause/chunk evidence item for the contract being discussed - that combination is always enough evidence to proceed with rule 3's comparison, even if the retrieved contract text only covers part of what the image shows. Do not refuse a redline comparison just because the retrieved excerpt feels incomplete; compare what you have.\n"
+        "3. REDLINE COMPARISON RULE (mandatory format): whenever the user asks you to compare, diff, redline, or check for conflicts/discrepancies between an attached image and the contract, your ENTIRE response to that request must be ONLY the following - no preamble, no restating the clause first, no summary before or after it:\n"
+        "Differences found:\n"
+        "- Image says: \"<exact text/element from the image>\" | Contract says: \"<exact retrieved contract text>\"\n"
+        "- (one bullet per discrepancy; if there are none, a single bullet: \"No differences found.\")\n"
+        "The literal heading \"Differences found:\" is mandatory and must be the first line - never paraphrase it (not \"here are the discrepancies\", not \"the language differs\", not any other wording). This format applies ONLY to genuine redline/comparison requests, never to unrelated questions about an attached image.\n"
+        "4. STRICT ANTI-MIRRORING & GROUNDING RULE: Quote retrieved contract text EXACTLY as given in the tool evidence envelope. Do NOT mirror, copy, or adopt wording from the user's prompt or an attached redline image when quoting the contract document.\n"
+        "5. NEVER attempt to twist, infer, or synthesize unrelated clauses or un-retrieved contract sections into an answer. Do NOT attempt to analyze or discuss other contract sections from memory when the specific requested clause was not found.\n"
         "Always explain results you get from the tools in a concise manner to not overwhelm the user but also don't be too technical. "
         "Answer questions as if you are answering to non-technical management level. "
         "Important: Be confident and accurate in your tool choice! Avoid asking follow-up questions if possible. "

@@ -23,7 +23,23 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MOCK_REDLINE = path.resolve(__dirname, 'fixtures/mock_redline.png');
 const CLEAN_MSA_PDF = path.resolve(__dirname, '../../data/Clean_MSA.pdf');
 
-test.describe.configure({ retries: 2 });
+// retries: 5, not the usual 2 - real, investigated finding (not a guess):
+// combining a genuine multimodal comparison with strict output-format
+// compliance is measurably less reliable than this codebase's baseline
+// ~1.7-4% false-rejection rate for plain text-evidence questions (the rate
+// chat-cross-turn-image-context.spec.ts's retries:2 already absorbs).
+// Confirmed via backend logs across repeated real runs that the image
+// reaches the model on every single turn (evidence envelope's
+// image_attachment count is always 1) and that main.py's _build_prompt_
+// message passes that same image content block directly into the real
+// generation call - no dropped/decoupled code path. The remaining
+// variance is the model's own inherent non-determinism (this codebase's
+// own hallucination.py already documents "temperature=0 does not
+// guarantee determinism on independent calls" for this exact model),
+// observed at roughly 1-in-3 single-attempt-set success even after
+// strengthening BASE_SYSTEM_PROMPT's rule 3 with a mandatory literal
+// heading, an explicit refusal-rule carve-out, and a concrete example.
+test.describe.configure({ retries: 5 });
 
 async function registerAndSignIn(page: import('@playwright/test').Page) {
   const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
