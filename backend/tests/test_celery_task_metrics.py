@@ -37,6 +37,7 @@ def _fake_intelligence():
         risk_assessment=SimpleNamespace(
             overall_risk_score=1.0, risk_level="LOW",
             critical_issues=[], critical_issue_details=[], recommendations=[],
+            score_breakdown=None,
         ),
         redlines=[], cuad_deviations=[], jurisdiction_info={}, precedent_matches=[],
         # Supervisor rebuild fields - see domain/entities.py's
