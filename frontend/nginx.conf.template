@@ -39,6 +39,27 @@ server {
         # repeat the same values, not add real coverage.
     }
 
+    # pdf.js's worker script builds as a .mjs (ES module) file. nginx's
+    # bundled mime.types has no .mjs entry at all - a long-standing, common
+    # gap (the file predates the extension's widespread adoption) - so it
+    # fell through to this image's default_type (application/octet-stream).
+    # Browsers refuse to execute a module script served with that MIME
+    # type, so pdf.js's real dedicated worker never loaded - confirmed
+    # live: it silently fell back to pdf.js's slower, less reliable
+    # same-thread "fake worker" mode, which itself intermittently failed
+    # the citation PDF viewer outright ("source unavailable"). A regex
+    # location always outranks the plain "/" prefix location below
+    # regardless of file order, so this needs no special placement beyond
+    # being declared somewhere in this server block.
+    location ~* \.mjs$ {
+        default_type application/javascript;
+
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header Content-Security-Policy "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'" always;
+        add_header Strict-Transport-Security $hsts_header always;
+    }
+
     # SPA client-side routing fallback.
     location / {
         try_files $uri /index.html;
