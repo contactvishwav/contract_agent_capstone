@@ -561,38 +561,43 @@ test.describe('LIVE PRODUCTION AUDIT', () => {
     await setScope(page, 'Clean_MSA.pdf');
     await page.waitForTimeout(1000);
 
-    // Attach image via Paperclip button
-    let imageAttached = false;
-    try {
-      const attachBtn = page.locator('button[aria-label="Attach an image"]').first();
-      await attachBtn.waitFor({ timeout: 8000 });
-      await attachBtn.click();
-      await page.waitForTimeout(500);
+    // Attach image via Paperclip button — hard-fail rather than just
+    // logging, per the Phase 1 hardening pass (showcase_readiness_audit.md):
+    // this stage exists specifically to prove the redline-image feature
+    // works, so a failed attachment must fail the test, not silently skip
+    // the rest of the stage.
+    const attachBtn = page.locator('button[aria-label="Attach an image"]').first();
+    await attachBtn.waitFor({ timeout: 8000 });
+    await attachBtn.click();
+    await page.waitForTimeout(500);
 
-      // The hidden file input should now be active
-      const fileInput = page.locator('input[type="file"][accept*="image"], input[type="file"]').first();
-      await fileInput.setInputFiles(MOCK_REDLINE);
-      imageAttached = true;
-      console.log('[S5-MM] mock_redline.png attached via Paperclip button');
-      await page.waitForTimeout(2000);
-    } catch (e: any) {
-      console.error(`[S5-MM FAIL] Could not attach image: ${e.message?.slice(0, 80)}`);
-    }
+    // The hidden file input should now be active
+    const fileInput = page.locator('input[type="file"][accept*="image"], input[type="file"]').first();
+    await fileInput.setInputFiles(MOCK_REDLINE);
+    console.log('[S5-MM] mock_redline.png attached via Paperclip button');
+    await page.waitForTimeout(2000);
 
-    if (imageAttached) {
-      const mmResult = await sendMessage(
-        page,
-        'Does the indemnification language shown in this redlined image conflict with the indemnification clause in this contract? Explain any discrepancies.',
-        120000
-      );
-      console.log(`[S5-MM] response OK (${mmResult.length} chars)`);
+    const mmResult = await sendMessage(
+      page,
+      'Does the indemnification language shown in this redlined image conflict with the indemnification clause in this contract? Explain any discrepancies.',
+      120000
+    );
+    console.log(`[S5-MM] response OK (${mmResult.length} chars)`);
 
-      const mmKeywords = ['indemnification', 'redline', 'conflict', 'clause', 'image', 'discrepan', 'language'];
-      const mmHits = mmKeywords.filter(k => mmResult.toLowerCase().includes(k.toLowerCase())).length;
-      console.log(`[S5-MM] keyword hits: ${mmHits}/${mmKeywords.length}`);
-      if (mmHits >= 2) console.log('[S5-MM PASS] Multimodal response references relevant content');
-      else console.warn('[S5-MM WARN] Low keyword match in multimodal response');
-    }
+    const mmKeywords = ['indemnification', 'redline', 'conflict', 'clause', 'image', 'discrepan', 'language'];
+    const mmHits = mmKeywords.filter(k => mmResult.toLowerCase().includes(k.toLowerCase())).length;
+    console.log(`[S5-MM] keyword hits: ${mmHits}/${mmKeywords.length}`);
+    expect(mmHits, 'multimodal response must reference relevant redline-comparison content').toBeGreaterThanOrEqual(2);
+
+    // contract_chat_agent.py's BASE_SYSTEM_PROMPT rule 3 now requires a
+    // structured "Differences found:" section for genuine redline-
+    // comparison requests (Phase 1 of the master-upgrade plan) - assert
+    // the real, structured output shape, not just a loose keyword count.
+    expect(
+      mmResult.toLowerCase(),
+      'redline comparison response must use the required "Differences found:" structure'
+    ).toContain('differences found');
+    console.log('[S5-MM PASS] Multimodal response references relevant content in the required structure');
 
     await snap(page, 'audit_5_multimodal.png');
 
