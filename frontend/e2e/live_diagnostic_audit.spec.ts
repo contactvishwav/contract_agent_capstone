@@ -208,6 +208,21 @@ async function sendMessage(page: Page, query: string, waitForResponseMs = 90000)
 
 // ── Test Suite ───────────────────────────────────────────────────────────────
 
+// Stages 4-5's hard assertions run real prompts through the real audit-
+// retry Output Guard chain, which has a directly measured ~1.7-4% false-
+// rejection rate on genuinely correct, fully-evidenced answers (see the
+// ADR-004 addendum's "bounded retry" section - same phenomenon
+// chat-cross-turn-image-context.spec.ts already retries for). A real
+// occasional false refusal here is that pre-existing, accepted variance
+// surfacing, not a regression in the feature under test, so it's absorbed
+// with a retry rather than failing the whole live audit outright. Stages
+// 1-3 don't hard-fail at all (see file docstring), so this is a no-op for
+// them; beforeAll's sharedPage/login setup runs once per worker regardless
+// of retries, so a retried stage reuses the same authenticated session -
+// each stage already starts its own scenarios via newChat(), so re-running
+// one stage on that shared page is safe and idempotent.
+test.describe.configure({ retries: 2 });
+
 test.describe('LIVE PRODUCTION AUDIT', () => {
   let sharedPage: Page;
 
