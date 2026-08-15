@@ -260,39 +260,91 @@ class PolicyCheckerTool(BaseTool):
             return json.dumps({"violations": [], "failed_clause_ids": [], "status": "failure", "error": str(e)})
 
 # Risk Assessment Agent Tools
+
+# Base risk by declared contract type, replacing a single flat constant
+# that treated every contract the same regardless of its own inherent risk
+# profile. Keyed by the same controlled vocabulary already used elsewhere
+# in this codebase (backend/shared/utils/contract_search_tool.py's
+# CONTRACT_TYPES, the CUAD-derived list an uploaded document's contract_type
+# is actually classified into) - normalized to lowercase since real
+# extracted values observed live are lowercase (e.g. "master services
+# agreement", not "MSA"). Grouped by real-world risk posture: an NDA is a
+# narrow, mutual, low-stakes document; an MSA governs an ongoing commercial
+# relationship with real liability/IP/payment exposure. Any contract_type
+# not covered here - including CUAD categories this table deliberately
+# doesn't enumerate - keeps today's original flat 30.0 via .get()'s
+# default, so this is additive, never a behavior change for unlisted types.
+BASE_RISK_BY_CONTRACT_TYPE = {
+    "nda": 10.0,
+    "mnda": 10.0,
+    "non-disclosure agreement": 10.0,
+    "non disclosure agreement": 10.0,
+    "sow": 25.0,
+    "statement of work": 25.0,
+    "msa": 40.0,
+    "master services agreement": 40.0,
+}
+DEFAULT_BASE_RISK = 30.0
+
+
 class RiskCalculatorInput(BaseModel):
     clauses_json: str = Field(description="JSON string of clauses")
     violations_json: str = Field(description="JSON string of violations")
+    contract_type: str = Field(default="general", description="Declared contract type, used to pick the base risk score")
 
 class RiskCalculatorTool(BaseTool):
     name: str = "risk_calculator"
     description: str = "Calculate overall contract risk score"
     args_schema: Type[BaseModel] = RiskCalculatorInput
-    
-    def _run(self, clauses_json: str, violations_json: str, contract_id: Optional[str] = None, tenant_id: Optional[str] = None) -> str:
+
+    def _run(self, clauses_json: str, violations_json: str, contract_id: Optional[str] = None, tenant_id: Optional[str] = None, contract_type: str = "general") -> str:
         """Calculate risk assessment"""
         try:
             clauses = json.loads(clauses_json)
             violations = json.loads(violations_json)
-            
-            # Calculate base risk from clauses
-            risk_score = 30.0  # Base risk
-            
+
+            # Base risk from the declared contract type - real, itemized
+            # contributions collected in score_breakdown as they're
+            # applied, not reverse-engineered from the final number after
+            # the fact (see RiskDetail.tsx's prior fabricated breakdown).
+            normalized_type = (contract_type or "general").strip().lower()
+            base_risk = BASE_RISK_BY_CONTRACT_TYPE.get(normalized_type, DEFAULT_BASE_RISK)
+            risk_score = base_risk
+            score_breakdown = [{
+                "factor": f"Base risk (contract type: {contract_type or 'general'})",
+                "points": base_risk,
+            }]
+
             # Add risk from violations
             for violation in violations:
                 severity = violation.get("severity", "LOW")
                 if severity == "CRITICAL":
-                    risk_score += 25
+                    points = 25
                 elif severity == "HIGH":
-                    risk_score += 15
+                    points = 15
                 elif severity == "MEDIUM":
-                    risk_score += 10
+                    points = 10
                 else:
-                    risk_score += 5
-            
-            # Cap at 100
+                    points = 5
+                risk_score += points
+                score_breakdown.append({
+                    "factor": violation.get("issue") or f"{severity} policy violation",
+                    "points": points,
+                })
+
+            # Cap at 100 - breakdown keeps the real, uncapped per-factor
+            # contributions (honest about what was actually applied) and
+            # notes separately when the cap itself reduced the total, so
+            # the itemized points always sum to something the reviewer can
+            # verify rather than silently disagreeing with the final score.
+            raw_total = risk_score
             risk_score = min(risk_score, 100.0)
-            
+            if raw_total > 100.0:
+                score_breakdown.append({
+                    "factor": "Capped at 100",
+                    "points": 100.0 - raw_total,
+                })
+
             # Determine risk level
             if risk_score >= 80:
                 risk_level = "CRITICAL"
@@ -327,7 +379,8 @@ class RiskCalculatorTool(BaseTool):
                 "risk_level": risk_level,
                 "critical_issues": critical_issues,
                 "critical_issue_details": critical_issue_details,
-                "recommendations": recommendations
+                "recommendations": recommendations,
+                "score_breakdown": score_breakdown,
             }
             
             logger.info(f"Risk assessment: {risk_level} ({risk_score}/100)")
@@ -357,6 +410,7 @@ class RiskCalculatorTool(BaseTool):
                 "critical_issues": [],
                 "critical_issue_details": [],
                 "recommendations": ["Risk calculation failed - manual review required"],
+                "score_breakdown": [],
                 "error": str(e),
             })
 

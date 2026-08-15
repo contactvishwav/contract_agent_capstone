@@ -158,6 +158,7 @@ class IntelligenceOrchestrator:
                 violations_json,
                 contract_id=state.get("contract_id"),
                 tenant_id=state.get("tenant_id"),
+                contract_type=state.get("contract_type") or "general",
             )
             risk_dict = json.loads(risk_json)
 

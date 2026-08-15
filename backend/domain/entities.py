@@ -89,6 +89,11 @@ class RiskAssessment:
     critical_issues: List[str]
     recommendations: List[str]
     critical_issue_details: List[Dict[str, Any]] = None
+    # Real, itemized contributions to overall_risk_score (base-by-contract-
+    # type plus one entry per applied violation) - see RiskCalculatorTool.
+    # None here on legacy/pre-Phase-2 data means "not computed", distinct
+    # from an empty list meaning "computed, contract had no factors".
+    score_breakdown: Optional[List[Dict[str, Any]]] = None
 
     def __post_init__(self):
         if self.critical_issue_details is None:

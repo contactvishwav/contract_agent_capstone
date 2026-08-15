@@ -172,7 +172,8 @@ class ContractIntelligenceService:
             risk_level=risk_data.get("risk_level", "LOW"),
             critical_issues=risk_data.get("critical_issues", []),
             recommendations=risk_data.get("recommendations", []),
-            critical_issue_details=risk_data.get("critical_issue_details", [])
+            critical_issue_details=risk_data.get("critical_issue_details", []),
+            score_breakdown=risk_data.get("score_breakdown"),
         )
         
         # Convert redlines

@@ -4,11 +4,21 @@ import { Badge } from '../../shared/ui/badge';
 import { Shield, AlertTriangle, CheckCircle, XCircle, Calculator, Target, TrendingUp, Download, Calendar } from 'lucide-react';
 import { Button } from '../../shared/ui/button';
 
+interface ScoreBreakdownEntry {
+  factor: string;
+  points: number;
+}
+
 interface RiskAssessment {
   overall_risk_score: number;
   risk_level: string;
   critical_issues: string[];
   recommendations: string[];
+  // Real, itemized contributions from the backend's deterministic scoring
+  // formula (RiskCalculatorTool) - absent on analyses persisted before
+  // this field existed, in which case the UI falls back to the older
+  // heuristic breakdown below.
+  score_breakdown?: ScoreBreakdownEntry[];
 }
 
 interface RiskDetailProps {
@@ -192,7 +202,8 @@ export const RiskDetail: React.FC<RiskDetailProps> = ({ riskAssessment, contract
     );
   }
 
-  const riskFactors = getRiskFactors(riskAssessment);
+  const hasRealBreakdown = Array.isArray(riskAssessment.score_breakdown) && riskAssessment.score_breakdown.length > 0;
+  const riskFactors = hasRealBreakdown ? riskAssessment.score_breakdown! : getRiskFactors(riskAssessment);
   const actionableRecommendations = getActionableRecommendations(riskAssessment);
   const analysisDate = new Date().toLocaleDateString();
 
@@ -269,18 +280,24 @@ export const RiskDetail: React.FC<RiskDetailProps> = ({ riskAssessment, contract
         </CardHeader>
         <CardContent>
           <p className="text-sm text-blue-800 mb-4">
-            The risk score is calculated using AI analysis of multiple contract factors:
+            {hasRealBreakdown
+              ? 'The risk score is calculated deterministically: a base score for the contract type, plus a fixed point value for each policy violation found below. Reproducible and auditable, not a black-box AI judgment.'
+              : 'The risk score is calculated from multiple contract factors:'}
           </p>
           <div className="space-y-3">
             {riskFactors.map((factor, index) => (
               <div key={index} className="flex items-center justify-between bg-white p-3 rounded border border-blue-200">
                 <div className="flex-1">
                   <p className="text-sm font-medium text-slate-800">{factor.factor}</p>
-                  <p className="text-xs text-slate-600">Impact: {factor.impact}</p>
+                  {!hasRealBreakdown && 'impact' in factor && (
+                    <p className="text-xs text-slate-600">Impact: {(factor as { impact: string }).impact}</p>
+                  )}
                 </div>
                 <div className="text-right">
-                  <p className="text-sm font-medium text-blue-700">{factor.weight}</p>
-                  <p className="text-xs text-slate-500">Weight</p>
+                  <p className="text-sm font-medium text-blue-700">
+                    {hasRealBreakdown ? `${(factor as ScoreBreakdownEntry).points > 0 ? '+' : ''}${(factor as ScoreBreakdownEntry).points}` : (factor as { weight: string }).weight}
+                  </p>
+                  <p className="text-xs text-slate-500">{hasRealBreakdown ? 'Points' : 'Weight'}</p>
                 </div>
               </div>
             ))}

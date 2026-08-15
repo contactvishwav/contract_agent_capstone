@@ -61,6 +61,7 @@ def intelligence_to_response_dict(contract_id: str, model: str, intelligence) ->
                 "critical_issues": intelligence.risk_assessment.critical_issues,
                 "critical_issue_details": intelligence.risk_assessment.critical_issue_details,
                 "recommendations": intelligence.risk_assessment.recommendations,
+                "score_breakdown": intelligence.risk_assessment.score_breakdown,
             },
             "redlines": [
                 {
