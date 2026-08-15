@@ -15,6 +15,20 @@ from backend.shared.utils.logger import get_logger
 logger = get_logger(__name__)
 ANALYSIS_CONFIG_VERSION = "analysis-plan-v1"
 
+
+class AnalysisPendingReviewError(Exception):
+    """Raised when the traditional-workflow graph paused at human_review_gate
+    (Phase 4 HITL) instead of completing. Not a failure - a legitimate,
+    honest outcome tasks.py/the API must handle distinctly from both
+    success and a real error."""
+
+    def __init__(self, contract_id: Optional[str], risk_level: Optional[str], overall_risk_score: Optional[float]):
+        self.contract_id = contract_id
+        self.risk_level = risk_level
+        self.overall_risk_score = overall_risk_score
+        super().__init__(f"Contract {contract_id} analysis paused for human review ({risk_level})")
+
+
 class ContractIntelligenceService:
     """Service for contract intelligence analysis using multi-agent system"""
     
@@ -22,7 +36,7 @@ class ContractIntelligenceService:
         self.llm_manager = llm_manager
         self.repository = Neo4jContractRepository()
     
-    def analyze_contract_intelligence(self, contract_text: str, model: str = "gemini-2.5-flash", use_planning: bool = True, contract_id: Optional[str] = None, tenant_id: Optional[str] = None, contract_type: Optional[str] = None) -> ContractIntelligence:
+    def analyze_contract_intelligence(self, contract_text: str, model: str = "gemini-2.5-flash", use_planning: bool = False, contract_id: Optional[str] = None, tenant_id: Optional[str] = None, contract_type: Optional[str] = None) -> ContractIntelligence:
         """Perform complete contract intelligence analysis using multi-agent system"""
 
         start_time = time.time()
@@ -44,7 +58,15 @@ class ContractIntelligenceService:
             except Exception as oe:
                 logger.error(f"Orchestrator creation failed: {oe}")
                 raise Exception(f"Failed to initialize intelligence system: {oe}")
-            
+
+            if analysis_result.get("status") == "PENDING_HUMAN_REVIEW":
+                risk_data = analysis_result.get("risk_assessment", {})
+                raise AnalysisPendingReviewError(
+                    contract_id=contract_id,
+                    risk_level=risk_data.get("risk_level"),
+                    overall_risk_score=risk_data.get("overall_risk_score"),
+                )
+
             # Convert to domain entities
             intelligence = self._convert_to_domain_entities(analysis_result)
             intelligence.processing_time = time.time() - start_time
@@ -60,7 +82,9 @@ class ContractIntelligenceService:
             
             logger.info(f"Contract intelligence analysis completed in {intelligence.processing_time:.2f}s")
             return intelligence
-            
+
+        except AnalysisPendingReviewError:
+            raise
         except Exception as e:
             logger.error(f"Contract intelligence analysis failed: {e}")
             import traceback
@@ -70,7 +94,7 @@ class ContractIntelligenceService:
             # persist requested_model as though it were an actual invocation.
             raise RuntimeError("Contract intelligence provider execution failed") from e
     
-    async def analyze_contract_by_id(self, contract_id: str, tenant_id: str = "default-tenant", model: str = "gemini-2.5-flash", use_planning: bool = True) -> Optional[ContractIntelligence]:
+    async def analyze_contract_by_id(self, contract_id: str, tenant_id: str = "default-tenant", model: str = "gemini-2.5-flash", use_planning: bool = False) -> Optional[ContractIntelligence]:
         """Analyze contract intelligence for an existing contract by ID"""
         
         try:
@@ -98,12 +122,18 @@ class ContractIntelligenceService:
 
             # Perform analysis with optional planning
             intelligence = self.analyze_contract_intelligence(contract_text, model, use_planning, contract_id=contract_id, tenant_id=tenant_id, contract_type=contract_type)
-            
+
             # Store intelligence results back to database
             self._store_intelligence_results(contract_id, tenant_id, model, intelligence)
-            
+
             return intelligence
-            
+
+        except AnalysisPendingReviewError as e:
+            # Persisted so GET .../status and .../reviews/pending reflect
+            # this even after the Celery task result itself expires -
+            # thread_id for resume is contract_id, already stable/known.
+            self._mark_pending_review(contract_id, tenant_id, model, e.risk_level, e.overall_risk_score)
+            raise
         except Exception as e:
             logger.error(f"Failed to analyze contract {contract_id}: {e}")
             raise
@@ -375,6 +405,112 @@ class ContractIntelligenceService:
             
         except Exception as e:
             logger.warning(f"Failed to store performance metrics: {e}")
+
+    def _mark_pending_review(self, contract_id: str, tenant_id: str, model: str, risk_level: Optional[str], overall_risk_score: Optional[float]) -> None:
+        """Persist the paused state so it survives past the Celery task
+        result's own TTL - GET .../status and .../reviews/pending both read
+        this directly off the Contract node, same pattern as the normal
+        completed-analysis fields _store_intelligence_results sets."""
+        self.repository.graph.query(
+            """
+            MATCH (c:Contract {file_id: $contract_id, tenant_id: $tenant_id})
+            WHERE coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE'
+            SET c.intelligence_status = 'pending_human_review',
+                c.risk_score = $risk_score,
+                c.risk_level = $risk_level,
+                c.analysis_requested_model = $model,
+                c.review_requested_at = datetime(),
+                c.analysis_task_state = 'SUCCESS'
+            RETURN c.file_id AS contract_id
+            """,
+            {
+                "contract_id": contract_id,
+                "tenant_id": tenant_id,
+                "risk_score": overall_risk_score,
+                "risk_level": risk_level,
+                "model": model,
+            },
+        )
+        logger.info(f"Contract {contract_id} marked pending_human_review ({risk_level})")
+
+    def list_pending_reviews(self, tenant_id: str) -> list[Dict[str, Any]]:
+        rows = self.repository.graph.query(
+            """
+            MATCH (c:Contract {tenant_id: $tenant_id})
+            WHERE c.intelligence_status = 'pending_human_review'
+              AND coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE'
+            RETURN c.file_id AS contract_id, c.filename AS filename,
+                   c.risk_score AS risk_score, c.risk_level AS risk_level,
+                   c.review_requested_at AS requested_at
+            ORDER BY c.review_requested_at DESC
+            """,
+            {"tenant_id": tenant_id},
+        )
+        return rows or []
+
+    def approve_review(self, contract_id: str, tenant_id: str) -> ContractIntelligence:
+        """Resume a paused run (POST .../review/approve) and persist the
+        now-complete result exactly like a normal analysis. Reads back the
+        model the run was originally started with (_mark_pending_review
+        stored it) so cuad_mitigation/redline_generation - which still
+        need a real LLM - use the same provider/model the admin's org
+        actually configured, not a silent default."""
+        rows = self.repository.graph.query(
+            """
+            MATCH (c:Contract {file_id: $contract_id, tenant_id: $tenant_id})
+            WHERE c.intelligence_status = 'pending_human_review'
+            RETURN coalesce(c.analysis_requested_model, 'gemini-2.5-flash') AS model
+            """,
+            {"contract_id": contract_id, "tenant_id": tenant_id},
+        )
+        if not rows:
+            raise ValueError(f"Contract {contract_id} has no pending review")
+        model = rows[0]["model"]
+
+        start_time = time.time()
+        llm = self._get_llm_for_model(model)
+        orchestrator = ContractIntelligenceAgentFactory.create_orchestrator(llm)
+        analysis_result = orchestrator.resume_analysis(contract_id)
+
+        intelligence = self._convert_to_domain_entities(analysis_result)
+        intelligence.processing_time = time.time() - start_time
+        spec = self.llm_manager.get_model_spec(model) if self.llm_manager else model_spec(model)
+        intelligence.requested_model = model
+        intelligence.actual_model = model
+        intelligence.requested_provider = spec.provider
+        intelligence.actual_provider = spec.provider
+        intelligence.fallback_occurred = False
+        intelligence.fallback_reason = None
+        intelligence.configuration_version = ANALYSIS_CONFIG_VERSION
+
+        self._store_intelligence_results(contract_id, tenant_id, model, intelligence)
+        logger.info(f"Contract {contract_id}: review approved, analysis resumed and completed")
+        return intelligence
+
+    def reject_review(self, contract_id: str, tenant_id: str) -> None:
+        """Terminate a paused run without resuming it. Leaves the Contract
+        node honestly in a terminal, non-"completed" state and discards
+        the orphaned Redis checkpoint - no code path can ever resume this
+        thread_id again after this."""
+        from backend.agents.contract_intelligence_agents import _get_redis_checkpointer
+
+        rows = self.repository.graph.query(
+            """
+            MATCH (c:Contract {file_id: $contract_id, tenant_id: $tenant_id})
+            WHERE c.intelligence_status = 'pending_human_review'
+            SET c.intelligence_status = 'review_rejected',
+                c.review_resolved_at = datetime()
+            RETURN c.file_id AS contract_id
+            """,
+            {"contract_id": contract_id, "tenant_id": tenant_id},
+        )
+        if not rows:
+            raise ValueError(f"Contract {contract_id} has no pending review")
+        try:
+            _get_redis_checkpointer().delete_thread(contract_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete checkpoint thread for rejected review {contract_id}: {e}")
+        logger.info(f"Contract {contract_id}: review rejected")
 
 class ContractIntelligenceServiceFactory:
     """Factory for creating contract intelligence service"""

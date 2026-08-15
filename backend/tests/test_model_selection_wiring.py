@@ -206,7 +206,8 @@ class OrchestratorThreadsLlmToBothPathsTests(unittest.TestCase):
             from backend.agents.contract_intelligence_agents import IntelligenceOrchestrator
 
         fake_llm = _fake_llm("gpt-4o", None)
-        orchestrator = IntelligenceOrchestrator(fake_llm)
+        with patch("backend.agents.contract_intelligence_agents._get_redis_checkpointer", return_value=None):
+            orchestrator = IntelligenceOrchestrator(fake_llm)
 
         with patch("backend.agents.contract_intelligence_agents.ClauseDetectorTool") as MockClauseTool, \
              patch("backend.agents.contract_intelligence_agents.workflow_tracker"):
@@ -223,7 +224,8 @@ class OrchestratorThreadsLlmToBothPathsTests(unittest.TestCase):
         fake_llm = _fake_llm("claude-sonnet-5", None)
 
         with patch("backend.agents.planning.planning_agent.PlanningAgentFactory.create_planning_agent"), \
-             patch("backend.agents.contract_intelligence_agents.PlanExecutionEngine") as MockEngine:
+             patch("backend.agents.contract_intelligence_agents.PlanExecutionEngine") as MockEngine, \
+             patch("backend.agents.contract_intelligence_agents._get_redis_checkpointer", return_value=None):
             IntelligenceOrchestrator(fake_llm)
 
         MockEngine.assert_called_once_with(fake_llm)

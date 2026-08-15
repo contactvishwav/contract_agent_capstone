@@ -29,7 +29,7 @@ class TestTraditionalPathReceivesContext(unittest.TestCase):
         captured = {}
 
         class FakeWorkflow:
-            def invoke(self, state):
+            def invoke(self, state, config=None):
                 captured.update(state)
                 return {
                     "extracted_clauses": [], "policy_violations": [], "risk_data": {},

@@ -44,7 +44,10 @@ class DockerComposeLocalInfraTests(unittest.TestCase):
     def test_redis_service_uses_a_real_image_with_a_persistent_volume(self):
         redis = self.services["redis"]
         self.assertIn("image", redis)
-        self.assertTrue(redis["image"].startswith("redis:"))
+        # redis/redis-stack-server, not plain redis:* (Phase 4 HITL) -
+        # langgraph-checkpoint-redis's RedisSaver needs the RediSearch
+        # module (FT.* commands), which plain Redis doesn't ship.
+        self.assertTrue(redis["image"].startswith("redis"))
         self.assertTrue(any("redis_data" in v for v in redis.get("volumes", [])))
 
     def test_backend_no_longer_defaults_to_the_shared_public_demo_instance(self):

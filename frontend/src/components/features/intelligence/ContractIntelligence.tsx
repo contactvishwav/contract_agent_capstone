@@ -117,7 +117,8 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [networkError, setNetworkError] = useState(false);
   const [executionIdentity, setExecutionIdentity] = useState<ExecutionIdentity | null>(null);
-  const [persistedState, setPersistedState] = useState<'loading' | 'not_analyzed' | 'processing' | 'completed' | 'completed_with_errors'>('loading');
+  const [persistedState, setPersistedState] = useState<'loading' | 'not_analyzed' | 'processing' | 'completed' | 'completed_with_errors' | 'pending_human_review'>('loading');
+  const [reviewRisk, setReviewRisk] = useState<{ riskScore: number | null; riskLevel: string | null }>({ riskScore: null, riskLevel: null });
   const [legacySummary, setLegacySummary] = useState(false);
   const [summaryCounts, setSummaryCounts] = useState<{ clauses: number; violations: number; redlines: number } | null>(null);
   const requestVersion = useRef(0);
@@ -176,8 +177,20 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
           setPersistedState('processing');
           setLoading(true);
           const result = await pollTaskStatus(response.status_url, controller.signal);
+          if ((result as unknown as { status?: string }).status === 'PENDING_HUMAN_REVIEW') {
+            const r = result as unknown as { risk_score?: number | null; risk_level?: string | null };
+            setReviewRisk({ riskScore: r.risk_score ?? null, riskLevel: r.risk_level ?? null });
+            setPersistedState('pending_human_review');
+            setLoading(false);
+            return;
+          }
           applyAnalysis(result, version);
           setLoading(false);
+          return;
+        }
+        if (response.state === 'pending_human_review') {
+          setReviewRisk({ riskScore: response.risk_score ?? null, riskLevel: response.risk_level ?? null });
+          setPersistedState('pending_human_review');
           return;
         }
         setPersistedState('not_analyzed');
@@ -239,6 +252,19 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
       // expecting the results inline in this response.
       const { status_url } = await response.json();
       const data = await pollTaskStatus(status_url, controller.signal);
+
+      // Phase 4 (HITL): a HIGH/CRITICAL-risk contract paused at
+      // human_review_gate instead of completing - a real, distinct
+      // outcome, not a "no results" error. Stop polling and switch to the
+      // pending-review UI; an admin's Approve/Reject action is what moves
+      // this forward, not another analyze click.
+      if ((data as unknown as { status?: string }).status === 'PENDING_HUMAN_REVIEW') {
+        const r = data as unknown as { risk_score?: number | null; risk_level?: string | null };
+        setReviewRisk({ riskScore: r.risk_score ?? null, riskLevel: r.risk_level ?? null });
+        setPersistedState('pending_human_review');
+        setLoading(false);
+        return;
+      }
 
       if (!data.results) {
         throw new Error('No analysis results returned. The contract may be invalid or corrupted.');
@@ -404,6 +430,25 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
               <Clock className="h-4 w-4 animate-spin" />
               <span>{persistedState === 'loading' ? 'Loading saved analysis…' : 'Multi-agent analysis in progress…'}</span>
             </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Pending Human Review State (Phase 4 HITL) */}
+      {!loading && persistedState === 'pending_human_review' && (
+        <Card className="border-amber-300 bg-amber-50" data-testid="pending-human-review-card">
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-2 text-amber-800 mb-2">
+              <AlertTriangle className="h-4 w-4" />
+              <span className="font-medium">Pending Human Review</span>
+            </div>
+            <p className="text-sm text-amber-700">
+              This contract's risk assessment came back{' '}
+              <strong>{reviewRisk.riskLevel || 'HIGH/CRITICAL'}</strong>
+              {typeof reviewRisk.riskScore === 'number' ? ` (${reviewRisk.riskScore}/100)` : ''} and requires
+              admin approval before redline suggestions are generated. An admin can approve or reject it from
+              the review queue.
+            </p>
           </CardContent>
         </Card>
       )}

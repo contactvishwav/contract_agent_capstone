@@ -1,8 +1,11 @@
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks, Depends, Request
-from backend.governance.rbac import Permission, requires_permission
+from backend.governance.rbac import Permission, UserRole, requires_permission, requires_role
 from backend.governance.auth import TokenIdentity, get_current_identity
 from fastapi.responses import StreamingResponse
 from backend.application.services.contract_intelligence_service import ContractIntelligenceServiceFactory
+from backend.application.services.intelligence_result_serializer import intelligence_to_response_dict
 from backend.llm_manager import LLMManager
 from backend.model_registry import ModelSelectionError, available_models, validate_model
 from backend.infrastructure.contract_repository import Neo4jContractRepository
@@ -30,7 +33,17 @@ def get_llm_manager(request: Request):
 async def analyze_contract_intelligence(
     contract_id: str,
     model: str = Query(default="gemini-2.5-flash", description="LLM model to use for analysis"),
-    use_planning: bool = Query(default=True, description="Use autonomous planning agent"),
+    # Phase 4 (HITL): defaults to False, not True - the autonomous planning
+    # agent (PlanExecutionEngine) is a separate, non-LangGraph orchestrator
+    # that never touches IntelligenceOrchestrator.workflow, so a HIGH/
+    # CRITICAL-risk analysis run through it silently skips human_review_
+    # gate entirely (confirmed live: a real analysis completed in ~1s with
+    # no pause). The traditional graph is what actually has the Redis-
+    # backed interrupt/resume machinery - real analyses must go through it
+    # by default for HITL to mean anything; still explicitly overridable
+    # per-call for a caller that deliberately wants PlanExecutionEngine's
+    # quality_grade/escalation extras and doesn't need HITL for that run.
+    use_planning: bool = Query(default=False, description="Use autonomous planning agent (skips human-review gating - see Phase 4 HITL)"),
     identity: TokenIdentity = Depends(requires_permission(Permission.ANALYZE)),
 ):
     """
@@ -97,6 +110,69 @@ async def analyze_contract_intelligence(
         "contract_id": contract_id,
         "status_url": f"/api/intelligence/tasks/{task.id}/status",
     }
+
+
+# Registered before /contracts/{contract_id}/... routes on purpose - a
+# literal path should win over a parameterized one it could otherwise be
+# mistaken for at match time, standard FastAPI/Starlette routing practice,
+# even though no existing route today actually collides with this shape.
+@router.get("/contracts/reviews/pending")
+async def list_pending_reviews(
+    identity: TokenIdentity = Depends(requires_role(UserRole.ADMIN)),
+):
+    """Phase 4 (HITL): contracts currently paused at human_review_gate for
+    this admin's own tenant - ADMIN-only by role (requires_role), not by
+    an incidentally-ADMIN-only Permission, since approving a HIGH/CRITICAL
+    contract should never silently follow some other permission's grant
+    to a different role later."""
+    service = ContractIntelligenceServiceFactory.create_service(None)
+    reviews = service.list_pending_reviews(identity.tenant_id)
+    return {
+        "reviews": [
+            {
+                "contract_id": r.get("contract_id"),
+                "filename": r.get("filename"),
+                "risk_score": r.get("risk_score"),
+                "risk_level": r.get("risk_level"),
+                "requested_at": serialize_neo4j_datetime(r.get("requested_at")),
+            }
+            for r in reviews
+        ]
+    }
+
+
+@router.post("/contracts/{contract_id}/review/approve")
+async def approve_contract_review(
+    contract_id: str,
+    llm_mgr: LLMManager = Depends(get_llm_manager),
+    identity: TokenIdentity = Depends(requires_role(UserRole.ADMIN)),
+):
+    """Resume a paused run and complete cuad_mitigation -> redline_generation
+    -> END (see IntelligenceOrchestrator.resume_analysis). Real LLM calls,
+    so this runs on a worker thread (asyncio.to_thread) rather than
+    blocking the event loop - an MVP simplification versus dispatching a
+    second Celery task type for resume specifically; acceptable for an
+    infrequent admin action, not a high-concurrency user-facing path."""
+    service = ContractIntelligenceServiceFactory.create_service(llm_mgr)
+    try:
+        intelligence = await asyncio.to_thread(service.approve_review, contract_id, identity.tenant_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return intelligence_to_response_dict(contract_id, intelligence.requested_model, intelligence)
+
+
+@router.post("/contracts/{contract_id}/review/reject")
+async def reject_contract_review(
+    contract_id: str,
+    identity: TokenIdentity = Depends(requires_role(UserRole.ADMIN)),
+):
+    """Terminate a paused run without resuming it - no LLM calls, fast."""
+    service = ContractIntelligenceServiceFactory.create_service(None)
+    try:
+        service.reject_review(contract_id, identity.tenant_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"contract_id": contract_id, "status": "review_rejected"}
 
 @router.get("/tasks/{task_id}/status")
 async def get_analysis_task_status(
@@ -269,6 +345,21 @@ async def get_latest_contract_analysis(
                 f"/api/intelligence/tasks/{row['task_id']}/status"
                 if row.get("task_id") else None
             ),
+        }
+
+    if status == "pending_human_review":
+        # Phase 4 (HITL): paused at human_review_gate - no AnalysisRun/
+        # result_payload exists yet (that's only ever created by a
+        # completed run), so this branches before the result_payload
+        # check above would otherwise misclassify it as "not_analyzed".
+        return {
+            "state": "pending_human_review",
+            "source": "contract",
+            "legacy_summary": False,
+            "filename": row.get("filename") or contract_id,
+            "risk_score": row.get("risk_score"),
+            "risk_level": row.get("risk_level"),
+            "analysis": None,
         }
 
     if status in {"completed", "completed_with_errors"}:

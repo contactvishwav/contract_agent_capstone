@@ -11,7 +11,7 @@ export interface ContractSummary {
 }
 
 export interface PersistedAnalysisResponse {
-  state: 'not_analyzed' | 'processing' | 'completed' | 'completed_with_errors' | string;
+  state: 'not_analyzed' | 'processing' | 'completed' | 'completed_with_errors' | 'pending_human_review' | string;
   source: 'contract' | 'task_state' | 'persisted_analysis' | 'legacy_contract_summary';
   legacy_summary: boolean;
   filename: string;
@@ -20,6 +20,9 @@ export interface PersistedAnalysisResponse {
   task_id?: string | null;
   task_state?: string | null;
   status_url?: string | null;
+  // Phase 4 (HITL): only present when state === 'pending_human_review'.
+  risk_score?: number | null;
+  risk_level?: string | null;
   analysis?: Record<string, unknown> | null;
 }
 

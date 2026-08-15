@@ -200,7 +200,15 @@ services:
     networks:
       - net
   redis:
-    image: redis:7-alpine
+    # redis-stack-server, not plain redis:7-alpine (Phase 4 of the master-
+    # upgrade plan): langgraph-checkpoint-redis's RedisSaver uses RediSearch
+    # (FT.* commands) internally to index/query checkpoints by thread_id -
+    # confirmed live, plain Redis has no modules loaded and every real
+    # checkpoint write failed with "unknown command 'FT.INFO'". Server-only
+    # variant (no RedisInsight UI) - still Redis-protocol-compatible, so
+    # nothing else that talks to this service (cache, Celery broker/
+    # backend, rate limiter) needs to change.
+    image: redis/redis-stack-server:latest
     volumes:
       - redis_data:/data
     ports:

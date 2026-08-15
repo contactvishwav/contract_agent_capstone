@@ -14,6 +14,7 @@ import { AlertCircle, CheckCircle2, ShieldCheck, UserPlus } from 'lucide-react';
 import { authApi, InviteCreateResponse } from '../services/authApi';
 import { useAuth } from '../contexts/AuthContext';
 import { ROLES } from '../lib/roles';
+import { apiFetch } from '../lib/apiClient';
 
 const inputClass =
   'w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]';
@@ -166,6 +167,7 @@ export const AccountPage: React.FC = () => {
       </Card>
 
       <InviteSection />
+      <PendingReviewsSection />
     </div>
   );
 };
@@ -284,6 +286,132 @@ const InviteSection: React.FC = () => {
             {isSubmitting ? 'Sending...' : 'Send invite'}
           </Button>
         </form>
+      </CardContent>
+    </Card>
+  );
+};
+
+interface PendingReview {
+  contract_id: string;
+  filename: string | null;
+  risk_score: number | null;
+  risk_level: string | null;
+  requested_at: string | null;
+}
+
+/**
+ * Phase 4 (HITL) admin review queue: contracts paused at
+ * human_review_gate (backend/agents/contract_intelligence_agents.py) for
+ * this tenant, with Approve/Reject actions hitting the new
+ * .../review/approve|reject endpoints. Same ADMIN-only UX-nicety gating
+ * as InviteSection above - the real authorization is requires_role
+ * (ADMIN) on the backend routes themselves.
+ */
+const PendingReviewsSection: React.FC = () => {
+  const { session } = useAuth();
+  const [reviews, setReviews] = useState<PendingReview[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [actioningId, setActioningId] = useState<string | null>(null);
+
+  const loadReviews = React.useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await apiFetch('/api/intelligence/contracts/reviews/pending');
+      if (!response.ok) throw new Error(`Failed to load pending reviews: ${response.statusText}`);
+      const body = await response.json();
+      setReviews(body.reviews || []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load pending reviews');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (session?.role === 'ADMIN') void loadReviews();
+  }, [session?.role, loadReviews]);
+
+  if (session?.role !== 'ADMIN') return null;
+
+  const handleAction = async (contractId: string, action: 'approve' | 'reject') => {
+    setActioningId(contractId);
+    setError(null);
+    try {
+      const response = await apiFetch(`/api/intelligence/contracts/${encodeURIComponent(contractId)}/review/${action}`, {
+        method: 'POST',
+      });
+      if (!response.ok) throw new Error(`Failed to ${action} review: ${response.statusText}`);
+      await loadReviews();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Could not ${action} review`);
+    } finally {
+      setActioningId(null);
+    }
+  };
+
+  return (
+    <Card className="border-slate-200">
+      <CardHeader>
+        <div className="flex items-center gap-2 text-amber-600 mb-1">
+          <AlertCircle className="h-5 w-5" />
+          <span className="text-xs font-semibold uppercase tracking-wide">Human Review Queue</span>
+        </div>
+        <CardTitle className="text-xl">Pending contract reviews</CardTitle>
+        <CardDescription>
+          Contracts whose risk assessment came back HIGH or CRITICAL pause here for approval before
+          redline suggestions are generated.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {error && (
+          <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+            <span>{error}</span>
+          </div>
+        )}
+
+        {loading && reviews.length === 0 && (
+          <p className="text-sm text-slate-500">Loading pending reviews…</p>
+        )}
+
+        {!loading && reviews.length === 0 && !error && (
+          <p className="text-sm text-slate-500">No contracts are currently pending review.</p>
+        )}
+
+        {reviews.map((review) => (
+          <div
+            key={review.contract_id}
+            data-testid="pending-review-row"
+            className="flex items-center justify-between rounded-md border border-amber-200 bg-amber-50 px-3 py-2"
+          >
+            <div className="min-w-0">
+              <p className="truncate text-sm font-medium text-slate-800">{review.filename || review.contract_id}</p>
+              <p className="text-xs text-amber-700">
+                {review.risk_level || 'HIGH/CRITICAL'}
+                {typeof review.risk_score === 'number' ? ` · ${review.risk_score}/100` : ''}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={actioningId === review.contract_id}
+                onClick={() => handleAction(review.contract_id, 'reject')}
+              >
+                Reject
+              </Button>
+              <Button
+                size="sm"
+                disabled={actioningId === review.contract_id}
+                onClick={() => handleAction(review.contract_id, 'approve')}
+              >
+                {actioningId === review.contract_id ? 'Working…' : 'Approve'}
+              </Button>
+            </div>
+          </div>
+        ))}
       </CardContent>
     </Card>
   );

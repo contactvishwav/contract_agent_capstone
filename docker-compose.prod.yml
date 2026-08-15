@@ -242,12 +242,28 @@ services:
     mem_limit: 64m
 
   redis:
-    image: redis:7-alpine
+    # redis-stack-server, not plain redis:7-alpine (Phase 4 of the master-
+    # upgrade plan): langgraph-checkpoint-redis's RedisSaver uses RediSearch
+    # (FT.* commands) internally to index/query checkpoints by thread_id -
+    # confirmed live against plain Redis, every real checkpoint write
+    # failed with "unknown command 'FT.INFO'" (no modules loaded). Server-
+    # only variant (no RedisInsight UI) - still Redis-protocol-compatible,
+    # so nothing else that talks to this service (cache, Celery broker/
+    # backend, rate limiter) needs to change. Empirically measured idle
+    # memory locally: ~6 MiB, barely above plain redis:7-alpine's - the
+    # mem_limit below is unchanged from before this swap.
+    image: redis/redis-stack-server:latest
     # No local dev-style unbounded cache here - capped well within
     # e2-micro's budget, with the standard eviction policy for a cache
     # workload (evict the least-recently-used key once full, rather than
-    # refusing writes or crashing).
-    command: ["redis-server", "--maxmemory", "150mb", "--maxmemory-policy", "allkeys-lru"]
+    # refusing writes or crashing). NOT a `command:` override - redis-
+    # stack-server's own /entrypoint.sh is what actually loads the
+    # RediSearch/etc modules (via hardcoded --loadmodule flags); replacing
+    # it with a bare `redis-server ...` command would silently skip module
+    # loading entirely. REDIS_ARGS is entrypoint.sh's own supported
+    # extension point, appended after its module-loading args.
+    environment:
+      - REDIS_ARGS=--maxmemory 150mb --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data
     healthcheck:

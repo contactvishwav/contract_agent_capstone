@@ -1,8 +1,10 @@
 from langgraph.graph import StateGraph, END
+from langgraph.types import interrupt, Command
+from langgraph.checkpoint.redis import RedisSaver
 from langchain_core.messages import HumanMessage, AIMessage
 from backend.agents.intelligence_state import IntelligenceState
 from backend.agents.intelligence_tools import (
-    ClauseDetectorTool, PolicyCheckerTool, 
+    ClauseDetectorTool, PolicyCheckerTool,
     RiskCalculatorTool, RedlineGeneratorTool
 )
 from backend.agents.agent_workflow_tracker import workflow_tracker
@@ -10,10 +12,34 @@ from backend.agents.planning.planning_agent import PlanningAgentFactory
 from backend.agents.planning.execution_engine import PlanExecutionEngine
 import json
 import logging
+import os
+import uuid
 from typing import Optional
 
 from backend.shared.utils.logger import get_logger
 logger = get_logger(__name__)
+
+# Module-level singleton, same convention as tasks.py's _llm_manager and
+# shared.cache.redis_cache.cache - one real Redis connection (+ one-time
+# index setup) per process, shared by every IntelligenceOrchestrator
+# instance rather than reconnecting per analysis. Redis-backed, not
+# MemorySaver: contract analysis runs inside the Celery `worker` process,
+# but an admin's resume request is handled by the separate `backend`
+# FastAPI process - an in-memory checkpoint saved by one process would be
+# invisible to the other. No Postgres exists anywhere in this stack
+# (docker-compose has no such service); Redis already backs Celery itself
+# in both dev and prod, so this adds no new infrastructure.
+_redis_checkpointer: Optional[RedisSaver] = None
+
+
+def _get_redis_checkpointer() -> RedisSaver:
+    global _redis_checkpointer
+    if _redis_checkpointer is None:
+        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+        saver = RedisSaver(redis_url=redis_url)
+        saver.setup()  # idempotent - creates the checkpoint/write indexes if absent
+        _redis_checkpointer = saver
+    return _redis_checkpointer
 
 class IntelligenceOrchestrator:
     """Proper multi-agent orchestrator following SOLID principles"""
@@ -30,8 +56,11 @@ class IntelligenceOrchestrator:
         # llm argument, which (per the LLM fallback build) falls back to
         # the Gemini->OpenAI->Anthropic chain regardless of what the
         # dropdown said. Threaded through to both real orchestration paths
-        # below (this one and the planning/PlanExecutionEngine one, which
-        # is the actual production default - use_planning=True).
+        # below (this one and the planning/PlanExecutionEngine one - the
+        # production default until Phase 4's HITL gate needed real
+        # analyses to go through the traditional graph instead; see
+        # analyze_contract's use_planning=False default and api/
+        # contract_intelligence.py's route docstring).
         self.execution_engine = PlanExecutionEngine(llm)
     
     def _build_workflow(self) -> StateGraph:
@@ -44,6 +73,14 @@ class IntelligenceOrchestrator:
         workflow.add_node("policy_checking", self._check_policies)
         workflow.add_node("risk_calculation", self._calculate_risks)
 
+        # HITL gate (Phase 4 of the master-upgrade plan): pauses the graph
+        # via LangGraph's dynamic interrupt() when risk_calculation flagged
+        # requires_human_review - a no-op pass-through otherwise. Dynamic
+        # interrupt() (not the older static interrupt_before=[...] compile-
+        # time list) because the pause is conditional on a value only known
+        # at runtime, not on which node is about to run.
+        workflow.add_node("human_review_gate", self._human_review_gate)
+
         # NEW: CUAD mitigation step (Phase 1)
         workflow.add_node("cuad_mitigation", self._cuad_mitigation)
 
@@ -53,11 +90,12 @@ class IntelligenceOrchestrator:
         workflow.set_entry_point("clause_extraction")
         workflow.add_edge("clause_extraction", "policy_checking")
         workflow.add_edge("policy_checking", "risk_calculation")
-        workflow.add_edge("risk_calculation", "cuad_mitigation")
+        workflow.add_edge("risk_calculation", "human_review_gate")
+        workflow.add_edge("human_review_gate", "cuad_mitigation")
         workflow.add_edge("cuad_mitigation", "redline_generation")
         workflow.add_edge("redline_generation", END)
-        
-        return workflow.compile()
+
+        return workflow.compile(checkpointer=_get_redis_checkpointer())
     
     def _extract_clauses(self, state: IntelligenceState) -> IntelligenceState:
         """Extract clauses - Single Responsibility"""
@@ -166,6 +204,11 @@ class IntelligenceOrchestrator:
             risk_level = risk_dict.get("risk_level", "UNKNOWN")
             workflow_tracker.complete_agent(execution, f"Risk Score: {risk_score}/100 ({risk_level})")
 
+            # Phase 4 (HITL): HIGH/CRITICAL contracts pause for human
+            # approval at human_review_gate below before redlines are
+            # generated - never for ERROR/UNKNOWN/LOW/MEDIUM.
+            risk_dict["requires_human_review"] = risk_level in {"HIGH", "CRITICAL"}
+
             node_status_value = "error" if risk_level == "ERROR" else "success"
             return {**state,
                 "risk_data": risk_dict,
@@ -174,10 +217,33 @@ class IntelligenceOrchestrator:
             }
         except Exception as e:
             workflow_tracker.error_agent(execution, f"Risk calculation failed: {e}")
-            return {**state, "risk_data": {"overall_risk_score": None, "risk_level": "ERROR", "error": str(e)},
+            return {**state, "risk_data": {"overall_risk_score": None, "risk_level": "ERROR", "error": str(e), "requires_human_review": False},
                 "node_status": {**state.get("node_status", {}), "risk_calculation": "error"},
             }
-    
+
+    def _human_review_gate(self, state: IntelligenceState) -> IntelligenceState:
+        """Pause the graph for human approval when risk_calculation flagged
+        requires_human_review - a plain pass-through otherwise. interrupt()
+        raises a GraphInterrupt internally; LangGraph's checkpointer (Redis,
+        see _get_redis_checkpointer) persists the state at this point keyed
+        by this run's thread_id, and self.workflow.invoke(...) returns with
+        a "__interrupt__" key instead of raising - the caller (see
+        _analyze_traditional) is what actually detects the pause. Resuming
+        (resume_analysis, driven by POST .../review/approve) re-enters this
+        node and interrupt() returns the resume value instead of pausing
+        again, so the graph proceeds to cuad_mitigation normally.
+        """
+        risk_data = state.get("risk_data") or {}
+        if not risk_data.get("requires_human_review"):
+            return state
+        interrupt({
+            "reason": "high_risk_requires_approval",
+            "risk_level": risk_data.get("risk_level"),
+            "overall_risk_score": risk_data.get("overall_risk_score"),
+            "contract_id": state.get("contract_id"),
+        })
+        return state
+
     def _generate_redlines(self, state: IntelligenceState) -> IntelligenceState:
         """Generate redlines - Single Responsibility"""
         violation_count = len(state["policy_violations"])
@@ -381,7 +447,7 @@ class IntelligenceOrchestrator:
                 "precedent_matches": []
             }
     
-    def analyze_contract(self, contract_text: str, use_planning: bool = True, contract_id: Optional[str] = None, tenant_id: Optional[str] = None, contract_type: Optional[str] = None) -> dict:
+    def analyze_contract(self, contract_text: str, use_planning: bool = False, contract_id: Optional[str] = None, tenant_id: Optional[str] = None, contract_type: Optional[str] = None) -> dict:
         """Run analysis with optional autonomous planning"""
         try:
             if use_planning:
@@ -528,12 +594,47 @@ class IntelligenceOrchestrator:
             "node_status": {},
         }
 
-        # Run workflow
-        final_state = self.workflow.invoke(initial_state)
+        # Run workflow. thread_id keys the Redis checkpoint this run may
+        # pause at (human_review_gate) - contract_id is the natural,
+        # already-unique-per-tenant-scoped-contract key, and resume_analysis
+        # below re-derives the exact same thread_id to continue this same
+        # logical run, possibly from a different process (an admin's
+        # approve request is handled by `backend`, not the `worker` process
+        # this initial call runs in - see _get_redis_checkpointer's
+        # docstring). Analyses with no contract_id (ad-hoc/test calls) get a
+        # random one-off thread_id - never resumable, but unchanged
+        # behavior from before this feature existed.
+        thread_id = contract_id or f"no-contract-id-{uuid.uuid4().hex}"
+        final_state = self.workflow.invoke(
+            initial_state, config={"configurable": {"thread_id": thread_id}},
+        )
+
+        if final_state.get("__interrupt__"):
+            # Paused at human_review_gate - real redlines/cuad_mitigation
+            # have NOT run yet, so this is deliberately a different,
+            # smaller shape than the normal return below (see
+            # ContractIntelligenceService.analyze_contract_intelligence,
+            # which must branch on this before trying to build a full
+            # ContractIntelligence out of a run that isn't finished).
+            risk_data = final_state.get("risk_data", {})
+            logger.info(f"Contract {contract_id}: paused for human review ({risk_data.get('risk_level')})")
+            return {
+                "status": "PENDING_HUMAN_REVIEW",
+                "contract_id": contract_id,
+                "risk_assessment": risk_data,
+                "node_status": final_state.get("node_status", {}),
+            }
 
         # Complete workflow tracking
         workflow_tracker.complete_workflow()
+        return self._assemble_traditional_result(final_state, execution_path)
 
+    @staticmethod
+    def _assemble_traditional_result(final_state: dict, execution_path: str) -> dict:
+        """Shared by _analyze_traditional's normal (non-paused) completion
+        and resume_analysis - same final shape either way, since a resumed
+        run finishes the exact same graph from the exact same node
+        onwards."""
         node_status = final_state.get("node_status", {})
         # "partial" (e.g. policy_checking: some clauses failed to evaluate)
         # must also prevent a dishonest "completed" result, not just a hard
@@ -556,6 +657,22 @@ class IntelligenceOrchestrator:
             "planned_execution": False,
             "execution_path": execution_path,
         }
+
+    def resume_analysis(self, contract_id: str) -> dict:
+        """Resume a run paused at human_review_gate (POST .../review/approve).
+        Same thread_id derivation as _analyze_traditional's initial call -
+        the Redis checkpointer (shared, real Redis, not per-process memory)
+        is what actually makes this work from a different process than the
+        one that paused it. Command(resume=...) re-enters human_review_gate,
+        interrupt() returns instead of pausing again, and the graph runs
+        cuad_mitigation -> redline_generation -> END normally from there.
+        """
+        final_state = self.workflow.invoke(
+            Command(resume=True),
+            config={"configurable": {"thread_id": contract_id}},
+        )
+        workflow_tracker.complete_workflow()
+        return self._assemble_traditional_result(final_state, execution_path="langgraph_traditional_explicit")
 
 class ContractIntelligenceAgentFactory:
     """Factory following proper design patterns"""

@@ -87,3 +87,35 @@ def requires_permission(permission: Permission):
         return identity
 
     return permission_dependency
+
+
+def requires_role(required_role: UserRole):
+    """
+    FastAPI dependency factory gating on an exact role, not a permission -
+    for actions that must stay ADMIN-only by identity, not incidentally
+    (a Permission ADMIN happens to be the sole holder of today could be
+    granted to another role later without anyone touching this route,
+    silently widening access). Phase 4's human-review approve/reject
+    endpoints are the first user: approving a HIGH/CRITICAL-risk contract
+    is an ADMIN action specifically, same rationale as MANAGE_USERS.
+    """
+    async def role_dependency(identity: TokenIdentity = Depends(get_current_identity)) -> TokenIdentity:
+        try:
+            role = UserRole(identity.role.upper())
+        except ValueError:
+            logger.error(f"Invalid role claim in token: {identity.role}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Invalid role claim in token: {identity.role}"
+            )
+
+        if role != required_role:
+            logger.error(f"RBAC Denied: Role '{role}' (tenant '{identity.tenant_id}') attempted an action requiring role '{required_role}'")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Resource requires role '{required_role}'",
+            )
+        logger.info(f"RBAC Allowed: Role '{role}' (tenant '{identity.tenant_id}') authorized as '{required_role}'")
+        return identity
+
+    return role_dependency

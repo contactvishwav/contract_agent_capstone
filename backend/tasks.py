@@ -42,7 +42,7 @@ _llm_manager = LLMManager()
 
 
 @celery_app.task(bind=True, name="analyze_contract")
-def analyze_contract_task(self, contract_id: str, tenant_id: str, model: str = "gemini-2.5-flash", use_planning: bool = True) -> Dict[str, Any]:
+def analyze_contract_task(self, contract_id: str, tenant_id: str, model: str = "gemini-2.5-flash", use_planning: bool = False) -> Dict[str, Any]:
     """
     Run the real multi-agent analysis pipeline and return the same shape
     the synchronous route used to return directly. Raises on failure
@@ -52,15 +52,38 @@ def analyze_contract_task(self, contract_id: str, tenant_id: str, model: str = "
     the "don't mask failure" discipline already built into the rest of
     this pipeline (P1's honest partial-failure reporting) rather than
     reintroducing the same problem at the task-queue layer.
+
+    Phase 4 (HITL) exception: AnalysisPendingReviewError (the traditional-
+    workflow graph paused at human_review_gate for a HIGH/CRITICAL-risk
+    contract) is a legitimate, honest outcome, not a failure - caught here
+    and returned as a normal SUCCESS task with a distinguishable
+    "status": "PENDING_HUMAN_REVIEW" payload, the same discriminator
+    GET .../status and the frontend poller check for. The Contract node's
+    own pending_human_review state (ContractIntelligenceService.
+    _mark_pending_review) is already persisted by the time this exception
+    reaches here, so it survives independently of this task result's TTL.
     """
-    from backend.application.services.contract_intelligence_service import ContractIntelligenceServiceFactory
+    from backend.application.services.contract_intelligence_service import (
+        AnalysisPendingReviewError, ContractIntelligenceServiceFactory,
+    )
 
     logger.info(f"[task {self.request.id}] Starting intelligence analysis for contract: {contract_id}")
 
     intelligence_service = ContractIntelligenceServiceFactory.create_service(_llm_manager)
-    intelligence = asyncio.run(
-        intelligence_service.analyze_contract_by_id(contract_id, tenant_id, model, use_planning)
-    )
+    try:
+        intelligence = asyncio.run(
+            intelligence_service.analyze_contract_by_id(contract_id, tenant_id, model, use_planning)
+        )
+    except AnalysisPendingReviewError as e:
+        logger.info(f"[task {self.request.id}] Contract {contract_id} paused for human review ({e.risk_level})")
+        return {
+            "contract_id": contract_id,
+            "status": "PENDING_HUMAN_REVIEW",
+            "analysis_complete": False,
+            "model_used": model,
+            "risk_level": e.risk_level,
+            "risk_score": e.overall_risk_score,
+        }
 
     if not intelligence:
         raise ValueError(f"Contract {contract_id} not found or has no content")
