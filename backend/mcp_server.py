@@ -65,6 +65,15 @@ async def get_playbook_rule(tenant_id: str, contract_type: str = "general", corr
     """
     Retrieve applicable legal playbook rules and corporate policies for a specific contract type.
 
+    Looks up organization-wide compliance rules filed under a generic
+    contract_type category (e.g. 'MSA', 'SOW', 'general') - NOT the content
+    of any specific uploaded contract or document. Do not call this to
+    answer a question about what a particular selected document says, even
+    if that document's own filename or content is itself named or described
+    as a "policy playbook" - that is a naming coincidence, not a match. This
+    tool cannot see or search a document's real text at all; use
+    EnhancedContractSearch for that instead.
+
     Args:
         tenant_id: Mandatory tenant identifier for data isolation.
         contract_type: The type of contract (e.g., 'MSA', 'SOW', 'NDA', 'general').

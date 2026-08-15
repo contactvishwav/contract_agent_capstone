@@ -210,7 +210,15 @@ def get_agent(llm):
                 "server-side - you do not have and do not need its id or filename yourself). When they "
                 "refer to 'this contract', 'this agreement', 'this document', 'playbook', or ask you to analyze, summarize, or explain "
                 "its policies, rules, or terms, ALWAYS call EnhancedContractSearch immediately using a "
-                "relevant search term for their question (do NOT call get_playbook_rule, search the selected document directly with EnhancedContractSearch) - do not ask them for a contract ID or which "
+                "relevant search term for their question. "
+                "Do NOT call get_playbook_rule here, even if the selected document's filename or the user's own "
+                "wording contains 'playbook' or 'policy' - that is a coincidence of naming, not a signal to use that "
+                "tool. get_playbook_rule looks up separate, organization-wide compliance rules filed under a generic "
+                "contract_type category (e.g. 'MSA', 'general') - it has no access to any uploaded document's actual "
+                "text, cannot search it, and will return zero results for a question about what a specific selected "
+                "document says, even when that document is itself named or described as a 'policy playbook'. The "
+                "only tool that can read the selected document's real content is EnhancedContractSearch - always use "
+                "it for this case, never get_playbook_rule. Do not ask them for a contract ID or which "
                 "contract they mean, the selection already scopes the search for you."
             ))
         else:

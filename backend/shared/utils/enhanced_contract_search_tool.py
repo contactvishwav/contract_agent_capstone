@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 from typing import Any, Dict, List, Optional, Type
 from enum import Enum
 from dotenv import load_dotenv
@@ -11,6 +12,7 @@ from backend.agents.reranker_service import RerankerService
 from backend.infrastructure.encryption import field_encryptor
 from backend.shared.cache.redis_cache import cache
 from backend.shared.config.phase3_config import Phase3Config
+from backend.shared.utils.llm_concurrency import llm_call_semaphore
 from backend.shared.utils.vector_index_config import (
     CONTRACT_EMBEDDING_INDEX, SECTION_EMBEDDING_INDEX, CLAUSE_EMBEDDING_INDEX,
     CHUNK_EMBEDDING_INDEX, CHUNK_TEXT_SEARCH_CANDIDATE_LIMIT,
@@ -99,6 +101,76 @@ def _maybe_rerank(query: Optional[str], items: List[Dict[str, Any]], text_key: s
         logger.error(f"Re-ranking setup failed, falling back to unranked results: {e}")
         return items[:RERANK_TOP_K], {"applied": False, "reason": "error"}
     return outcome.results, {"applied": outcome.reranked, "reason": outcome.reason}
+
+
+# Auto-healing retrieval fallback (complements dynamic_retrieval.py's
+# top-K/score-delta design). A genuinely empty result set at the normal
+# DYNAMIC_RETRIEVAL_FLOOR is ambiguous between "this document really
+# doesn't cover that topic" and "the query's exact wording doesn't overlap
+# the embedding space of a short, templated document's paraphrased text" -
+# confirmed live: Contract_Policy_Playbook.pdf (short, generic, boilerplate
+# content) returned zero evidence across every level for "maximum liability
+# cap" even though the document does discuss liability in different words.
+# Only used for the one-shot retry _search_all_levels does when the normal
+# floor finds nothing - never applied on the first attempt, so a query that
+# already finds real evidence at 0.35 is completely unaffected.
+QUERY_EXPANSION_FALLBACK_FLOOR = 0.25
+QUERY_EXPANSION_TIMEOUT_SECONDS = float(os.getenv("QUERY_EXPANSION_TIMEOUT_SECONDS", "8.0"))
+
+
+def _get_query_expansion_llm():
+    """Lazily construct the query-expansion LLM. Returns None if no
+    GOOGLE_API_KEY is configured, matching reranker_service.get_reranker_llm's
+    identical rationale - this fallback is best-effort, never required."""
+    if not os.getenv("GOOGLE_API_KEY"):
+        return None
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    return ChatGoogleGenerativeAI(
+        model="gemini-2.5-flash", temperature=0,
+        request_timeout=QUERY_EXPANSION_TIMEOUT_SECONDS, max_retries=1,
+    )
+
+
+def _expand_legal_query(query: str) -> Optional[str]:
+    """
+    One lightweight, best-effort LLM call rewrites the query with
+    synonymous legal terminology before a single relaxed-floor retry
+    (_search_all_levels). Any failure here (no API key, timeout, malformed
+    output) simply returns None and skips the fallback, preserving today's
+    existing "no evidence" outcome - this must never turn a real search
+    failure into a hang or crash, and it is never on the critical path for
+    a query that already finds evidence normally.
+    """
+    llm = _get_query_expansion_llm()
+    if llm is None:
+        return None
+    prompt = (
+        "You are a legal contract search query expansion assistant. Rewrite "
+        "the user's search query as a short comma-separated list of "
+        "synonymous legal terms and phrasings a real contract might use "
+        "instead, including the original query itself. Output ONLY the "
+        "comma-separated list, no explanation, no numbering.\n\n"
+        f"Query: {query}"
+    )
+    try:
+        with llm_call_semaphore:
+            response = llm.invoke(prompt)
+        expanded = (getattr(response, "content", "") or "").strip()
+        return expanded or None
+    except Exception as e:
+        logger.warning(f"Query expansion fallback failed, skipping: {e}")
+        return None
+
+
+def _total_items(level_output: Optional[List[Dict[str, Any]]], key: str) -> int:
+    """Counts collected items across a level's output list (chunks can
+    return 1-2 entries - semantic-only, or new+legacy text fallback - so
+    this sums across every entry rather than assuming exactly one)."""
+    total = 0
+    for entry in level_output or []:
+        items = entry.get("result", {}).get(key, [])
+        total += len(items) if isinstance(items, list) else 0
+    return total
 
 
 def _multi_level_search_cache_key(
@@ -229,9 +301,10 @@ def get_contracts_multi_level(
 
     return result
 
-def _search_documents(embeddings, tenant_id, summary_search, filters, params, 
+def _search_documents(embeddings, tenant_id, summary_search, filters, params,
                      min_effective_date, max_effective_date, min_end_date, max_end_date,
-                     contract_type, parties, active, cypher_aggregation, monetary_value, governing_law):
+                     contract_type, parties, active, cypher_aggregation, monetary_value, governing_law,
+                     score_floor: float = DYNAMIC_RETRIEVAL_FLOOR):
     """Search at document level using existing logic with tenant isolation"""
     # Apply existing filters (already includes tenant_id filter from get_contracts_multi_level)
     if governing_law and governing_law.country:
@@ -274,7 +347,7 @@ def _search_documents(embeddings, tenant_id, summary_search, filters, params,
         # dynamic-retrieval K, not the broader VECTOR_SEARCH_OVERFETCH used
         # elsewhere for a pre-any-filtering overfetch.
         params["k"] = DYNAMIC_RETRIEVAL_TOP_K
-        params["score_floor"] = DYNAMIC_RETRIEVAL_FLOOR
+        params["score_floor"] = score_floor
 
         # Query the vector index for candidates (instead of scoring every
         # Contract node), then apply the same non-vector filters afterward -
@@ -316,7 +389,7 @@ def _search_documents(embeddings, tenant_id, summary_search, filters, params,
         result_data = converted[0]["result"]
         contracts = result_data.get("contracts", [])
         if summary_search:
-            contracts = apply_dynamic_score_filter(contracts)
+            contracts = apply_dynamic_score_filter(contracts, floor=score_floor)
         contracts = contracts[:params["page_size"]]
         for contract in contracts:
             contract.pop("relevance_score", None)
@@ -334,7 +407,7 @@ def _safe_decrypt(val: Optional[str]) -> str:
     except Exception:
         return val
 
-def _search_sections(embeddings, tenant_id, summary_search, section_types, filters, params, contract_type=None, parties=None):
+def _search_sections(embeddings, tenant_id, summary_search, section_types, filters, params, contract_type=None, parties=None, score_floor: float = DYNAMIC_RETRIEVAL_FLOOR):
     """Search at section level with tenant isolation and metadata filtering"""
     filters.append("c.tenant_id = $tenant_id")
 
@@ -356,7 +429,7 @@ def _search_sections(embeddings, tenant_id, summary_search, section_types, filte
         # Dynamic relative filtering, see dynamic_retrieval.py - replaces
         # the old fixed "section_score > 0.65".
         params["k"] = DYNAMIC_RETRIEVAL_TOP_K
-        params["score_floor"] = DYNAMIC_RETRIEVAL_FLOOR
+        params["score_floor"] = score_floor
 
         cypher_statement = f"""
         CALL db.index.vector.queryNodes('{SECTION_EMBEDDING_INDEX}', $k, $summary_embedding)
@@ -394,7 +467,7 @@ def _search_sections(embeddings, tenant_id, summary_search, section_types, filte
         result_data = converted[0]["result"]
         sections = result_data.get("sections", [])
         if summary_search:
-            sections = apply_dynamic_score_filter(sections)
+            sections = apply_dynamic_score_filter(sections, floor=score_floor)
         sections = sections[:params["page_size"]]
         for sec in sections:
             sec.pop("relevance_score", None)
@@ -405,7 +478,7 @@ def _search_sections(embeddings, tenant_id, summary_search, section_types, filte
             result_data["reranking"] = reranking
     return converted
 
-def _search_clauses(embeddings, tenant_id, summary_search, clause_types, filters, params, contract_type=None, parties=None):
+def _search_clauses(embeddings, tenant_id, summary_search, clause_types, filters, params, contract_type=None, parties=None, score_floor: float = DYNAMIC_RETRIEVAL_FLOOR):
     """Search at clause level with tenant isolation and metadata filtering"""
     filters.append("c.tenant_id = $tenant_id")
 
@@ -427,7 +500,7 @@ def _search_clauses(embeddings, tenant_id, summary_search, clause_types, filters
         # Dynamic relative filtering, see dynamic_retrieval.py - replaces
         # the old fixed "clause_score > 0.65".
         params["k"] = DYNAMIC_RETRIEVAL_TOP_K
-        params["score_floor"] = DYNAMIC_RETRIEVAL_FLOOR
+        params["score_floor"] = score_floor
 
         cypher_statement = f"""
         CALL db.index.vector.queryNodes('{CLAUSE_EMBEDDING_INDEX}', $k, $summary_embedding)
@@ -467,7 +540,7 @@ def _search_clauses(embeddings, tenant_id, summary_search, clause_types, filters
         result_data = converted[0]["result"]
         clauses = result_data.get("clauses", [])
         if summary_search:
-            clauses = apply_dynamic_score_filter(clauses)
+            clauses = apply_dynamic_score_filter(clauses, floor=score_floor)
         clauses = clauses[:params["page_size"]]
         for clause in clauses:
             clause.pop("relevance_score", None)
@@ -478,7 +551,7 @@ def _search_clauses(embeddings, tenant_id, summary_search, clause_types, filters
             result_data["reranking"] = reranking
     return converted
 
-def _search_relationships(embeddings, tenant_id, summary_search, parties, filters, params, contract_type=None):
+def _search_relationships(embeddings, tenant_id, summary_search, parties, filters, params, contract_type=None, score_floor: float = DYNAMIC_RETRIEVAL_FLOOR):
     """Search at relationship level with tenant isolation and metadata filtering"""
     cypher_statement = "MATCH (c:Contract)<-[r:PARTY_TO]-(p:Party) "
     
@@ -499,7 +572,7 @@ def _search_relationships(embeddings, tenant_id, summary_search, parties, filter
         # the old fixed "> 0.65". No native vector-index top-K here (this
         # is an inline cosine computation, not db.index.vector.queryNodes),
         # so ORDER BY + LIMIT stands in for the top-K step.
-        params["score_floor"] = DYNAMIC_RETRIEVAL_FLOOR
+        params["score_floor"] = score_floor
         params["top_k"] = DYNAMIC_RETRIEVAL_TOP_K
 
         cypher_statement += """
@@ -540,7 +613,7 @@ def _search_relationships(embeddings, tenant_id, summary_search, parties, filter
         result_data = converted[0]["result"]
         relationships = result_data.get("relationships", [])
         if summary_search:
-            relationships = apply_dynamic_score_filter(relationships)
+            relationships = apply_dynamic_score_filter(relationships, floor=score_floor)
         relationships = relationships[:params["page_size"]]
         for relationship in relationships:
             relationship.pop("relevance_score", None)
@@ -569,7 +642,7 @@ def _chunk_snippet(content: str) -> str:
     return content
 
 
-def _search_chunks(embeddings, tenant_id, summary_search, filters, params, contract_id=None, contract_type=None, parties=None):
+def _search_chunks(embeddings, tenant_id, summary_search, filters, params, contract_id=None, contract_type=None, parties=None, score_floor: float = DYNAMIC_RETRIEVAL_FLOOR):
     """
     Enhanced search at chunk level with semantic capabilities, metadata filtering,
     and tenant isolation.
@@ -614,14 +687,14 @@ def _search_chunks(embeddings, tenant_id, summary_search, filters, params, contr
                 "chunk_embedding": chunk_embedding,
                 "tenant_id": tenant_id,
                 "k": DYNAMIC_RETRIEVAL_TOP_K,
-                "score_floor": DYNAMIC_RETRIEVAL_FLOOR,
+                "score_floor": score_floor,
                 **params,
             }
             if contract_id:
                 semantic_params["contract_id"] = contract_id
 
             rows = get_graph().query(semantic_query, semantic_params)
-            rows = apply_dynamic_score_filter(rows, score_key="similarity_score")
+            rows = apply_dynamic_score_filter(rows, score_key="similarity_score", floor=score_floor)
             if rows:
                 chunks = [
                     {
@@ -746,13 +819,47 @@ def _search_all_levels(embeddings, tenant_id, summary_search, clause_types, sect
     ])
     base_params = lambda: ({"tenant_id": tenant_id, "contract_id": contract_id} if contract_id
                             else {"tenant_id": tenant_id})
-    results = {
-        "documents": _search_documents(embeddings, tenant_id, summary_search, base_filters(), base_params(), None, None, None, None, contract_type, parties, None, None, None, None),
-        "sections": _search_sections(embeddings, tenant_id, summary_search, section_types, base_filters(), base_params(), contract_type=contract_type, parties=parties),
-        "clauses": _search_clauses(embeddings, tenant_id, summary_search, clause_types, base_filters(), base_params(), contract_type=contract_type, parties=parties),
-        "relationships": _search_relationships(embeddings, tenant_id, summary_search, parties, base_filters(), base_params(), contract_type=contract_type),
-        "chunks": _search_chunks(embeddings, tenant_id, summary_search, base_filters(), base_params(), contract_id=contract_id, contract_type=contract_type, parties=parties)
-    }
+    def _run_all_levels(query: Optional[str], score_floor: float = DYNAMIC_RETRIEVAL_FLOOR) -> Dict[str, Any]:
+        return {
+            "documents": _search_documents(embeddings, tenant_id, query, base_filters(), base_params(), None, None, None, None, contract_type, parties, None, None, None, None, score_floor=score_floor),
+            "sections": _search_sections(embeddings, tenant_id, query, section_types, base_filters(), base_params(), contract_type=contract_type, parties=parties, score_floor=score_floor),
+            "clauses": _search_clauses(embeddings, tenant_id, query, clause_types, base_filters(), base_params(), contract_type=contract_type, parties=parties, score_floor=score_floor),
+            "relationships": _search_relationships(embeddings, tenant_id, query, parties, base_filters(), base_params(), contract_type=contract_type, score_floor=score_floor),
+            "chunks": _search_chunks(embeddings, tenant_id, query, base_filters(), base_params(), contract_id=contract_id, contract_type=contract_type, parties=parties, score_floor=score_floor),
+        }
+
+    results = _run_all_levels(summary_search)
+
+    # Auto-healing retrieval fallback (see _expand_legal_query's docstring):
+    # only triggers when a real query produced literally zero evidence
+    # across every level at the normal floor - a query that already finds
+    # something, at any level, never reaches this branch or pays its extra
+    # LLM-call latency.
+    if summary_search:
+        total_hits = (
+            _total_items(results["documents"], "contracts")
+            + _total_items(results["sections"], "sections")
+            + _total_items(results["clauses"], "clauses")
+            + _total_items(results["relationships"], "relationships")
+            + _total_items(results["chunks"], "chunks")
+        )
+        if total_hits == 0:
+            expanded_query = _expand_legal_query(summary_search)
+            if expanded_query and expanded_query != summary_search:
+                logger.info(
+                    f"Zero-evidence retrieval for {summary_search!r} - retrying with "
+                    f"query expansion and relaxed floor ({QUERY_EXPANSION_FALLBACK_FLOOR})"
+                )
+                retried = _run_all_levels(expanded_query, score_floor=QUERY_EXPANSION_FALLBACK_FLOOR)
+                retried_hits = (
+                    _total_items(retried["documents"], "contracts")
+                    + _total_items(retried["sections"], "sections")
+                    + _total_items(retried["clauses"], "clauses")
+                    + _total_items(retried["relationships"], "relationships")
+                    + _total_items(retried["chunks"], "chunks")
+                )
+                if retried_hits > 0:
+                    results = retried
     return [results]
 
 class EnhancedContractInput(BaseModel):
