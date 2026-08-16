@@ -1,11 +1,11 @@
 # MLOps evaluation harness and autonomous student/teacher routing
 
-- Status: Phase 5 complete and verified locally; Phase 6 not started
+- Status: Complete - both phases implemented, verified locally, committed
 - Active owner/tool: Claude
 - Branch: `feat/persistent-chat-sessions`
 - Worktree: `/Users/vishwa/contract_agent_capstone_copy`
 - Base commit: `112506b`
-- Last known commit: (Phase 5 commit follows this handoff update)
+- Last known commit: `bac5b87` (Phase 5); Phase 6 commit follows this handoff update
 
 ## Goal
 
@@ -63,14 +63,17 @@ execution rule).
   only - matches this repo's existing `frontend/.gitignore` convention of
   never committing generated Playwright screenshots).
 - [x] Phase 5 committed before Phase 6 starts.
-- [ ] Phase 6: `backend/routing_service.py` classifies a prompt into
-  student/teacher and resolves a concrete registry model id for each.
-- [ ] Phase 6: chat UI shows a "Student Model"/"Teacher Model" badge derived
+- [x] Phase 6: `backend/routing_service.py` classifies a prompt into
+  student/teacher and resolves a concrete registry model id for each
+  (deterministic keyword/length heuristic - see Decisions).
+- [x] Phase 6: chat UI shows a "Student Model"/"Teacher Model" badge derived
   from the actually-executed model's registry `cost_class`.
-- [ ] Phase 6: `frontend/e2e/dynamic-routing.spec.ts` passes locally and
-  produces `frontend/test-results/phase6_student_routing.png` and
-  `frontend/test-results/phase6_teacher_routing.png`.
-- [ ] Phase 6 committed.
+- [x] Phase 6: `frontend/e2e/dynamic-routing.spec.ts` passes locally and
+  produces `frontend/test-results/phase6_student_routing.png` (real
+  Gemini 2.5 Flash answer, real citation) and
+  `frontend/test-results/phase6_teacher_routing.png` (real Claude Sonnet 5
+  redline answer, real citation).
+- [x] Phase 6 committed.
 
 ## Invariants affected
 
@@ -134,10 +137,31 @@ Phase 5, end to end:
 - Frontend `npm test` (45/45) and `npm run build` re-verified after the
   route/nav changes.
 
-## Work remaining
-
-Phase 6 (routing_service.py, "auto" model option, chat-message tier badge,
-its own Playwright spec) - not started.
+Phase 6, end to end:
+- `backend/routing_service.py` (`AUTO_MODEL_ID`, `STUDENT_MODEL_ID` =
+  `gemini-2.5-flash`, `TEACHER_MODEL_ID` = `claude-sonnet-5`,
+  `classify_complexity`/`route_chat_model`), 7 unit tests (9 subtests).
+- `backend/api/model_registry_api.py` exposes an `"auto"` pseudo-entry in
+  `GET /api/models?workflow=chat` only when both candidate models are
+  actually available (never a dead-end selectable option).
+- `backend/main.py`'s `/api/run/` resolves `payload.model == "auto"` via
+  `route_chat_model(payload.prompt)` before `validate_model` - the resolved
+  concrete id is what actually runs and what `requested_model`/
+  `actual_model` report, same path a manually-selected model already took.
+- `ModelTierBadge.tsx` (new) + `message.tsx` wiring: derives Student/Teacher
+  from `ModelOption.cost_class` on the already-fetched `/api/models`
+  registry (`low` -> Student, else -> Teacher) - no new backend field, no
+  second client-side source of truth for which ids are which tier.
+- `frontend/e2e/dynamic-routing.spec.ts`, verified against the real local
+  stack: real Gemini 2.5 Flash answered a payment-term extraction question
+  (Student badge) and real Claude Sonnet 5 produced an actual redline +
+  risk synthesis for the same uploaded `Clean_MSA.pdf` (Teacher badge),
+  each with a real citation. Passed clean (no retry needed) once the test
+  uploaded and scoped to a real contract - see Risks/questions below for
+  the two dead ends this took to get right.
+- Backend focused suite (40 tests/9 subtests: routing, model registry,
+  model selection wiring, admin evaluations, RBAC) and frontend (`npm test`
+  45/45, `npm run build`, `eslint` on every touched file) all green.
 
 ## Failing checks
 
@@ -145,23 +169,26 @@ None.
 
 ## Checks not run
 
-- Full backend `pytest` suite (only the focused new/adjacent tests above
-  were run - full-suite run deferred to avoid the runtime cost of
-  unrelated live-provider-backed tests for a two-file addition).
+- Full backend `pytest` suite (only the focused new/adjacent tests were
+  run both phases - full-suite run deferred to avoid the runtime cost of
+  unrelated live-provider-backed tests for a small, additive change).
 - Full existing Playwright suite (would double as a real-money LLM-call
   regression check across every other spec; out of scope for this
-  additive, non-default-changing feature).
+  additive, non-default-changing feature - `default_model` from
+  `/api/models` is unchanged, so no other spec's implicit model choice
+  changed).
 
 ## Changed/uncommitted files
 
-Phase 5 files, about to be committed:
-- `backend/main.py` (include the new router)
-- `backend/api/admin_evaluations_api.py`, `backend/scripts/evaluate_retrieval.py`
-- `backend/tests/evals/golden_dataset.json`, `backend/tests/evals/latest_results.json`
-- `backend/tests/test_admin_evaluations_api.py`
-- `frontend/src/App.tsx`, `frontend/src/lib/useRouter.ts`, `frontend/src/components/layout/Navigation.tsx`
-- `frontend/src/pages/AdminEvaluationsPage.tsx`, `frontend/src/services/adminEvaluationsApi.ts`
-- `frontend/e2e/mlops-eval.spec.ts`
+Phase 6 files, about to be committed (Phase 5's files are already in
+`bac5b87`):
+- `backend/routing_service.py`, `backend/tests/test_routing_service.py`
+- `backend/api/model_registry_api.py` (the `"auto"` pseudo-entry)
+- `backend/main.py` (`/api/run/` resolves `"auto"` before `validate_model`)
+- `frontend/src/components/features/contracts/ModelTierBadge.tsx`
+- `frontend/src/components/features/contracts/message.tsx` (badge wiring)
+- `frontend/src/services/modelRegistryApi.ts` (`getChatModelsCached`)
+- `frontend/e2e/dynamic-routing.spec.ts`
 - This task contract
 
 Left untouched/unstaged (pre-existing, not this task's): `.DS_Store`,
@@ -186,9 +213,26 @@ started (see this repo's `git status` at session start).
   serves; the backend must be rebuilt afterward. Documented in the
   script's own module docstring as a known local-dev limitation of the
   "batch job writes artifact, dashboard reads latest" pattern.
+- Phase 6's first Playwright draft sent a redline/synthesis prompt with no
+  contract uploaded/in scope. Contract Chat's fail-closed evidence policy
+  (this repo's own non-negotiable invariant - see AGENTS.md) correctly
+  rejected it ("No relevant contract evidence was found"), which produced
+  zero AI-message badges to assert on and looked like a routing bug. Fixed
+  by uploading and scoping to a real fixture contract first (same pattern
+  as `redline-image-comparison.spec.ts`) - not a router defect, a test
+  setup gap. Recorded here so a future editor doesn't "fix" the router in
+  response to a similar-looking failure.
+- The first (ungrounded-prompt) version also raced the second assertion
+  against the first message's still-visible badge (`.last()` doesn't wait
+  for a *new* element, only a still-matching one) - fixed by asserting
+  `toHaveCount(2)` before inspecting the newest badge, so the assertion
+  can't pass against a stale render.
 
 ## Recommended next action
 
-Start Phase 6: `routing_service.py`, wire `"auto"` into `/api/run/` and
-`/api/models`, add the chat-message tier badge, write
-`dynamic-routing.spec.ts`, verify, commit.
+None - both phases of this task are complete, verified locally, and
+committed. Possible future extensions (not requested, not started):
+clause/section-level retrieval evaluation once a seeded clause corpus
+exists; a "re-run evaluation" trigger button on the admin dashboard instead
+of requiring a backend rebuild to pick up a fresh `evaluate_retrieval.py`
+run locally.

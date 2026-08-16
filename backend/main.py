@@ -17,6 +17,7 @@ from prometheus_client import CONTENT_TYPE_LATEST
 from langchain_core.messages import HumanMessage, ToolMessage, AIMessage
 from backend.llm_manager import LLMManager
 from backend.model_registry import ModelSelectionError, model_spec, validate_model
+from backend.routing_service import AUTO_MODEL_ID, route_chat_model
 from backend.contract_chat_agent import CHAT_PROMPT_VERSION
 from backend.api.document_upload import router as document_router
 from backend.api.model_registry_api import router as model_registry_router
@@ -1581,14 +1582,23 @@ async def run(
     `request: Request` parameter (unused directly here) is required by
     @limiter.limit to identify the calling client, same convention as
     auth_api.py's register()/issue_token()."""
+    # Phase 6: payload.model == "auto" is resolved to a concrete registry
+    # id (student for simple extraction, teacher for complex synthesis/
+    # redline prompts) before validate_model ever sees it - routing always
+    # lands on an id validate_model/llm_mgr already know how to handle, the
+    # exact same path a manually-selected model takes from here down.
+    resolved_model = payload.model
+    if resolved_model == AUTO_MODEL_ID:
+        resolved_model, _ = route_chat_model(payload.prompt)
+
     try:
-        selected_spec = validate_model(payload.model, "chat")
+        selected_spec = validate_model(resolved_model, "chat")
     except ModelSelectionError as exc:
         raise HTTPException(
             status_code=400,
             detail={"message": str(exc), "category": exc.category},
         )
-    if payload.model not in llm_mgr.agents:
+    if resolved_model not in llm_mgr.agents:
         raise HTTPException(status_code=503, detail="Selected model is temporarily unavailable")
     if payload.run_id and not payload.session_id:
         raise HTTPException(status_code=400, detail="Cancellable chat runs require a session")
@@ -1646,7 +1656,7 @@ async def run(
         raise HTTPException(status_code=404, detail="Contract not found")
 
     runner_kwargs = {
-        "model": payload.model,
+        "model": resolved_model,
         "prompt": payload.prompt,
         "history": payload.history or "[]",
         "llm_mgr": llm_mgr,

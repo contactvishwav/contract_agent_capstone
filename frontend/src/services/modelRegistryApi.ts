@@ -38,3 +38,18 @@ export async function getWorkflowModels(workflow: ModelWorkflow): Promise<ModelR
   if (!response.ok) throw new Error('Available models could not be loaded');
   return response.json();
 }
+
+let chatModelsCache: Promise<ModelRegistryResponse> | null = null;
+
+/** Same data ChatInput's dropdown already fetches (registry entries,
+ * including each one's cost_class) - cached at module scope so every chat
+ * message's ModelTierBadge shares one request instead of one per message. */
+export function getChatModelsCached(): Promise<ModelRegistryResponse> {
+  if (!chatModelsCache) {
+    chatModelsCache = getWorkflowModels('chat').catch((err) => {
+      chatModelsCache = null;
+      throw err;
+    });
+  }
+  return chatModelsCache;
+}

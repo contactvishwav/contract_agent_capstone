@@ -8,6 +8,7 @@ import { Message, MessagePart } from "./provider";
 import { PdfCitationViewer } from "./PdfCitationViewer";
 import { AttachmentImage } from "./AttachmentImage";
 import { useChatSession } from "../../../contexts/ChatSessionContext";
+import { ModelTierBadge } from "./ModelTierBadge";
 
 interface Props {
     message: Message;
@@ -178,9 +179,12 @@ export function ChatMessage({ message }: Props) {
             <div>
                 {groupParts(parts).map((part, index) => renderPart(part, index, sessionId))}
                 {type === "ai" && attribution?.actual_model && (
-                    <p className="mt-2 text-xs text-muted-foreground">
-                        Actual model: {attribution.actual_provider ? `${attribution.actual_provider} · ` : ""}{attribution.actual_model}
-                        {attribution.fallback_occurred ? ` · fallback${attribution.fallback_reason ? ` (${attribution.fallback_reason})` : ""}` : ""}
+                    <p className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                        <ModelTierBadge modelId={attribution.actual_model} />
+                        <span>
+                            Actual model: {attribution.actual_provider ? `${attribution.actual_provider} · ` : ""}{attribution.actual_model}
+                            {attribution.fallback_occurred ? ` · fallback${attribution.fallback_reason ? ` (${attribution.fallback_reason})` : ""}` : ""}
+                        </span>
                     </p>
                 )}
                 {type === "ai" && hasAnswer && !generating && !hasCitations && (
