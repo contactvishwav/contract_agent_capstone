@@ -1,0 +1,133 @@
+{
+  "generated_at": "2026-08-16T03:57:20.002968+00:00",
+  "k": 3,
+  "search_level": "document",
+  "query_count": 10,
+  "aggregate": {
+    "mean_recall_at_k": 0.9,
+    "mean_ndcg_at_k": 0.9
+  },
+  "per_query": [
+    {
+      "id": "msa-unlimited-liability",
+      "query": "Which contract makes the company's liability unlimited and requires it to indemnify the client even for the client's own negligence?",
+      "expected_filenames": [
+        "Clean_MSA.pdf"
+      ],
+      "retrieved_filenames": [
+        "Clean_MSA.pdf"
+      ],
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0
+    },
+    {
+      "id": "msa-payment-terms",
+      "query": "Find the services agreement where payment is due within ninety days and is subject to the client's sole discretion.",
+      "expected_filenames": [
+        "Clean_MSA.pdf"
+      ],
+      "retrieved_filenames": [],
+      "recall_at_k": 0.0,
+      "ndcg_at_k": 0.0
+    },
+    {
+      "id": "nda-mutual-confidentiality",
+      "query": "Find the mutual non-disclosure agreement between two parties evaluating a potential business relationship.",
+      "expected_filenames": [
+        "Clean_NDA.pdf"
+      ],
+      "retrieved_filenames": [
+        "Clean_NDA.pdf"
+      ],
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0
+    },
+    {
+      "id": "nda-parties",
+      "query": "Which agreement is between AlphaVentures and BetaConsulting about protecting confidential business and technical information?",
+      "expected_filenames": [
+        "Clean_NDA.pdf"
+      ],
+      "retrieved_filenames": [
+        "Clean_NDA.pdf"
+      ],
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0
+    },
+    {
+      "id": "sow-cloud-migration",
+      "query": "Which document is the statement of work for a cloud migration and modernization project?",
+      "expected_filenames": [
+        "Clean_SOW.pdf"
+      ],
+      "retrieved_filenames": [
+        "Clean_SOW.pdf"
+      ],
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0
+    },
+    {
+      "id": "sow-fixed-fee",
+      "query": "Find the statement of work with a fixed fee of $150,000 covering an architecture blueprint and deployment scripts.",
+      "expected_filenames": [
+        "Clean_SOW.pdf"
+      ],
+      "retrieved_filenames": [
+        "Clean_SOW.pdf"
+      ],
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0
+    },
+    {
+      "id": "playbook-indemnification-standard",
+      "query": "What is our internal policy position on acceptable indemnification terms for vendor contracts?",
+      "expected_filenames": [
+        "Contract_Policy_Playbook.pdf"
+      ],
+      "retrieved_filenames": [
+        "Contract_Policy_Playbook.pdf",
+        "Clean_MSA.pdf",
+        "Salesforce_MSA.pdf"
+      ],
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0
+    },
+    {
+      "id": "playbook-liability-cap",
+      "query": "What is the standard enterprise cap on liability expressed as a multiple of annual contract value?",
+      "expected_filenames": [
+        "Contract_Policy_Playbook.pdf"
+      ],
+      "retrieved_filenames": [
+        "Contract_Policy_Playbook.pdf"
+      ],
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0
+    },
+    {
+      "id": "salesforce-subscription-services",
+      "query": "Show me the Salesforce master subscription agreement covering purchased services and order forms.",
+      "expected_filenames": [
+        "Salesforce_MSA.pdf"
+      ],
+      "retrieved_filenames": [
+        "Salesforce_MSA.pdf"
+      ],
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0
+    },
+    {
+      "id": "salesforce-data-license-indemnification",
+      "query": "Which agreement grants Salesforce a license to host and transmit customer data and covers mutual indemnification for patent infringement claims?",
+      "expected_filenames": [
+        "Salesforce_MSA.pdf"
+      ],
+      "retrieved_filenames": [
+        "Salesforce_MSA.pdf",
+        "Clean_MSA.pdf"
+      ],
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0
+    }
+  ]
+}

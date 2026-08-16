@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 
-export type PageType = 'chat' | 'intelligence' | 'agents' | 'search' | 'account';
+export type PageType = 'chat' | 'intelligence' | 'agents' | 'search' | 'account' | 'admin-evaluations';
 
 export const useRouter = (initialPage: PageType = 'intelligence') => {
   const [currentPage, setCurrentPage] = useState<PageType>(initialPage);

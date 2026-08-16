@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "description": "Golden retrieval-evaluation set for backend/scripts/evaluate_retrieval.py (Phase 5, MLOps governance harness). Each query is a real, human-written question against the content of one of this repo's standing fixture contracts (data/*.pdf, already used across the Playwright suite - see frontend/e2e/hitl-workflow.spec.ts's Clean_MSA.pdf comment). expected_filenames is the ground truth for Recall@K/nDCG@K, scored against POST /contracts/search/enhanced's document-level ranking for the same tenant these fixtures were ingested into.",
+  "search_level": "document",
+  "k": 3,
+  "queries": [
+    {
+      "id": "msa-unlimited-liability",
+      "query": "Which contract makes the company's liability unlimited and requires it to indemnify the client even for the client's own negligence?",
+      "expected_filenames": ["Clean_MSA.pdf"]
+    },
+    {
+      "id": "msa-payment-terms",
+      "query": "Find the services agreement where payment is due within ninety days and is subject to the client's sole discretion.",
+      "expected_filenames": ["Clean_MSA.pdf"]
+    },
+    {
+      "id": "nda-mutual-confidentiality",
+      "query": "Find the mutual non-disclosure agreement between two parties evaluating a potential business relationship.",
+      "expected_filenames": ["Clean_NDA.pdf"]
+    },
+    {
+      "id": "nda-parties",
+      "query": "Which agreement is between AlphaVentures and BetaConsulting about protecting confidential business and technical information?",
+      "expected_filenames": ["Clean_NDA.pdf"]
+    },
+    {
+      "id": "sow-cloud-migration",
+      "query": "Which document is the statement of work for a cloud migration and modernization project?",
+      "expected_filenames": ["Clean_SOW.pdf"]
+    },
+    {
+      "id": "sow-fixed-fee",
+      "query": "Find the statement of work with a fixed fee of $150,000 covering an architecture blueprint and deployment scripts.",
+      "expected_filenames": ["Clean_SOW.pdf"]
+    },
+    {
+      "id": "playbook-indemnification-standard",
+      "query": "What is our internal policy position on acceptable indemnification terms for vendor contracts?",
+      "expected_filenames": ["Contract_Policy_Playbook.pdf"]
+    },
+    {
+      "id": "playbook-liability-cap",
+      "query": "What is the standard enterprise cap on liability expressed as a multiple of annual contract value?",
+      "expected_filenames": ["Contract_Policy_Playbook.pdf"]
+    },
+    {
+      "id": "salesforce-subscription-services",
+      "query": "Show me the Salesforce master subscription agreement covering purchased services and order forms.",
+      "expected_filenames": ["Salesforce_MSA.pdf"]
+    },
+    {
+      "id": "salesforce-data-license-indemnification",
+      "query": "Which agreement grants Salesforce a license to host and transmit customer data and covers mutual indemnification for patent infringement claims?",
+      "expected_filenames": ["Salesforce_MSA.pdf"]
+    }
+  ]
+}

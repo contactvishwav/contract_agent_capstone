@@ -20,6 +20,7 @@ from backend.model_registry import ModelSelectionError, model_spec, validate_mod
 from backend.contract_chat_agent import CHAT_PROMPT_VERSION
 from backend.api.document_upload import router as document_router
 from backend.api.model_registry_api import router as model_registry_router
+from backend.api.admin_evaluations_api import router as admin_evaluations_router
 from backend.api.contract_intelligence import router as intelligence_router
 from backend.api.routes.debug import create_debug_router
 from backend.shared.utils.route_utils import is_development, is_production, conditionally_include_router
@@ -276,6 +277,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # Include routers based on environment
 app.include_router(document_router)
 app.include_router(model_registry_router)
+app.include_router(admin_evaluations_router)
 app.include_router(intelligence_router)
 app.include_router(enhanced_search_router, prefix="/api")
 app.include_router(enhanced_upload_router)

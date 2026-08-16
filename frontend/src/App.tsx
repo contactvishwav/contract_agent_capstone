@@ -5,6 +5,7 @@ import { IntelligencePage } from './pages/IntelligencePage';
 import { DocumentationPage } from './pages/DocumentationPage';
 import { SearchPage } from './pages/SearchPage';
 import { AccountPage } from './pages/AccountPage';
+import { AdminEvaluationsPage } from './pages/AdminEvaluationsPage';
 import { AcceptInvitePage } from './pages/AcceptInvitePage';
 import { ErrorBoundary } from './components/shared/ErrorBoundary';
 import { ContractHistoryProvider } from './contexts/ContractHistoryContext';
@@ -41,6 +42,12 @@ function AuthenticatedApp() {
         return <DocumentationPage />;
       case 'account':
         return <AccountPage />;
+      case 'admin-evaluations':
+        return (
+          <ErrorBoundary>
+            <AdminEvaluationsPage />
+          </ErrorBoundary>
+        );
       case 'search':
         return (
           <ErrorBoundary>

@@ -47,6 +47,15 @@ export const Navigation: React.FC<NavigationProps> = ({ currentPage, onNavigate 
               >
                 Documentation
               </Button>
+              {session?.role === 'ADMIN' && (
+                <Button
+                  variant={currentPage === 'admin-evaluations' ? 'default' : 'ghost'}
+                  onClick={() => onNavigate('admin-evaluations')}
+                  className={`px-4 py-2 ${currentPage === 'admin-evaluations' ? 'bg-amber-600 hover:bg-amber-700 text-white' : 'bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200'}`}
+                >
+                  Evaluations
+                </Button>
+              )}
             </div>
           </div>
           {session && (
