@@ -2,8 +2,6 @@ from backend.domain.entities import DocumentProcessingRequest
 from backend.agents.pdf_processing_agent import PDFAgentFactory
 from backend.domain.value_objects import ProcessingResult, ProcessingStatus
 from backend.agents.agent_workflow_tracker import workflow_tracker
-from backend.embeddings.orchestrator import EmbeddingOrchestrator
-from backend.embeddings.validator import EmbeddingValidator
 import os
 import logging
 
@@ -19,8 +17,6 @@ class DocumentProcessingService:
     def __init__(self, agent_manager):
         self.agent_manager = agent_manager
         self.pdf_agent_factory = PDFAgentFactory()
-        self.embedding_orchestrator = EmbeddingOrchestrator()
-        self.embedding_validator = EmbeddingValidator()
     
     async def process_pdf_upload(self, request: DocumentProcessingRequest) -> dict:
         """
@@ -132,19 +128,30 @@ class DocumentProcessingService:
                     "contract_id": None
                 }
             
-            # Process multi-level embeddings if contract was successfully stored
+            # This is the plain (non-enhanced) upload path - the whole point
+            # of the frontend's "Multi-Level Embeddings" checkbox being
+            # unchecked is to skip document/section/clause/relationship
+            # embedding generation, not attempt it anyway. That real work
+            # (EmbeddingOrchestrator) belongs to and only runs in
+            # EnhancedDocumentProcessingService, reached via the separate
+            # /api/documents/enhanced/upload route. A single, real summary
+            # embedding is still generated unconditionally for every
+            # contract - see Neo4jContractRepository.store_contract, called
+            # inside pdf_agent.ainvoke above - so a plain-path contract is
+            # never left without any embedding at all, just without the
+            # multi-level breakdown this path was never meant to produce.
+            #
+            # Real bug found live in production and fixed here: this used
+            # to call self._process_enhanced_embeddings(...), a method that
+            # only ever existed on EnhancedDocumentProcessingService, never
+            # on this class - copy-pasted over (along with now-removed
+            # self.embedding_orchestrator/self.embedding_validator in
+            # __init__) without the method itself, so every real plain-path
+            # upload hit a real AttributeError, silently swallowed by the
+            # except below and logged as a misleading "Enhanced embedding
+            # processing failed" warning on a path that was never supposed
+            # to attempt it.
             if processing_result and processing_result.contract_id:
-                try:
-                    # Get extracted text for embedding processing
-                    extracted_text = final_state.get("extracted_text", "")
-                    if extracted_text:
-                        self._process_enhanced_embeddings(
-                            processing_result.contract_id, 
-                            extracted_text
-                        )
-                except Exception as e:
-                    logger.warning(f"Enhanced embedding processing failed: {e}")
-                
                 workflow_tracker.complete_agent(execution, f"Contract stored with ID: {processing_result.contract_id}")
             else:
                 workflow_tracker.error_agent(execution, "Failed to store contract")
