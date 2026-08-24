@@ -124,6 +124,20 @@ services:
     # startup): 246 MiB RSS. 300m leaves headroom for a large-contract
     # request without being generous enough to starve everything else on
     # e2-micro's 1GB - see docs/DEPLOYMENT.md's resource-fit section.
+    #
+    # Re-measured live in production after the persistent-chat-sessions
+    # deploy (this branch adds real multi-provider LLM fallback - Gemini/
+    # OpenAI/Anthropic - loading 3 provider SDKs at startup instead of 1):
+    # idle RSS is now ~260 MiB, i.e. ~86% of this same 300m limit. Still
+    # fits, but headroom that used to be comfortable is now tight - a
+    # future addition to backend's import-time footprint could tip this
+    # into OOM kills under real request load, not just idle. Flagging
+    # instead of silently bumping the limit: raising it without checking
+    # what else is competing for the e2-micro's 1GB (worker's 280m, redis'
+    # 160m, ui/caddy) could just move the OOM risk to a different
+    # container rather than remove it. Needs a deliberate resource-fit
+    # pass, not a reactive number change.
+    mem_limit: 300m
     ports:
       # Not required once the reverse proxy (item 3) lands - kept for now
       # so /api/monitoring/health is directly reachable during setup/the
