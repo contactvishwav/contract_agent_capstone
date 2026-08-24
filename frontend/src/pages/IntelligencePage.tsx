@@ -24,6 +24,14 @@ export const IntelligencePage: React.FC = () => {
   const [selectedModel, setSelectedModel] = useState('');
   const [models, setModels] = useState<ModelOption[]>([]);
   const [modelError, setModelError] = useState<string | null>(null);
+  // Real bug found live in production: DocumentUpload had no way to know
+  // the registry fetch below was still in flight, so an upload started
+  // before it resolved sent model= (empty) and got a real 400 from the
+  // backend. modelsLoading is the missing "still in flight" signal -
+  // starts true, flips false in both the success and failure branch of
+  // the effect below, so DocumentUpload can tell "not ready yet" apart
+  // from "ready with nothing usable" (modelError) and "ready" (selectedModel).
+  const [modelsLoading, setModelsLoading] = useState(true);
   const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
   const [workflowStatus, setWorkflowStatus] = useState<WorkflowStatus | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -49,8 +57,11 @@ export const IntelligencePage: React.FC = () => {
       setModels(registry.models);
       setSelectedModel(registry.default_model || registry.models[0]?.id || '');
       setModelError(registry.models.length ? null : 'No compatible analysis model is configured.');
+      setModelsLoading(false);
     }).catch(() => {
-      if (active) setModelError('Available analysis models could not be loaded.');
+      if (!active) return;
+      setModelError('Available analysis models could not be loaded.');
+      setModelsLoading(false);
     });
     return () => { active = false; };
   }, []);
@@ -222,9 +233,11 @@ export const IntelligencePage: React.FC = () => {
             <p className="text-slate-600 text-sm mb-6">
               Upload PDF contracts for AI-powered analysis and extraction of key legal terms.
             </p>
-            <DocumentUpload 
+            <DocumentUpload
               onUploadComplete={handleUploadComplete}
               modelSelection={selectedModel}
+              modelsLoading={modelsLoading}
+              modelError={modelError}
               onWorkflowUpdate={handleWorkflowUpdate}
               onUploadStart={handleUploadStart}
             />

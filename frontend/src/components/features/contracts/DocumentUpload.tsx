@@ -7,6 +7,16 @@ import { enhancedSearchApi } from '../../../services/enhancedSearchApi';
 interface DocumentUploadProps {
   onUploadComplete?: (result: UploadResult) => void;
   modelSelection?: string;
+  // Real bug found live in production: with no way to know the parent's
+  // model-registry fetch was still in flight, this component let a user
+  // upload before modelSelection was populated, sending model= (empty) to
+  // the backend and getting a real 400 back. modelsLoading/modelError are
+  // the missing "is a real model actually resolved yet" signal from the
+  // parent - both optional so existing callers/tests that don't pass them
+  // keep working, but plain `undefined` is treated as "not loading, no
+  // error" (see modelReady below), never as "assume a default model."
+  modelsLoading?: boolean;
+  modelError?: string | null;
   onWorkflowUpdate?: (status: any) => void;
   onUploadStart?: () => void;
 }
@@ -23,7 +33,9 @@ interface UploadResult {
 
 export const DocumentUpload: React.FC<DocumentUploadProps> = ({
   onUploadComplete,
-  modelSelection = "gemini-2.5-flash",
+  modelSelection,
+  modelsLoading = false,
+  modelError = null,
   onWorkflowUpdate,
   onUploadStart
 }) => {
@@ -32,9 +44,35 @@ export const DocumentUpload: React.FC<DocumentUploadProps> = ({
   const [enableEnhanced, setEnableEnhanced] = useState(true);
   const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
 
+  // The single source of truth for "is it safe to call the upload API
+  // right now" - deliberately not a hardcoded fallback model string (the
+  // bug this replaces was exactly that kind of silent workaround, just
+  // implicit via a default parameter instead of an explicit one). Ready
+  // only once the parent's registry fetch has resolved, produced no
+  // error, and actually resolved a non-empty model id.
+  const modelReady = !modelsLoading && !modelError && !!modelSelection;
+
   const handleFiles = useCallback(async (files: FileList) => {
     const file = files[0];
     if (!file) return;
+
+    // Defense in depth: even if the dropzone/file-input gating below is
+    // ever bypassed (programmatic file drop, future refactor), never send
+    // a request with an unresolved model - fail with an honest, visible
+    // status instead of a silent empty model= hitting the backend. The
+    // `!modelSelection` check (rather than trusting the `modelReady`
+    // constant above) also narrows modelSelection to `string` for the
+    // rest of this function, so the calls below never pass `undefined`
+    // into a function with its own hardcoded default parameter.
+    if (modelsLoading || modelError || !modelSelection) {
+      setUploadResult({
+        filename: file.name,
+        status: 'error',
+        details: modelError || 'No analysis model is available yet - please wait for models to finish loading and try again.',
+        model_used: modelSelection || ''
+      });
+      return;
+    }
 
     // Validate file type
     if (!file.name.toLowerCase().endsWith('.pdf')) {
@@ -211,28 +249,52 @@ export const DocumentUpload: React.FC<DocumentUploadProps> = ({
               checked={enableEnhanced}
               onChange={(e) => setEnableEnhanced(e.target.checked)}
               className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-              disabled={isUploading}
+              disabled={isUploading || !modelReady}
             />
           </div>
 
-          {/* Upload Area */}
+          {/* Upload Area - disabled (not just visually, but non-interactive)
+              until a real model has actually resolved. Bypassing this via
+              drag-drop still hits handleFiles' own modelReady guard above,
+              so there's no path from "not ready" to a real API call. */}
           <div
             className={`
-              border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors
-              ${dragActive ? 'border-blue-500 bg-blue-50' : 'border-gray-300 hover:border-gray-400'}
+              border-2 border-dashed rounded-lg p-8 text-center transition-colors
+              ${!modelReady ? 'cursor-not-allowed opacity-50 border-gray-200' : 'cursor-pointer'}
+              ${dragActive && modelReady ? 'border-blue-500 bg-blue-50' : 'border-gray-300 hover:border-gray-400'}
               ${isUploading ? 'pointer-events-none opacity-50' : ''}
             `}
-            onDragEnter={handleDrag}
-            onDragLeave={handleDrag}
-            onDragOver={handleDrag}
-            onDrop={handleDrop}
-            onClick={() => document.getElementById('file-input')?.click()}
+            onDragEnter={modelReady ? handleDrag : undefined}
+            onDragLeave={modelReady ? handleDrag : undefined}
+            onDragOver={modelReady ? handleDrag : undefined}
+            onDrop={modelReady ? handleDrop : undefined}
+            onClick={modelReady ? () => document.getElementById('file-input')?.click() : undefined}
+            aria-disabled={!modelReady}
           >
             {isUploading ? (
               <div className="space-y-2">
                 <Loader className="mx-auto" />
                 <p className="text-sm text-gray-600">
                   {enableEnhanced ? 'Processing PDF with Multi-Level Embeddings...' : 'Processing PDF...'}
+                </p>
+              </div>
+            ) : modelsLoading ? (
+              <div className="space-y-2">
+                <Loader className="mx-auto" />
+                <p className="text-sm text-gray-600">Loading available models…</p>
+              </div>
+            ) : modelError ? (
+              <div className="space-y-2">
+                <div className="text-4xl">⚠️</div>
+                <p className="text-sm font-medium text-red-700" role="alert">
+                  Upload unavailable: {modelError}
+                </p>
+              </div>
+            ) : !modelSelection ? (
+              <div className="space-y-2">
+                <div className="text-4xl">⚠️</div>
+                <p className="text-sm font-medium text-red-700" role="alert">
+                  Upload unavailable: no analysis model is currently selected.
                 </p>
               </div>
             ) : (
@@ -254,12 +316,14 @@ export const DocumentUpload: React.FC<DocumentUploadProps> = ({
             accept=".pdf"
             onChange={handleFileInput}
             className="hidden"
-            disabled={isUploading}
+            disabled={isUploading || !modelReady}
           />
 
           {/* Model Selection Display */}
           <div className="text-sm text-gray-600">
-            Using model: <span className="font-medium">{modelSelection}</span>
+            {modelReady
+              ? <>Using model: <span className="font-medium">{modelSelection}</span></>
+              : <span className="text-gray-400">Model not yet available</span>}
           </div>
 
           {/* Upload Result */}
