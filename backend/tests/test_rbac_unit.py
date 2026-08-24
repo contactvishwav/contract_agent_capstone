@@ -87,6 +87,30 @@ class TestRBAC(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(RBACManager.has_permission(UserRole.AUDITOR, Permission.VIEW_AUDIT))
         self.assertFalse(RBACManager.has_permission(UserRole.AUDITOR, Permission.DELETE))
 
+        # ANALYST: real bug found live - this role was assigned to real
+        # accounts (backend/main.py's auto-seeded "demo" user, and SSO
+        # auto-provisioning's demo-user path) but had no UserRole member at
+        # all, so every permission-gated request from an ANALYST account
+        # 401'd with "Invalid role claim in token" instead of a normal
+        # permission check. Same working set as LEGAL_REVIEWER.
+        self.assertTrue(RBACManager.has_permission(UserRole.ANALYST, Permission.ANALYZE))
+        self.assertTrue(RBACManager.has_permission(UserRole.ANALYST, Permission.UPLOAD))
+        self.assertTrue(RBACManager.has_permission(UserRole.ANALYST, Permission.VIEW_REPORTS))
+        self.assertFalse(RBACManager.has_permission(UserRole.ANALYST, Permission.DELETE))
+        self.assertFalse(RBACManager.has_permission(UserRole.ANALYST, Permission.VIEW_AUDIT))
+        self.assertFalse(RBACManager.has_permission(UserRole.ANALYST, Permission.MANAGE_USERS))
+
+    async def test_analyst_role_claim_is_recognized_not_401(self):
+        """The exact real regression: a real, signed token whose role claim
+        is "ANALYST" (as issued to the auto-seeded/SSO-provisioned "demo"
+        accounts) must resolve through UserRole(...) and get a normal
+        permission check, not the "Invalid role claim in token" 401 every
+        such account hit before this fix."""
+        dependency = requires_permission(Permission.ANALYZE)
+        identity = TokenIdentity(tenant_id="demo_tenant", role="ANALYST")
+        result = await dependency(identity=identity)
+        self.assertIs(result, identity)
+
     async def test_permission_dependency_allowed_returns_identity(self):
         """requires_permission's inner dependency now takes/returns a
         TokenIdentity (not a bare UserRole) - routes read tenant_id off the

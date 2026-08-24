@@ -11,6 +11,24 @@ class UserRole(str, Enum):
     LEGAL_REVIEWER = "LEGAL_REVIEWER"
     AUDITOR = "AUDITOR"
     VIEWER = "VIEWER"
+    # Real bug found live: this enum never had an ANALYST member, even
+    # though two other real code paths assign the literal role string
+    # "ANALYST" to real accounts - backend/main.py's lifespan auto-seed
+    # (the "demo" account) and user_repository.py's SSO auto-provisioning
+    # (also specifically for a user named "demo"). create_user() itself
+    # never validates role against this enum, so those accounts were
+    # created successfully with a role every requires_permission/
+    # requires_role dependency then rejected as unrecognized - a genuine
+    # UserRole("ANALYST") ValueError, reported as 401 "Invalid role claim
+    # in token" (governance/rbac.py's except ValueError branches below),
+    # not a 403 permission-denied. That specific status code then tripped
+    # apiClient.ts's global "401 = session invalid, log out" handling on
+    # every permission-gated request (upload, chat/sessions, etc), so an
+    # ANALYST-role account got auto-logged-out attempting anything beyond
+    # routes that only check get_current_identity directly (no role/
+    # permission gate) - not a deliberately-scoped restriction with a
+    # missing error message, just a role nobody finished wiring up.
+    ANALYST = "ANALYST"
 
 class Permission(str, Enum):
     UPLOAD = "UPLOAD"
@@ -41,6 +59,16 @@ class RBACManager:
         },
         UserRole.VIEWER: {
             Permission.ANALYZE  # Can query/analyze but not upload/delete
+        },
+        # Same permission set as LEGAL_REVIEWER: both real ANALYST accounts
+        # (the auto-seeded and SSO-provisioned "demo" users) genuinely
+        # upload and analyze contracts and need chat access (gated on
+        # ANALYZE) - a working analyst role, deliberately still without
+        # DELETE/MANAGE_POLICIES/VIEW_AUDIT/MANAGE_USERS.
+        UserRole.ANALYST: {
+            Permission.ANALYZE,
+            Permission.UPLOAD,
+            Permission.VIEW_REPORTS
         }
     }
 

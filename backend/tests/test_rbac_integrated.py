@@ -83,6 +83,39 @@ class TestRBACIntegrated(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 403)
 
+    def test_analyst_access(self):
+        """Real bug found live: ANALYST (the auto-seeded/SSO-provisioned
+        "demo" account's real role) previously had no UserRole member at
+        all, so every one of these calls 401'd with "Invalid role claim in
+        token" instead of a normal permission check - most concretely on
+        GET /api/chat/sessions, confirmed live via a real production-like
+        local run (a real login, followed by an automatic logout the
+        instant the chat UI's session list fetch hit this same 401)."""
+        # Test Search (ALLOWED - ANALYZE)
+        response = self.client.post(
+            "/api/contracts/search/enhanced",
+            headers=auth_headers(role=UserRole.ANALYST.value),
+            json={"search_level": "document", "query": "test"}
+        )
+        self.assertNotEqual(response.status_code, 403)
+        self.assertNotEqual(response.status_code, 401)
+
+        # Test the exact real route that was found broken live
+        response = self.client.get(
+            "/api/chat/sessions",
+            headers=auth_headers(role=UserRole.ANALYST.value)
+        )
+        self.assertNotEqual(response.status_code, 401)
+        self.assertNotEqual(response.status_code, 403)
+
+        # Test Audit Trail (DENIED - ANALYST never had VIEW_AUDIT, this
+        # fix only adds the working set LEGAL_REVIEWER already has)
+        response = self.client.get(
+            "/api/audit/trail/test-resource",
+            headers=auth_headers(role=UserRole.ANALYST.value)
+        )
+        self.assertEqual(response.status_code, 403)
+
     def test_invalid_role_claim_blocked(self):
         """A validly-signed token whose role claim isn't a real UserRole
         should be blocked (401) - was "invalid X-User-Role header" before
