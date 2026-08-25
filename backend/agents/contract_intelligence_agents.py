@@ -419,8 +419,25 @@ class IntelligenceOrchestrator:
             
             enhanced_violations = state["policy_violations"] + deviations
             enhanced_risk_data = dict(state["risk_data"])
-            
-            workflow_tracker.complete_agent(execution, f"Phase 2 fallback completed: {len(deviations)} deviations")
+
+            # Investigated separately (see plan history): validate_cuad_analysis
+            # was only ever wired into Phase 3 - not a deliberate tiering, an
+            # oversight. All 3 tiers build clauses/cuad_deviations/
+            # risk_assessment/policy_violations the same way, and Phase 2's
+            # deviation schema is identical to Phase 3's (Phase 3's tool
+            # literally subclasses this one), so the same call works unmodified.
+            from backend.validation.cuad_validator import validate_cuad_analysis
+            validation_result = validate_cuad_analysis({
+                "clauses": state["extracted_clauses"],
+                "cuad_deviations": deviations,
+                "risk_assessment": enhanced_risk_data,
+                "policy_violations": enhanced_violations,
+            })
+
+            workflow_tracker.complete_agent(
+                execution,
+                f"Phase 2 fallback completed: {len(deviations)} deviations [validated: {validation_result.is_valid}, confidence: {validation_result.confidence_score:.2f}]"
+            )
             AuditLogger().log_event(
                 event_type=AuditEventType.AGENT_TOOL_CALL,
                 resource_id=state.get("contract_id") or "unknown",
@@ -431,12 +448,8 @@ class IntelligenceOrchestrator:
                     "deviation_count": len(deviations),
                     "jurisdiction": jurisdiction_info.get("jurisdiction", "unknown"),
                     "precedent_match_count": len(precedent_matches),
-                    # validate_cuad_analysis only runs in the Phase 3/optimized
-                    # tier - explicit None here (not an omitted key) so an
-                    # audit-trail consumer can tell "not validated" apart
-                    # from "didn't run" instead of guessing from key absence.
-                    "validated": None,
-                    "confidence_score": None,
+                    "validated": validation_result.is_valid,
+                    "confidence_score": validation_result.confidence_score,
                 },
                 status="success",
             )
@@ -475,8 +488,24 @@ class IntelligenceOrchestrator:
             
             enhanced_violations = state["policy_violations"] + deviations
             enhanced_risk_data = dict(state["risk_data"])
-            
-            workflow_tracker.complete_agent(execution, f"Fallback completed: {len(deviations)} deviations")
+
+            # Same as Phase 2 above: validate_cuad_analysis works unmodified
+            # here too - Phase 1's simpler DeviationDetectorTool still emits
+            # the 4 fields the validator checks (clause_type, deviation_type,
+            # severity, issue), and clauses/risk_assessment/policy_violations
+            # are built the same way as every other tier.
+            from backend.validation.cuad_validator import validate_cuad_analysis
+            validation_result = validate_cuad_analysis({
+                "clauses": state["extracted_clauses"],
+                "cuad_deviations": deviations,
+                "risk_assessment": enhanced_risk_data,
+                "policy_violations": enhanced_violations,
+            })
+
+            workflow_tracker.complete_agent(
+                execution,
+                f"Fallback completed: {len(deviations)} deviations [validated: {validation_result.is_valid}, confidence: {validation_result.confidence_score:.2f}]"
+            )
             AuditLogger().log_event(
                 event_type=AuditEventType.AGENT_TOOL_CALL,
                 resource_id=state.get("contract_id") or "unknown",
@@ -487,9 +516,8 @@ class IntelligenceOrchestrator:
                     "deviation_count": len(deviations),
                     "jurisdiction": jurisdiction_info.get("jurisdiction", "unknown"),
                     "precedent_match_count": len(precedent_matches),
-                    # Same as Phase 2: validate_cuad_analysis never runs here either.
-                    "validated": None,
-                    "confidence_score": None,
+                    "validated": validation_result.is_valid,
+                    "confidence_score": validation_result.confidence_score,
                 },
                 status="success",
             )

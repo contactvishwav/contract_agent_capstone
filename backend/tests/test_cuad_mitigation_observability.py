@@ -18,17 +18,21 @@ a real node_status["cuad_mitigation"] value - without changing what any
 tier actually computes.
 
 Also covers a follow-up product decision: whether "Validate Results"
-(validate_cuad_analysis, called inline inside the Phase 3 tier only)
-should be its own distinct tracked stage. Decision: no - it has no
-separate LangGraph node and no real standalone duration, and only 1 of
-3 tiers ever calls it, so it stays a qualifier on cuad_mitigation's own
-audit entry (already-present "validated"/"confidence_score" fields on
-Phase 3) rather than a fake 6th stage with placeholder timing. What
-these tests add: Phase 2/Phase 1, which never call the validator,
-must explicitly declare "validated": None / "confidence_score": None
-in their audit metadata (schema consistency, not new logic) - and the
-Phase 1 *success* branch is now exercised for the first time (the
-existing suite only ever hit its failure branch).
+(validate_cuad_analysis) should be its own distinct tracked stage.
+Decision: no - it has no separate LangGraph node and no real standalone
+duration, so it stays a qualifier on cuad_mitigation's own audit entry
+rather than a fake extra stage with placeholder timing.
+
+A second investigation then asked whether validate_cuad_analysis could
+actually *run* on Phase 2/Phase 1 (not just be honestly marked as not
+having run there). Verdict: yes, unmodified - all 3 tiers build
+clauses/cuad_deviations/risk_assessment/policy_violations the same way,
+and Phase 3's deviation tool literally subclasses Phase 2's. Phase 2 and
+Phase 1's success paths now call validate_cuad_analysis exactly like
+Phase 3 does, so "validated"/"confidence_score" are real computed
+values on every tier, not just Phase 3's. The Phase 1 *success* branch
+is exercised here for the first time (the original suite only ever hit
+its failure branch).
 """
 
 import unittest
@@ -107,11 +111,13 @@ class CuadMitigationFallbackTierObservabilityTests(unittest.TestCase):
              patch("backend.agents.enhanced_cuad_tools.EnhancedDeviationDetectorTool") as MockEnhDev, \
              patch("backend.agents.enhanced_cuad_tools.EnhancedJurisdictionAdapterTool") as MockEnhJur, \
              patch("backend.agents.enhanced_cuad_tools.EnhancedPrecedentMatcherTool") as MockEnhPrec, \
+             patch("backend.validation.cuad_validator.validate_cuad_analysis") as mock_validate, \
              patch("backend.infrastructure.audit_logger.AuditLogger.log_event") as mock_log_event:
             MockDev.return_value._run.side_effect = RuntimeError("Phase 3 unavailable")
             MockEnhDev.return_value._run.return_value = "[]"
             MockEnhJur.return_value._run.return_value = '{"jurisdiction": "unknown", "industry": "general"}'
             MockEnhPrec.return_value._run.return_value = "[]"
+            mock_validate.return_value = MagicMock(is_valid=True, confidence_score=0.73)
 
             result = orchestrator._cuad_mitigation(state)
 
@@ -121,20 +127,26 @@ class CuadMitigationFallbackTierObservabilityTests(unittest.TestCase):
         self.assertEqual(kwargs["action"], "cuad_mitigation")
         self.assertEqual(kwargs["status"], "success")
         self.assertEqual(kwargs["metadata"]["tier"], "phase2_fallback")
-        # validate_cuad_analysis only runs in the Phase 3 tier - Phase 2's
-        # audit entry must explicitly declare "not applicable" rather than
-        # silently omitting the keys, so a consumer can tell this apart
-        # from "validated and found nothing wrong".
-        self.assertIsNone(kwargs["metadata"]["validated"])
-        self.assertIsNone(kwargs["metadata"]["confidence_score"])
+        # Real gap this closes: validate_cuad_analysis previously only ran
+        # on Phase 3. Investigated and confirmed feasible unmodified on
+        # Phase 2/Phase 1 too (same input shapes, compatible deviation
+        # schema) - now a real computed value, not an honestly-absent None.
+        self.assertTrue(kwargs["metadata"]["validated"])
+        self.assertEqual(kwargs["metadata"]["confidence_score"], 0.73)
+        mock_validate.assert_called_once_with({
+            "clauses": state["extracted_clauses"],
+            "cuad_deviations": [],
+            "risk_assessment": {},
+            "policy_violations": [],
+        })
 
     def test_phase1_fallback_success_produces_audit_entry_and_node_status(self):
         """Real gap this closes: the Phase 1 fallback's *success* branch
         (Phase 3 and Phase 2 both fail, Phase 1 succeeds) was never
         exercised by the existing suite - only its failure branch was
-        covered via test_all_tiers_failing below. Same schema-consistency
-        requirement as Phase 2: validated/confidence_score must be
-        explicit None, not silently absent."""
+        covered via test_all_tiers_failing below. Same as Phase 2:
+        validate_cuad_analysis now runs here too, producing a real
+        validated/confidence_score pair rather than an honest None."""
         orchestrator = _make_orchestrator()
         state = _base_state()
 
@@ -143,12 +155,14 @@ class CuadMitigationFallbackTierObservabilityTests(unittest.TestCase):
              patch("backend.agents.cuad_mitigation_tools.DeviationDetectorTool") as MockBasicDev, \
              patch("backend.agents.cuad_mitigation_tools.JurisdictionAdapterTool") as MockBasicJur, \
              patch("backend.agents.cuad_mitigation_tools.PrecedentMatcherTool") as MockBasicPrec, \
+             patch("backend.validation.cuad_validator.validate_cuad_analysis") as mock_validate, \
              patch("backend.infrastructure.audit_logger.AuditLogger.log_event") as mock_log_event:
             MockDev.return_value._run.side_effect = RuntimeError("Phase 3 down")
             MockEnhDev.return_value._run.side_effect = RuntimeError("Phase 2 down")
             MockBasicDev.return_value._run.return_value = "[]"
             MockBasicJur.return_value._run.return_value = '{"jurisdiction": "unknown", "industry": "general"}'
             MockBasicPrec.return_value._run.return_value = "[]"
+            mock_validate.return_value = MagicMock(is_valid=False, confidence_score=0.41)
 
             result = orchestrator._cuad_mitigation(state)
 
@@ -158,8 +172,14 @@ class CuadMitigationFallbackTierObservabilityTests(unittest.TestCase):
         self.assertEqual(kwargs["action"], "cuad_mitigation")
         self.assertEqual(kwargs["status"], "success")
         self.assertEqual(kwargs["metadata"]["tier"], "phase1_fallback")
-        self.assertIsNone(kwargs["metadata"]["validated"])
-        self.assertIsNone(kwargs["metadata"]["confidence_score"])
+        self.assertFalse(kwargs["metadata"]["validated"])
+        self.assertEqual(kwargs["metadata"]["confidence_score"], 0.41)
+        mock_validate.assert_called_once_with({
+            "clauses": state["extracted_clauses"],
+            "cuad_deviations": [],
+            "risk_assessment": {},
+            "policy_violations": [],
+        })
 
     def test_all_tiers_failing_produces_error_audit_entry_and_error_node_status(self):
         """Real bug this closes: before this fix, a total failure across
