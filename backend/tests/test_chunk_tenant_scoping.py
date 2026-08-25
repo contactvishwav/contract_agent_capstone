@@ -183,6 +183,23 @@ class DocumentUploadChunkingWiringTests(unittest.IsolatedAsyncioTestCase):
         async def fake_link(self, document_id, contract_id):
             captured_link_calls.append((document_id, contract_id))
 
+        from backend.agents.agent_workflow_tracker import workflow_tracker as real_workflow_tracker
+        start_agent_calls = []
+        complete_agent_calls = []
+        # Captured before patching (not referenced via the live singleton
+        # inside the wrapper below) so calling through to the real
+        # implementation can't recurse into the patched version of itself.
+        real_start_agent = real_workflow_tracker.start_agent
+        real_complete_agent = real_workflow_tracker.complete_agent
+
+        def spy_start_agent(agent_name, agent_role, input_summary):
+            start_agent_calls.append((agent_name, agent_role, input_summary))
+            return real_start_agent(agent_name, agent_role, input_summary)
+
+        def spy_complete_agent(execution, output_summary):
+            complete_agent_calls.append((execution.agent_name, output_summary))
+            return real_complete_agent(execution, output_summary)
+
         with patch("backend.infrastructure.audit_logger.AuditLogger.log_event"), \
              patch("backend.infrastructure.contract_repository.Neo4jContractRepository", return_value=fake_repo), \
              patch("backend.infrastructure.text_extractors.extract_pages_async", new=AsyncMock(return_value=MagicMock(
@@ -191,12 +208,34 @@ class DocumentUploadChunkingWiringTests(unittest.IsolatedAsyncioTestCase):
              patch("backend.application.services.pdf_provenance_service.PdfProvenanceService"), \
              patch("backend.agents.chunking_agent.ChunkingAgent.process_document", new=AsyncMock(return_value=chunking_result)) as fake_process, \
              patch("backend.infrastructure.chunking.storage_service.ChunkingStorageService.link_document_to_contract", new=fake_link), \
+             patch("backend.api.document_upload.workflow_tracker.start_agent", side_effect=spy_start_agent), \
+             patch("backend.api.document_upload.workflow_tracker.complete_agent", side_effect=spy_complete_agent), \
              patch("backend.application.services.document_processing_service.DocumentServiceFactory.create_service") as fake_factory:
             fake_service = MagicMock()
-            fake_service.process_pdf_upload = AsyncMock(return_value={
-                "status": "success", "contract_id": upload_contract_id,
-                "final_result": "Contract stored successfully",
-            })
+
+            async def fake_process_pdf_upload(request):
+                # The real DocumentProcessingService.process_pdf_upload
+                # (mocked away here for everything else) has a real,
+                # documented side effect this specific test class exists
+                # to catch a bug in: its own _process_with_agent
+                # unconditionally calls workflow_tracker.start_workflow(),
+                # which resets self.executions = []. Reproduced explicitly
+                # here rather than left implicit, so a real regression
+                # (this call quietly disappearing, or Step 5.5's tracking
+                # being moved back before it) shows up as a real assertion
+                # failure instead of a false pass from mocking the reset
+                # away entirely.
+                real_workflow_tracker.start_workflow()
+                pdf_execution = real_workflow_tracker.start_agent(
+                    "PDF Processing Agent", "Extract text and analyze contract structure from PDF", "test"
+                )
+                real_workflow_tracker.complete_agent(pdf_execution, "Contract stored successfully")
+                return {
+                    "status": "success", "contract_id": upload_contract_id,
+                    "final_result": "Contract stored successfully",
+                }
+
+            fake_service.process_pdf_upload = AsyncMock(side_effect=fake_process_pdf_upload)
             fake_factory.return_value = fake_service
 
             await upload_pdf(
@@ -207,6 +246,11 @@ class DocumentUploadChunkingWiringTests(unittest.IsolatedAsyncioTestCase):
                 llm_mgr=fake_llm_mgr,
                 identity=fake_identity,
             )
+        # Attached rather than returned as new tuple elements, so every
+        # existing 2-way `fake_process, link_calls = await self._upload()`
+        # call site keeps working unchanged.
+        fake_process.start_agent_calls = start_agent_calls
+        fake_process.complete_agent_calls = complete_agent_calls
         return fake_process, captured_link_calls
 
     async def test_tenant_id_reaches_chunking_agent(self):
@@ -214,6 +258,67 @@ class DocumentUploadChunkingWiringTests(unittest.IsolatedAsyncioTestCase):
         fake_process.assert_awaited_once()
         _, kwargs = fake_process.call_args
         self.assertEqual(kwargs.get("tenant_id"), "tenant_a")
+
+    async def test_chunking_agent_registers_with_workflow_tracker_on_success(self):
+        """Real bug found live: ChunkingAgent genuinely runs on every real
+        upload (real Chunk nodes with real quality_score, confirmed via
+        direct Neo4j query in an earlier audit) but was never registered
+        with workflow_tracker at all - invisible to the same "AI Agents
+        Working" panel PDF Processing Agent and Enhanced Embedding Agent
+        already appear in. This proves a real successful upload now calls
+        both start_agent and complete_agent for "Chunking Agent", with a
+        real, non-empty output summary."""
+        fake_process, _ = await self._upload(chunking_success=True)
+
+        agent_names_started = [name for name, _, _ in fake_process.start_agent_calls]
+        self.assertIn("Chunking Agent", agent_names_started)
+
+        chunking_completions = [s for name, s in fake_process.complete_agent_calls if name == "Chunking Agent"]
+        self.assertEqual(len(chunking_completions), 1, "must complete exactly once, not zero and not twice")
+        self.assertIn("2 chunks", chunking_completions[0])
+        self.assertIn("sentence", chunking_completions[0])  # real strategy_type from chunking_result['plan']
+
+    async def test_chunking_agent_start_input_summary_includes_real_document_id(self):
+        fake_process, _ = await self._upload(chunking_success=True)
+        _, kwargs = fake_process.call_args
+        real_document_id = kwargs.get("document_id")
+
+        chunking_starts = [s for name, _, s in fake_process.start_agent_calls if name == "Chunking Agent"]
+        self.assertEqual(len(chunking_starts), 1)
+        self.assertIn(real_document_id, chunking_starts[0])
+
+    async def test_chunking_agent_entry_survives_pdf_processing_agents_workflow_reset(self):
+        """The exact real sequencing bug found live: DocumentProcessing
+        Service._process_with_agent (Step 7) calls workflow_tracker.
+        start_workflow(), which unconditionally resets self.executions =
+        [] for its own real PDF Processing Agent tracking - since that
+        runs AFTER Step 5.5's chunking, a naively-recorded Chunking Agent
+        entry gets silently wiped before any client ever reads workflow
+        status. Confirmed live: real logs showed "AGENT COMPLETED:
+        Chunking Agent" firing correctly, then a later "MULTI-AGENT
+        WORKFLOW COMPLETED" summary listing only PDF Processing Agent.
+        This checks the REAL workflow_tracker singleton's actual surviving
+        state (not just that start_agent/complete_agent were called at
+        some point), which is what GET /api/workflow/status actually
+        reads - the only way to catch this exact class of bug."""
+        from backend.agents.agent_workflow_tracker import workflow_tracker as real_workflow_tracker
+
+        await self._upload(chunking_success=True)
+
+        surviving_names = [e.agent_name for e in real_workflow_tracker.executions]
+        self.assertIn("Chunking Agent", surviving_names,
+                       "Chunking Agent's entry must survive Step 7's later workflow reset")
+        self.assertIn("PDF Processing Agent", surviving_names)
+
+        chunking_entries = [e for e in real_workflow_tracker.executions if e.agent_name == "Chunking Agent"]
+        self.assertEqual(len(chunking_entries), 1)
+        self.assertEqual(chunking_entries[0].status.value, "completed")
+        # Real, non-instantaneous duration - proves the real Step 5.5
+        # timing was captured and carried through, not reset to ~0ms by
+        # being (re-)started right before being completed post-Step-7.
+        self.assertIsNotNone(chunking_entries[0].start_time)
+        self.assertIsNotNone(chunking_entries[0].end_time)
+        self.assertGreaterEqual(chunking_entries[0].end_time, chunking_entries[0].start_time)
 
     async def test_successful_async_chunking_does_not_crash_on_real_result_shape(self):
         """Regression for both real bugs found live in Step 5.5's success-

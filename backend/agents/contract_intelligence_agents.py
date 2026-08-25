@@ -8,6 +8,7 @@ from backend.agents.intelligence_tools import (
     RiskCalculatorTool, RedlineGeneratorTool
 )
 from backend.agents.agent_workflow_tracker import workflow_tracker
+from backend.infrastructure.audit_logger import AuditLogger, AuditEventType
 from backend.agents.planning.planning_agent import PlanningAgentFactory
 from backend.agents.planning.execution_engine import PlanExecutionEngine
 import json
@@ -349,10 +350,36 @@ class IntelligenceOrchestrator:
             })
             
             workflow_tracker.complete_agent(
-                execution, 
+                execution,
                 f"Optimized analysis: {len(deviations)} deviations, jurisdiction: {jurisdiction_info.get('jurisdiction', 'unknown')} ({jurisdiction_info.get('industry', 'general')}), {len(precedent_matches)} precedent matches [validated: {validation_result.is_valid}, confidence: {validation_result.confidence_score:.2f}]"
             )
-            
+            # Real bug found live: cuad_mitigation genuinely runs (real
+            # deviation/jurisdiction/precedent tool calls above) but had
+            # zero audit-trail entries and no node_status key on any of
+            # its exit paths, unlike clause_extraction/policy_checking/
+            # risk_calculation/redline_generation right next to it in the
+            # same graph. Same action name across all 3 real tiers
+            # (Phase 3 here, Phase 2/Phase 1 in the fallback methods below)
+            # so GET /api/audit/trail/{contract_id} shows one real,
+            # queryable "cuad_mitigation" entry regardless of which tier
+            # actually ran - matching how the other 4 stages report a
+            # single action per node, not one per internal sub-tool.
+            AuditLogger().log_event(
+                event_type=AuditEventType.AGENT_TOOL_CALL,
+                resource_id=state.get("contract_id") or "unknown",
+                tenant_id=state.get("tenant_id"),
+                action="cuad_mitigation",
+                metadata={
+                    "tier": "optimized",
+                    "deviation_count": len(deviations),
+                    "jurisdiction": jurisdiction_info.get("jurisdiction", "unknown"),
+                    "precedent_match_count": len(precedent_matches),
+                    "validated": validation_result.is_valid,
+                    "confidence_score": validation_result.confidence_score,
+                },
+                status="success",
+            )
+
             return {**state,
                 "extracted_clauses": enhanced_clauses,
                 "policy_violations": enhanced_violations,
@@ -361,9 +388,10 @@ class IntelligenceOrchestrator:
                 "jurisdiction_info": jurisdiction_info,
                 "precedent_matches": precedent_matches,
                 "validation_result": validation_result,
-                "current_step": "cuad_mitigation"
+                "current_step": "cuad_mitigation",
+                "node_status": {**state.get("node_status", {}), "cuad_mitigation": "success"},
             }
-            
+
         except Exception as e:
             workflow_tracker.error_agent(execution, f"Optimized CUAD mitigation failed: {e}")
             # Fallback to Phase 2 tools, then Phase 1
@@ -393,16 +421,30 @@ class IntelligenceOrchestrator:
             enhanced_risk_data = dict(state["risk_data"])
             
             workflow_tracker.complete_agent(execution, f"Phase 2 fallback completed: {len(deviations)} deviations")
-            
+            AuditLogger().log_event(
+                event_type=AuditEventType.AGENT_TOOL_CALL,
+                resource_id=state.get("contract_id") or "unknown",
+                tenant_id=state.get("tenant_id"),
+                action="cuad_mitigation",
+                metadata={
+                    "tier": "phase2_fallback",
+                    "deviation_count": len(deviations),
+                    "jurisdiction": jurisdiction_info.get("jurisdiction", "unknown"),
+                    "precedent_match_count": len(precedent_matches),
+                },
+                status="success",
+            )
+
             return {**state,
                 "policy_violations": enhanced_violations,
                 "risk_data": enhanced_risk_data,
                 "cuad_deviations": deviations,
                 "jurisdiction_info": jurisdiction_info,
                 "precedent_matches": precedent_matches,
-                "current_step": "cuad_mitigation"
+                "current_step": "cuad_mitigation",
+                "node_status": {**state.get("node_status", {}), "cuad_mitigation": "success"},
             }
-            
+
         except Exception as phase2_error:
             logger.warning(f"Phase 2 fallback failed, trying Phase 1: {phase2_error}")
             return self._cuad_mitigation_fallback(state, execution)
@@ -429,22 +471,45 @@ class IntelligenceOrchestrator:
             enhanced_risk_data = dict(state["risk_data"])
             
             workflow_tracker.complete_agent(execution, f"Fallback completed: {len(deviations)} deviations")
-            
+            AuditLogger().log_event(
+                event_type=AuditEventType.AGENT_TOOL_CALL,
+                resource_id=state.get("contract_id") or "unknown",
+                tenant_id=state.get("tenant_id"),
+                action="cuad_mitigation",
+                metadata={
+                    "tier": "phase1_fallback",
+                    "deviation_count": len(deviations),
+                    "jurisdiction": jurisdiction_info.get("jurisdiction", "unknown"),
+                    "precedent_match_count": len(precedent_matches),
+                },
+                status="success",
+            )
+
             return {**state,
                 "policy_violations": enhanced_violations,
                 "risk_data": enhanced_risk_data,
                 "cuad_deviations": deviations,
                 "jurisdiction_info": jurisdiction_info,
                 "precedent_matches": precedent_matches,
-                "current_step": "cuad_mitigation"
+                "current_step": "cuad_mitigation",
+                "node_status": {**state.get("node_status", {}), "cuad_mitigation": "success"},
             }
-            
+
         except Exception as fallback_error:
             workflow_tracker.error_agent(execution, f"Fallback also failed: {fallback_error}")
+            AuditLogger().log_event(
+                event_type=AuditEventType.AGENT_TOOL_CALL,
+                resource_id=state.get("contract_id") or "unknown",
+                tenant_id=state.get("tenant_id"),
+                action="cuad_mitigation",
+                status="failure",
+                error_details=str(fallback_error),
+            )
             return {**state,
                 "cuad_deviations": [],
                 "jurisdiction_info": {},
-                "precedent_matches": []
+                "precedent_matches": [],
+                "node_status": {**state.get("node_status", {}), "cuad_mitigation": "error"},
             }
     
     def analyze_contract(self, contract_text: str, use_planning: bool = False, contract_id: Optional[str] = None, tenant_id: Optional[str] = None, contract_type: Optional[str] = None) -> dict:

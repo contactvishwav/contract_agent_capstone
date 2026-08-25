@@ -11,6 +11,7 @@ from backend.infrastructure.audit_logger import AuditLogger, AuditEventType, aud
 from backend.infrastructure.content_validator import ContentValidationService
 from backend.infrastructure.error_tracker import ErrorTracker, ErrorCategory, ErrorSeverity, error_tracking_context
 from backend.agents.chunking_agent import ChunkingAgent
+from backend.agents.agent_workflow_tracker import workflow_tracker
 from backend.infrastructure.chunking.storage_service import ChunkStorageService
 from backend.shared.utils.utils import serialize_neo4j_datetime
 import os
@@ -18,6 +19,7 @@ import uuid
 import json
 import logging
 import hashlib
+from datetime import datetime
 from typing import Optional
 from urllib.parse import quote
 
@@ -338,6 +340,38 @@ async def upload_pdf(
                     chunking_document_id = contract_id
                     async_chunking_succeeded = False
 
+                    # Real bug found live: ChunkingAgent genuinely runs on
+                    # every upload (real Chunk nodes, real quality_score,
+                    # confirmed via direct Neo4j query) but was never
+                    # registered with workflow_tracker at all - invisible to
+                    # every observability mechanism, unlike PDF Processing
+                    # Agent/Enhanced Embedding Agent right next to it. This
+                    # is purely the missing tracking call; the chunking
+                    # logic below is unchanged.
+                    #
+                    # Real, confirmed sequencing bug found live while
+                    # verifying this fix: recording the entry immediately
+                    # here (start_agent now, complete_agent a few lines
+                    # down) doesn't survive - Step 7 below calls
+                    # DocumentProcessingService.process_pdf_upload, whose
+                    # own _process_with_agent unconditionally calls
+                    # workflow_tracker.start_workflow() (resets
+                    # self.executions = []) for the real, already-existing
+                    # PDF Processing Agent tracking. That reset silently
+                    # wiped this entry before GET /api/workflow/status ever
+                    # saw it, confirmed live: the real backend log showed
+                    # "AGENT COMPLETED: Chunking Agent" firing correctly,
+                    # then a later "MULTI-AGENT WORKFLOW COMPLETED" summary
+                    # listing only PDF Processing Agent. Fixed by capturing
+                    # the real outcome/timing now but deferring the actual
+                    # workflow_tracker call until after Step 7's reset has
+                    # already happened (see below) - not moving or changing
+                    # when chunking itself runs, only when its already-real
+                    # result gets reported.
+                    chunking_track_start = datetime.now()
+                    chunking_track_status = None  # "success" | "error"
+                    chunking_track_summary = ""
+
                     # Try async enhanced chunking first
                     try:
                         chunking_result = await chunking_agent.process_document(
@@ -392,6 +426,14 @@ async def upload_pdf(
                                               f"clauses: {doc_analysis.get('clause_count', 0)}")
                             except Exception as log_error:
                                 logger.warning(f"Enhanced chunking succeeded but summary logging failed: {log_error}")
+                            # Placed outside the summary-logging try above so
+                            # a real outcome is always captured even if that
+                            # informational logging itself has an issue.
+                            chunking_track_status = "success"
+                            chunking_track_summary = (
+                                f"{chunking_result.get('chunk_count', 0)} chunks, "
+                                f"strategy: {chunking_result.get('plan', {}).get('strategy_type', 'unknown')}"
+                            )
                         else:
                             logger.warning("Enhanced chunking failed, falling back to sync method")
                             raise Exception("Enhanced chunking failed")
@@ -419,11 +461,20 @@ async def upload_pdf(
                         logger.info(f"Sync chunking completed: {len(chunk_ids)} chunks, "
                                   f"strategy: {chunking_result['strategy_used']}, "
                                   f"quality: {chunking_result['quality_score']:.2f}")
-                    
+                        chunking_track_status = "success"
+                        chunking_track_summary = (
+                            f"{len(chunk_ids)} chunks (sync fallback), strategy: {chunking_result['strategy_used']}, "
+                            f"quality: {chunking_result['quality_score']:.2f}"
+                        )
+
                 except Exception as chunking_error:
                     logger.warning(f"All chunking methods failed, continuing without chunking: {chunking_error}")
+                    chunking_track_status = "error"
+                    chunking_track_summary = str(chunking_error)
                     # System continues normally without chunking - no breaking changes
-                
+
+                chunking_track_end = datetime.now()
+
             except Exception as extract_error:
                 logger.error(f"Text extraction failed: {extract_error}")
                 raise
@@ -480,6 +531,31 @@ async def upload_pdf(
                     result = await document_service.process_pdf_upload(processing_request)
                 
                 logger.info(f"Document processing completed successfully: {result}")
+
+                # Deferred from Step 5.5 (see the real sequencing bug
+                # explained there): recorded here, after
+                # DocumentServiceFactory.create_service(...).
+                # process_pdf_upload's own internal
+                # workflow_tracker.start_workflow() reset has already run,
+                # so this entry survives into the same response the real
+                # PDF Processing Agent entry does - with its own real,
+                # captured start/end timestamps from when chunking
+                # actually ran, not "now."
+                if chunking_track_status is not None:
+                    chunking_execution = workflow_tracker.start_agent(
+                        "Chunking Agent",
+                        "Split document into quality-scored chunks with strategy selection and fallback",
+                        f"Document ID: {contract_id}, {len(full_text)} chars"
+                    )
+                    chunking_execution.start_time = chunking_track_start
+                    if chunking_track_status == "success":
+                        workflow_tracker.complete_agent(chunking_execution, chunking_track_summary)
+                    else:
+                        workflow_tracker.error_agent(chunking_execution, chunking_track_summary)
+                    chunking_execution.end_time = chunking_track_end
+                    chunking_execution.processing_time_ms = int(
+                        (chunking_execution.end_time - chunking_execution.start_time).total_seconds() * 1000
+                    )
             except Exception as proc_error:
                 logger.error(f"Document processing failed: {str(proc_error)}")
                 logger.error(f"Processing error type: {type(proc_error).__name__}")
