@@ -126,17 +126,31 @@ services:
     # e2-micro's 1GB - see docs/DEPLOYMENT.md's resource-fit section.
     #
     # Re-measured live in production after the persistent-chat-sessions
-    # deploy (this branch adds real multi-provider LLM fallback - Gemini/
-    # OpenAI/Anthropic - loading 3 provider SDKs at startup instead of 1):
-    # idle RSS is now ~260 MiB, i.e. ~86% of this same 300m limit. Still
-    # fits, but headroom that used to be comfortable is now tight - a
-    # future addition to backend's import-time footprint could tip this
-    # into OOM kills under real request load, not just idle. Flagging
-    # instead of silently bumping the limit: raising it without checking
-    # what else is competing for the e2-micro's 1GB (worker's 280m, redis'
-    # 160m, ui/caddy) could just move the OOM risk to a different
-    # container rather than remove it. Needs a deliberate resource-fit
-    # pass, not a reactive number change.
+    # deploy (that branch added real multi-provider LLM fallback - Gemini/
+    # OpenAI/Anthropic): idle RSS climbed to ~260 MiB, ~86% of this same
+    # 300m limit, because LLMManager.init_agents() built a full client
+    # (and, for chat-capable models, a full compiled tool-calling agent)
+    # for all 3 configured providers unconditionally at startup - in both
+    # this service AND worker, simultaneously, since nothing serialized
+    # their cold starts. Confirmed as the real root cause of a memory-
+    # pressure incident that hit 3 consecutive deployments (backend stuck
+    # "starting", worker needing a manual stop/restart to recover).
+    #
+    # Two real fixes, not a reactive limit bump: (1) llm_manager.py now
+    # only builds DEFAULT_MODEL (Gemini) eagerly - OpenAI/Anthropic are
+    # fallback-only (llm_fallback_service.py) and are built lazily, on
+    # first real use, including deferring the SDK `import` itself, not
+    # just client construction (measured locally: importing
+    # langchain_openai alone costs more than constructing its client -
+    # +22MB vs +15MB - so a lazy-construction-only fix would have missed
+    # most of the actual savings). (2) worker's depends_on below now
+    # genuinely waits for backend's healthcheck, not just container start
+    # order, so the two heavy cold starts can never overlap even if a
+    # future change grows either one's footprint again. Repeatedly
+    # verified locally (4 consecutive --force-recreate cycles, real
+    # mem_limit enforcement): worker's container is never even created
+    # until backend reports healthy, and both processes' own real startup
+    # logs confirm only 1 of 3 configured models gets built eagerly.
     mem_limit: 300m
     ports:
       # Not required once the reverse proxy (item 3) lands - kept for now
@@ -174,6 +188,26 @@ services:
       - MALLOC_ARENA_MAX=2
     depends_on:
       redis:
+        condition: service_healthy
+      # Real fix for a recurring, confirmed-3x production incident: worker
+      # and backend share the same image and both construct a full
+      # LLMManager at import/startup time (backend/tasks.py imports it at
+      # module level) - each one loading + constructing real clients for
+      # every configured LLM provider (Gemini/OpenAI/Anthropic). Without
+      # this, both containers only waited on `redis`, so they started and
+      # did that heavy work SIMULTANEOUSLY, racing for e2-micro's 1GB
+      # during backend's own cold-start window - confirmed live via
+      # `free -h` showing available memory bottom out and swap climb every
+      # time, requiring a manual "stop worker, wait for backend healthy,
+      # restart worker" recovery on 3 consecutive deploys. `condition:
+      # service_healthy` (not the default, which only orders container
+      # *start*, not readiness) makes Compose genuinely wait for backend's
+      # real HTTP healthcheck to pass before worker's container is even
+      # created - the two heavy startups are now serialized, never
+      # simultaneous, without any manual step. See llm_manager.py for the
+      # complementary fix that also reduces how much work each cold start
+      # actually has to do.
+      backend:
         condition: service_healthy
     networks:
       - net
