@@ -431,6 +431,12 @@ class IntelligenceOrchestrator:
                     "deviation_count": len(deviations),
                     "jurisdiction": jurisdiction_info.get("jurisdiction", "unknown"),
                     "precedent_match_count": len(precedent_matches),
+                    # validate_cuad_analysis only runs in the Phase 3/optimized
+                    # tier - explicit None here (not an omitted key) so an
+                    # audit-trail consumer can tell "not validated" apart
+                    # from "didn't run" instead of guessing from key absence.
+                    "validated": None,
+                    "confidence_score": None,
                 },
                 status="success",
             )
@@ -481,6 +487,9 @@ class IntelligenceOrchestrator:
                     "deviation_count": len(deviations),
                     "jurisdiction": jurisdiction_info.get("jurisdiction", "unknown"),
                     "precedent_match_count": len(precedent_matches),
+                    # Same as Phase 2: validate_cuad_analysis never runs here either.
+                    "validated": None,
+                    "confidence_score": None,
                 },
                 status="success",
             )

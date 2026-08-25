@@ -16,6 +16,19 @@ use_planning=False LangGraph path) across all 3 real fallback tiers
 error path, proving each now produces a real, queryable audit entry and
 a real node_status["cuad_mitigation"] value - without changing what any
 tier actually computes.
+
+Also covers a follow-up product decision: whether "Validate Results"
+(validate_cuad_analysis, called inline inside the Phase 3 tier only)
+should be its own distinct tracked stage. Decision: no - it has no
+separate LangGraph node and no real standalone duration, and only 1 of
+3 tiers ever calls it, so it stays a qualifier on cuad_mitigation's own
+audit entry (already-present "validated"/"confidence_score" fields on
+Phase 3) rather than a fake 6th stage with placeholder timing. What
+these tests add: Phase 2/Phase 1, which never call the validator,
+must explicitly declare "validated": None / "confidence_score": None
+in their audit metadata (schema consistency, not new logic) - and the
+Phase 1 *success* branch is now exercised for the first time (the
+existing suite only ever hit its failure branch).
 """
 
 import unittest
@@ -108,6 +121,45 @@ class CuadMitigationFallbackTierObservabilityTests(unittest.TestCase):
         self.assertEqual(kwargs["action"], "cuad_mitigation")
         self.assertEqual(kwargs["status"], "success")
         self.assertEqual(kwargs["metadata"]["tier"], "phase2_fallback")
+        # validate_cuad_analysis only runs in the Phase 3 tier - Phase 2's
+        # audit entry must explicitly declare "not applicable" rather than
+        # silently omitting the keys, so a consumer can tell this apart
+        # from "validated and found nothing wrong".
+        self.assertIsNone(kwargs["metadata"]["validated"])
+        self.assertIsNone(kwargs["metadata"]["confidence_score"])
+
+    def test_phase1_fallback_success_produces_audit_entry_and_node_status(self):
+        """Real gap this closes: the Phase 1 fallback's *success* branch
+        (Phase 3 and Phase 2 both fail, Phase 1 succeeds) was never
+        exercised by the existing suite - only its failure branch was
+        covered via test_all_tiers_failing below. Same schema-consistency
+        requirement as Phase 2: validated/confidence_score must be
+        explicit None, not silently absent."""
+        orchestrator = _make_orchestrator()
+        state = _base_state()
+
+        with patch("backend.agents.optimized_cuad_tools.OptimizedDeviationDetectorTool") as MockDev, \
+             patch("backend.agents.enhanced_cuad_tools.EnhancedDeviationDetectorTool") as MockEnhDev, \
+             patch("backend.agents.cuad_mitigation_tools.DeviationDetectorTool") as MockBasicDev, \
+             patch("backend.agents.cuad_mitigation_tools.JurisdictionAdapterTool") as MockBasicJur, \
+             patch("backend.agents.cuad_mitigation_tools.PrecedentMatcherTool") as MockBasicPrec, \
+             patch("backend.infrastructure.audit_logger.AuditLogger.log_event") as mock_log_event:
+            MockDev.return_value._run.side_effect = RuntimeError("Phase 3 down")
+            MockEnhDev.return_value._run.side_effect = RuntimeError("Phase 2 down")
+            MockBasicDev.return_value._run.return_value = "[]"
+            MockBasicJur.return_value._run.return_value = '{"jurisdiction": "unknown", "industry": "general"}'
+            MockBasicPrec.return_value._run.return_value = "[]"
+
+            result = orchestrator._cuad_mitigation(state)
+
+        self.assertEqual(result["node_status"]["cuad_mitigation"], "success")
+        mock_log_event.assert_called_once()
+        _, kwargs = mock_log_event.call_args
+        self.assertEqual(kwargs["action"], "cuad_mitigation")
+        self.assertEqual(kwargs["status"], "success")
+        self.assertEqual(kwargs["metadata"]["tier"], "phase1_fallback")
+        self.assertIsNone(kwargs["metadata"]["validated"])
+        self.assertIsNone(kwargs["metadata"]["confidence_score"])
 
     def test_all_tiers_failing_produces_error_audit_entry_and_error_node_status(self):
         """Real bug this closes: before this fix, a total failure across
