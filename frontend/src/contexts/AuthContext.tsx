@@ -157,6 +157,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw new Error(msg);
     } finally {
       clearTimeout(timeoutId);
+      setIsRegistering(false);
     }
   }, []);
 
