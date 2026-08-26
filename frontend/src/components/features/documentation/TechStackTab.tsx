@@ -54,7 +54,7 @@ export const TechStackTab: React.FC = () => {
                 </div>
                 <div className="flex justify-between">
                   <span>Clause Filters:</span>
-                  <Badge variant="outline">41 CUAD Type Checkboxes</Badge>
+                  <Badge variant="outline">43 Clause Type Checkboxes (41 CUAD + 2 supplemental)</Badge>
                 </div>
                 <div className="flex justify-between">
                   <span>Section Filters:</span>
@@ -83,7 +83,7 @@ export const TechStackTab: React.FC = () => {
                   <span>📊 Section-Level Search</span>
                 </div>
                 <div className="flex items-center space-x-2">
-                  <span>🤖 Clause-Level Search (41 CUAD Types)</span>
+                  <span>🤖 Clause-Level Search (43 Types: 41 CUAD + 2 supplemental)</span>
                 </div>
                 <div className="flex items-center space-x-2">
                   <span>👥 Relationship-Level Search</span>

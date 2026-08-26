@@ -26,7 +26,7 @@ export const USPPage: React.FC = () => {
       differentiators: [
         { name: 'Document-Level Search', description: 'Full contract semantic matching', icon: <FileText className="w-5 h-5" /> },
         { name: 'Section-Level Search', description: 'Granular section-based retrieval', icon: <Bot className="w-5 h-5" /> },
-        { name: 'Clause-Level Search', description: '41 CUAD clause types with embeddings', icon: <CheckCircle className="w-5 h-5" /> },
+        { name: 'Clause-Level Search', description: '43 clause types with embeddings (the 41 CUAD categories plus Indemnification and Payment Terms)', icon: <CheckCircle className="w-5 h-5" /> },
         { name: 'Relationship-Level Search', description: 'Party and entity relationship mapping', icon: <Users className="w-5 h-5" /> }
       ],
       competitors: 'Most competitors offer only document-level search without granular clause or relationship analysis'
@@ -51,9 +51,9 @@ export const USPPage: React.FC = () => {
       title: 'Complete CUAD Dataset Integration',
       icon: <FileText className="w-6 h-6" />,
       color: 'bg-orange-600',
-      description: 'Full implementation of 41 CUAD clause types with confidence scoring and position tracking',
+      description: 'Full implementation of the 41 CUAD clause types, plus 2 supplemental categories CUAD itself never covered, with confidence scoring and position tracking',
       differentiators: [
-        { name: '41 CUAD Clause Types', description: 'Complete coverage of legal contract elements', icon: <CheckCircle className="w-5 h-5" /> },
+        { name: '41 CUAD + 2 Supplemental Clause Types', description: 'Complete coverage of legal contract elements, including Indemnification and Payment Terms - real gaps in the academic CUAD taxonomy', icon: <CheckCircle className="w-5 h-5" /> },
         { name: 'Confidence Scoring', description: 'Reliability metrics for each extracted clause', icon: <Star className="w-5 h-5" /> },
         { name: 'Position Tracking', description: 'Source location and context preservation', icon: <Target className="w-5 h-5" /> },
         { name: 'Hierarchical Embeddings', description: 'Multi-level semantic representations', icon: <Zap className="w-5 h-5" /> }
@@ -99,7 +99,7 @@ export const USPPage: React.FC = () => {
     },
     {
       title: 'Complete Legal Compliance',
-      description: '41 CUAD clause types with audit trails',
+      description: '43 clause types (41 CUAD + 2 supplemental) with audit trails',
       icon: <Shield className="w-5 h-5 text-green-600" />,
       color: 'border-green-200 bg-green-50'
     },

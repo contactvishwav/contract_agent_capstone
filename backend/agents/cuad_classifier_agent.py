@@ -1,6 +1,6 @@
 """
 CUAD Classifier Agent
-Template Method + Decorator Pattern for 41 CUAD clause types
+Template Method + Decorator Pattern for the CUAD clause taxonomy
 """
 
 from abc import ABC, abstractmethod
@@ -13,11 +13,13 @@ from backend.agents.llm_extraction_service import LLMExtractionService, CUADClau
 from backend.shared.utils.logger import get_logger
 logger = get_logger(__name__)
 
-# 41 CUAD Clause Types - derived from the canonical CUADClauseType enum
-# (llm_extraction_service.py) so there is a single source of truth. This list
-# previously had a duplicate entry ("Irrevocable Or Perpetual License" twice)
-# and a misnamed category ("Revenue/Customer Sharing" instead of the correct
-# "Revenue/Profit Sharing"), fixed by deriving from the verified taxonomy.
+# The 41 CUAD clause types plus 2 supplemental ones (Indemnification,
+# Payment Terms - see CUADClauseType's own docstring for why) - derived from
+# the canonical CUADClauseType enum (llm_extraction_service.py) so there is
+# a single source of truth. This list previously had a duplicate entry
+# ("Irrevocable Or Perpetual License" twice) and a misnamed category
+# ("Revenue/Customer Sharing" instead of the correct "Revenue/Profit
+# Sharing"), fixed by deriving from the verified taxonomy.
 CUAD_CLAUSE_TYPES = [t.value for t in CUADClauseType]
 
 @dataclass

@@ -58,7 +58,26 @@ class CUADClauseType(str, Enum):
     """
     The 41 CUAD clause categories (Atticus Project / CUAD paper), verified
     directly against the theatticusproject/cuad-qa dataset's own question
-    categories (extracted from every row's "related to \"<category>\"" text).
+    categories (extracted from every row's "related to \"<category>\"" text),
+    plus 2 supplemental categories real production use found missing from
+    that academic taxonomy (see docs/CUAD_LIMITATIONS_AND_MITIGATION.md -
+    CUAD was built for M&A due-diligence deal-term spotting, not general
+    commercial contract review, and never covered these at all):
+
+    - Indemnification: real, confirmed gap - a full one-way indemnification
+      clause (including the counterparty's own negligence) went completely
+      unextracted and unflagged on a real production contract, despite an
+      existing default policy rule (default_indemnification_scope) and a
+      tenant-uploaded playbook rule that were both fully ready to catch it.
+    - Payment Terms: same real gap, same contract - Net-90 and satisfaction-
+      contingent payment language, explicitly called out as unacceptable by
+      the tenant's own uploaded policy playbook, was never extracted either.
+
+    These 2 are deliberately excluded from research/benchmark/evaluate_
+    extraction.py's RISK_CATEGORY_TYPES - the real CUAD dataset's ground
+    truth has no labels for them, so scoring them there would register
+    every true extraction as a false positive and corrupt the tracked
+    benchmark numbers in docs/EVALUATION.md.
 
     This is the single source of truth for the taxonomy in this codebase -
     other modules (e.g. cuad_classifier_agent.CUAD_CLAUSE_TYPES) derive from
@@ -105,6 +124,12 @@ class CUADClauseType(str, Enum):
     INSURANCE = "Insurance"
     COVENANT_NOT_TO_SUE = "Covenant Not To Sue"
     THIRD_PARTY_BENEFICIARY = "Third Party Beneficiary"
+
+    # Supplemental categories, not part of the original 41 CUAD categories -
+    # see this class's docstring for why they were added and how the
+    # benchmark script keeps them from corrupting its CUAD-only scoring.
+    INDEMNIFICATION = "Indemnification"
+    PAYMENT_TERMS = "Payment Terms"
 
 
 # Root-caused against the 497-contract flash-lite benchmark
@@ -247,11 +272,12 @@ _FALLBACK_CATEGORY_GUIDANCE: Dict["CUADClauseType", str] = {
 # a competing hypothesis for the same attention-dilution problem
 # _CATEGORY_HINTS/FALLBACK_CATEGORIES were built to address. Instead of a
 # hint or a conditional second call for a hand-picked 8 categories, this
-# splits ALL 41 categories into 7 always-run, fully-isolated groups (one
-# prompt/call per group, run concurrently) - the question this groups is
-# built to test is whether isolation itself (never competing with 40 other
-# categories for the model's attention) closes the gap more generally than
-# the targeted patches above, not just for the 8 FALLBACK_CATEGORIES.
+# splits ALL categories (the 41 CUAD + 2 supplemental) into 7 always-run,
+# fully-isolated groups (one prompt/call per group, run concurrently) - the
+# question this groups is built to test is whether isolation itself (never
+# competing with every other category for the model's attention) closes
+# the gap more generally than the targeted patches above, not just for the
+# 8 FALLBACK_CATEGORIES.
 #
 # Grouped by real-world contract-review taxonomy (paralleling how a legal
 # reviewer already mentally buckets clause types, and the categories the
@@ -259,6 +285,10 @@ _FALLBACK_CATEGORY_GUIDANCE: Dict["CUADClauseType", str] = {
 # around), not by benchmark performance - every category has a natural home
 # regardless of how it scored under single-pass extraction, so the grouping
 # doesn't just re-encode "which categories were already weak."
+#
+# liability_indemnity's name anticipated Indemnification belonging here
+# well before the category itself existed - the real gap this group's name
+# already named (see CUADClauseType's docstring) is now closed.
 CATEGORY_GROUPS: Dict[str, List["CUADClauseType"]] = {
     "metadata": [
         CUADClauseType.DOCUMENT_NAME, CUADClauseType.PARTIES,
@@ -269,7 +299,7 @@ CATEGORY_GROUPS: Dict[str, List["CUADClauseType"]] = {
         CUADClauseType.CAP_ON_LIABILITY, CUADClauseType.UNCAPPED_LIABILITY,
         CUADClauseType.LIQUIDATED_DAMAGES, CUADClauseType.WARRANTY_DURATION,
         CUADClauseType.INSURANCE, CUADClauseType.AUDIT_RIGHTS,
-        CUADClauseType.COVENANT_NOT_TO_SUE,
+        CUADClauseType.COVENANT_NOT_TO_SUE, CUADClauseType.INDEMNIFICATION,
     ],
     "termination_continuity": [
         CUADClauseType.RENEWAL_TERM, CUADClauseType.NOTICE_PERIOD_TO_TERMINATE_RENEWAL,
@@ -292,7 +322,7 @@ CATEGORY_GROUPS: Dict[str, List["CUADClauseType"]] = {
     "commercial_terms": [
         CUADClauseType.MOST_FAVORED_NATION, CUADClauseType.REVENUE_PROFIT_SHARING,
         CUADClauseType.PRICE_RESTRICTIONS, CUADClauseType.MINIMUM_COMMITMENT,
-        CUADClauseType.VOLUME_RESTRICTION,
+        CUADClauseType.VOLUME_RESTRICTION, CUADClauseType.PAYMENT_TERMS,
     ],
     "governance": [
         CUADClauseType.GOVERNING_LAW, CUADClauseType.ANTI_ASSIGNMENT,
@@ -300,10 +330,10 @@ CATEGORY_GROUPS: Dict[str, List["CUADClauseType"]] = {
     ],
 }
 
-# Every one of the 41 categories must appear in exactly one group - enforced
-# at import time (not just by a test) since a silently-dropped or
-# double-counted category would corrupt any comparison against single-pass
-# extraction (which always considers all 41).
+# Every category (the 41 CUAD + 2 supplemental) must appear in exactly one
+# group - enforced at import time (not just by a test) since a silently-
+# dropped or double-counted category would corrupt any comparison against
+# single-pass extraction (which always considers every category).
 _grouped_types = [t for types in CATEGORY_GROUPS.values() for t in types]
 assert len(_grouped_types) == len(CUADClauseType), (
     f"CATEGORY_GROUPS covers {len(_grouped_types)} category slots, expected {len(CUADClauseType)}"

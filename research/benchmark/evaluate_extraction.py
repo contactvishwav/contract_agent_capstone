@@ -170,8 +170,20 @@ DATE_COLUMNS = {"Agreement Date-Answer", "Effective Date-Answer", "Expiration Da
 # of these are date-valued, so they're always scored via text_match, never
 # the date-parsing path.
 _METADATA_COLUMNS_COVERED = {"Document Name", "Parties", "Agreement Date", "Effective Date", "Expiration Date"}
+
+# Indemnification/Payment Terms (CUADClauseType's own docstring has the real
+# gap this fixed) are deliberately NOT part of this benchmark: the real CUAD
+# dataset's ground truth has no labels for them at all, so scoring them here
+# would register every genuine extraction as a false positive against gold
+# data that was never meant to cover these categories - corrupting this
+# benchmark's numbers (docs/EVALUATION.md) rather than measuring anything
+# real. They're still extracted in the production pipeline; this exclusion
+# is scoped to this offline CUAD-accuracy benchmark only.
+_NOT_IN_CUAD_GROUND_TRUTH = {CUADClauseType.INDEMNIFICATION.value, CUADClauseType.PAYMENT_TERMS.value}
+
 RISK_CATEGORY_TYPES = {
-    ct.value: ct for ct in CUADClauseType if ct.value not in _METADATA_COLUMNS_COVERED
+    ct.value: ct for ct in CUADClauseType
+    if ct.value not in _METADATA_COLUMNS_COVERED and ct.value not in _NOT_IN_CUAD_GROUND_TRUTH
 }
 
 DATE_FORMATS = [

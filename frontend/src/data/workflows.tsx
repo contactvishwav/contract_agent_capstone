@@ -24,7 +24,7 @@ export const workflows: Record<string, Workflow> = {
     steps: [
       { agent: 'Document Upload', description: 'PDF validation and preprocessing', icon: <Upload className="w-5 h-5" />, tech: 'FastAPI, Pydantic validation, file size limits' },
       { agent: 'PDF Processing Agent', description: 'Text extraction and OCR processing', icon: <FileText className="w-5 h-5" />, tech: 'PyPDF2, pdfplumber, Tesseract OCR' },
-      { agent: 'Clause Extraction Agent', description: 'Extract 41 CUAD clause types', icon: <Bot className="w-5 h-5" />, tech: 'LangChain, Gemini/OpenAI LLMs, spaCy NLP' },
+      { agent: 'Clause Extraction Agent', description: 'Extract 43 clause types (41 CUAD + 2 supplemental)', icon: <Bot className="w-5 h-5" />, tech: 'LangChain, Gemini/OpenAI LLMs, spaCy NLP' },
       { agent: 'Knowledge Graph Storage', description: 'Store in Neo4j with relationships', icon: <CheckCircle className="w-5 h-5" />, tech: 'Neo4j Aura, py2neo driver, Cypher queries' },
       { agent: 'Multi-Level Embedding Generation', description: 'Create hierarchical embeddings for semantic search', icon: <Zap className="w-5 h-5" />, tech: 'Google text-embedding-004, Neo4j vector indexing' },
       { agent: 'Dataset Integration', description: 'Add to searchable contract corpus with embeddings', icon: <BarChart3 className="w-5 h-5" />, tech: 'Neo4j graph storage, vector similarity indexing' }
@@ -41,7 +41,7 @@ export const workflows: Record<string, Workflow> = {
       { agent: '🆕 Bias Detection', description: 'Check for content bias and fairness', icon: <Users className="w-5 h-5" />, tech: 'Fairness algorithms, demographic analysis', isNew: true },
       { agent: 'Multi-Level Embedding Generation', description: 'Document, section, clause, relationship embeddings', icon: <Zap className="w-5 h-5" />, tech: 'Google text-embedding-004, hierarchical processing' },
       { agent: '🆕 Embedding Validation', description: 'Validate embedding quality and consistency', icon: <CheckCircle className="w-5 h-5" />, tech: 'Dimension checks, consistency validation', isNew: true },
-      { agent: '📝 Clause Extraction Agent', description: 'Extract 41 CUAD clause types with validation', icon: <Bot className="w-5 h-5" />, tech: 'LangChain, confidence scoring, source citation, multi-model validation', isEnhanced: true },
+      { agent: '📝 Clause Extraction Agent', description: 'Extract 43 clause types (41 CUAD + 2 supplemental) with validation', icon: <Bot className="w-5 h-5" />, tech: 'LangChain, confidence scoring, source citation, multi-model validation', isEnhanced: true },
       { agent: '🆕 Error Handling & Safety', description: 'Validate outputs and handle errors gracefully', icon: <AlertTriangle className="w-5 h-5" />, tech: 'Circuit breakers, hallucination detection, output validation, safety checks', isNew: true },
       { agent: '📝 Knowledge Graph Storage', description: 'Store with tenant isolation and versioning', icon: <CheckCircle className="w-5 h-5" />, tech: 'Neo4j tenant policies, version chains, lineage tracking', isEnhanced: true },
       { agent: '🆕 Analysis Results Storage', description: 'Store AI analysis with full provenance', icon: <BarChart3 className="w-5 h-5" />, tech: 'Analysis nodes, processing lineage, audit trail', isNew: true }
@@ -75,7 +75,7 @@ export const workflows: Record<string, Workflow> = {
     description: 'Multi-agent embedding generation and validation workflow',
     steps: [
       { agent: 'Document Embedding Agent', description: 'Generate document & section embeddings', icon: <FileText className="w-5 h-5" />, tech: 'Google text-embedding-004, hierarchical processing' },
-      { agent: 'Clause Embedding Agent', description: 'Extract & embed 41 CUAD clause types', icon: <Bot className="w-5 h-5" />, tech: 'Pattern matching, confidence scoring' },
+      { agent: 'Clause Embedding Agent', description: 'Extract & embed 43 clause types (41 CUAD + 2 supplemental)', icon: <Bot className="w-5 h-5" />, tech: 'Pattern matching, confidence scoring' },
       { agent: 'Relationship Embedding Agent', description: 'Extract & embed party relationships', icon: <Users className="w-5 h-5" />, tech: 'Entity extraction, context embedding' },
       { agent: 'Embedding Validator', description: 'Validate quality & consistency', icon: <CheckCircle className="w-5 h-5" />, tech: 'Dimension checks, similarity validation' },
       { agent: 'Neo4j Storage', description: 'Store multi-level embeddings', icon: <BarChart3 className="w-5 h-5" />, tech: 'Graph database, vector indexing' }
@@ -89,7 +89,7 @@ export const workflows: Record<string, Workflow> = {
       { agent: '🆕 Tenant Context Validation', description: 'Validate tenant access and embedding isolation', icon: <Shield className="w-5 h-5" />, tech: 'Multi-tenant validation, access control', isNew: true },
       { agent: '📝 Document Embedding Agent', description: 'Generate document & section embeddings with lineage', icon: <FileText className="w-5 h-5" />, tech: 'Google text-embedding-004, processing lineage, version tracking', isEnhanced: true },
       { agent: '🆕 Fine-Tuning Integration', description: 'Apply domain-specific fine-tuned embeddings', icon: <Brain className="w-5 h-5" />, tech: 'LoRA adapters, legal domain fine-tuning, model versioning', isNew: true },
-      { agent: '📝 Clause Embedding Agent', description: 'Extract & embed 41 CUAD clause types with validation', icon: <Bot className="w-5 h-5" />, tech: 'Pattern matching, confidence scoring, source attribution', isEnhanced: true },
+      { agent: '📝 Clause Embedding Agent', description: 'Extract & embed 43 clause types (41 CUAD + 2 supplemental) with validation', icon: <Bot className="w-5 h-5" />, tech: 'Pattern matching, confidence scoring, source attribution', isEnhanced: true },
       { agent: '📝 Relationship Embedding Agent', description: 'Extract & embed party relationships with context', icon: <Users className="w-5 h-5" />, tech: 'Entity extraction, context embedding, relationship validation', isEnhanced: true },
       { agent: '🆕 Cross-Validation Engine', description: 'Multi-model embedding consistency checks', icon: <CheckCircle className="w-5 h-5" />, tech: 'Multi-model validation, consensus scoring, anomaly detection', isNew: true },
       { agent: '📝 Embedding Validator', description: 'Enhanced quality & consistency validation', icon: <CheckCircle className="w-5 h-5" />, tech: 'Dimension checks, similarity validation, drift detection', isEnhanced: true },

@@ -41,8 +41,8 @@ export const agents: Agent[] = [
     name: 'Clause Extraction Agent',
     icon: <Bot className="w-6 h-6" />,
     role: 'Content Analysis',
-    description: 'Identifies and extracts 41 CUAD clause types with embeddings and confidence scores',
-    capabilities: ['41 CUAD clause types', 'Pattern matching', 'Confidence scoring', 'Clause embeddings', 'Position tracking'],
+    description: 'Identifies and extracts 43 clause types (the 41 CUAD categories plus Indemnification and Payment Terms) with embeddings and confidence scores',
+    capabilities: ['41 CUAD + 2 supplemental clause types', 'Pattern matching', 'Confidence scoring', 'Clause embeddings', 'Position tracking'],
     input: 'Contract text',
     output: 'Structured clause data + embeddings + confidence scores',
     color: 'bg-green-500'

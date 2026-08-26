@@ -429,8 +429,9 @@ class RedlineGeneratorTool(BaseTool):
         issue/severity - not a fixed category lookup. PolicyEvaluationService
         (and the deterministic table) already produce a concrete per-violation
         suggested_fix citing the actual rule that was checked, so this works
-        for any of the 41 CUAD categories a violation might reference, not
-        just a handful of hardcoded keyword matches.
+        for any CUADClauseType category a violation might reference (the 41
+        CUAD categories plus supplemental ones - see that enum's docstring),
+        not just a handful of hardcoded keyword matches.
         """
         try:
             violations = json.loads(violations_json)

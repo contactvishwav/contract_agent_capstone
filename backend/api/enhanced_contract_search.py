@@ -3,6 +3,7 @@ from backend.governance.auth import TokenIdentity
 from backend.governance.rbac import Permission, requires_permission
 from typing import List, Optional
 from pydantic import BaseModel, Field
+from backend.agents.llm_extraction_service import CUADClauseType
 from backend.domain.search_entities import SearchLevel, SearchParams
 from backend.application.services.enhanced_search_service import EnhancedSearchService
 from backend.shared.utils.search_mapper import SearchResponseMapper
@@ -174,21 +175,23 @@ async def search_relationships(
 
 @router.get("/search/clause-types")
 async def get_clause_types():
-    """Get list of available CUAD clause types"""
-    clause_types = [
-        "Document Name", "Parties", "Agreement Date", "Effective Date", "Expiration Date",
-        "Renewal Term", "Notice Period To Terminate Renewal", "Governing Law", 
-        "Most Favored Nation", "Non-Compete", "Exclusivity", "No-Solicit Of Customers",
-        "No-Solicit Of Employees", "Non-Disparagement", "Termination For Convenience",
-        "Rofr/Rofo/Rofn", "Change Of Control", "Anti-Assignment", "Revenue/Customer Sharing",
-        "Price Restrictions", "Minimum Commitment", "Volume Restriction", "IP Ownership Assignment",
-        "Joint IP Ownership", "License Grant", "Non-Transferable License", "Affiliate License-Licensor",
-        "Affiliate License-Licensee", "Unlimited/All-You-Can-Eat-License", "Irrevocable Or Perpetual License",
-        "Source Code Escrow", "Post-Termination Services", "Audit Rights", "Uncapped Liability",
-        "Cap On Liability", "Liquidated Damages", "Warranty Duration", "Insurance",
-        "Covenant Not To Sue", "Third Party Beneficiary", "Escrow"
-    ]
-    
+    """Get list of available CUAD clause types.
+
+    Real, confirmed bug found live: this used to be a hardcoded, independent
+    duplicate of the taxonomy (not derived from CUADClauseType), and had
+    already drifted - a stale "Revenue/Customer Sharing" name (the enum's
+    real value is "Revenue/Profit Sharing"), a case mismatch on two IP
+    categories, a missing "Competitive Restriction Exception", and a bogus
+    "Escrow" entry that was never a real clause type at all. Selecting any
+    of the wrong ones in the search UI could never match a real clause.
+    Deriving from CUADClauseType (llm_extraction_service.py's single source
+    of truth) fixes all of that and keeps this endpoint automatically
+    correct as the taxonomy evolves - see CUADClauseType's own docstring
+    for the 2 supplemental categories (Indemnification, Payment Terms) now
+    included here too.
+    """
+    clause_types = [t.value for t in CUADClauseType]
+
     return {
         "success": True,
         "clause_types": clause_types,

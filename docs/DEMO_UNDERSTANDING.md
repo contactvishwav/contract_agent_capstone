@@ -317,7 +317,7 @@ Tonight's redeploy, concretely: after committing the cross-tenant-leak fix, the 
 
 ### Glossary
 
-- **CUAD** — Contract Understanding Atticus Dataset. A real, published legal-AI benchmark dataset: 500+ commercial contracts annotated across 41 clause categories (`theatticusproject/cuad-qa` on HuggingFace). This project's clause taxonomy, extraction targets, and accuracy benchmark are all built directly against it.
+- **CUAD** — Contract Understanding Atticus Dataset. A real, published legal-AI benchmark dataset: 500+ commercial contracts annotated across 41 clause categories (`theatticusproject/cuad-qa` on HuggingFace). This project's accuracy benchmark is scored directly against it (deliberately kept to exactly those 41, so the numbers stay comparable); the production clause taxonomy extends it with 2 supplemental categories (Indemnification, Payment Terms) that real production use found missing from CUAD itself - see `CUADClauseType`'s docstring in `backend/agents/llm_extraction_service.py`.
 - **GraphRAG** — Retrieval-Augmented Generation where the retrieval substrate is a graph database (here, Neo4j) rather than a pure vector store — retrieval can exploit both vector similarity *and* real graph relationships (Contract→Section→Clause→Party).
 - **RBAC** — Role-Based Access Control. Four roles (`ADMIN`, `LEGAL_REVIEWER`, `AUDITOR`, `VIEWER`), each mapped to a fixed permission set (`backend/governance/rbac.py`).
 - **TOTP** — Time-based One-Time Password, the standard behind most authenticator-app MFA (Google Authenticator, Authy). 30-second time steps, HMAC-based.
