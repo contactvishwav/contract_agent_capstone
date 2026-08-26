@@ -44,8 +44,30 @@ class PolicyChunkingAgent(IAgent):
             # Store using existing infrastructure
             document_id = f"policy_{tenant_id}_{uuid.uuid4().hex[:8]}"
 
+            # Real, confirmed bug found live: tenant_id used to be bundled
+            # inside the metadata dict instead of passed as
+            # store_chunks' own real tenant_id keyword parameter, which
+            # then silently defaulted to None. store_chunks' per-chunk
+            # write is `MATCH (d:Document {id: $document_id, tenant_id:
+            # $tenant_id}) CREATE (c:Chunk {...}) CREATE (d)-[:HAS_CHUNK]
+            # ->(c)` - with tenant_id=None, that MATCH's inline property
+            # comparison becomes `d.tenant_id = null`, which Cypher's
+            # three-valued logic always evaluates to null (never true),
+            # even against a Document node whose tenant_id really was set
+            # to null. Every single per-chunk CREATE silently matched
+            # zero rows and did nothing - no exception, no partial
+            # result, nothing - while store_chunks still returned
+            # {'success': True, 'chunks_stored': len(chunks)}, a genuine
+            # false-positive. PolicyExtractionAgent's later get_chunks()
+            # then always found none of them, so policy_rules was always
+            # [], _store_policy_rules never ran (its own PolicyDocument
+            # node only gets created as a side effect of a non-empty
+            # rules loop), and get_applicable_rules had nothing real to
+            # find for any tenant, ever - policy checking silently ran
+            # against generic defaults instead of every real uploaded
+            # playbook, with success reported at every layer.
             result = await self.storage_service.store_chunks(
-                document_id, chunks, {'policy_name': policy_name, 'tenant_id': tenant_id}
+                document_id, chunks, {'policy_name': policy_name}, tenant_id=tenant_id
             )
             
             return AgentResult(

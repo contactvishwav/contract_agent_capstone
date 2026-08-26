@@ -198,6 +198,38 @@ class PolicyChunkingAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.data["document_id"].startswith("policy_tenant_a_"))
         agent.storage_service.store_chunks.assert_awaited_once()
 
+    async def test_execute_passes_tenant_id_as_the_real_keyword_argument(self):
+        """Real, confirmed bug found live: tenant_id used to be bundled
+        inside the metadata dict (store_chunks' 3rd positional arg)
+        instead of passed as store_chunks' own real tenant_id keyword
+        parameter, which then silently defaulted to None. Downstream,
+        that None made every per-chunk Neo4j write's MATCH clause match
+        zero rows (Cypher's null = null is never true), so store_chunks
+        still reported success while creating nothing - and every real
+        tenant-uploaded policy playbook silently never took effect,
+        forever, for every tenant. This asserts the fix at the call
+        boundary: tenant_id must be the real keyword argument, not
+        merely present somewhere in whatever's passed as metadata."""
+        agent = PolicyChunkingAgent()
+        agent.storage_service.store_chunks = AsyncMock(return_value={"success": True, "chunks_stored": 1})
+
+        context = AgentContext(
+            input_data={
+                "policy_text": SAMPLE_POLICY,
+                "tenant_id": "tenant_a",
+                "policy_name": "Test Liability Policy",
+            },
+            workflow_context=None,
+        )
+
+        await agent.execute(context)
+
+        _, kwargs = agent.storage_service.store_chunks.call_args
+        self.assertEqual(
+            kwargs.get("tenant_id"), "tenant_a",
+            f"tenant_id must be the real keyword argument, got kwargs={kwargs}",
+        )
+
     async def test_execute_reports_error_status_on_missing_required_field(self):
         agent = PolicyChunkingAgent()
 

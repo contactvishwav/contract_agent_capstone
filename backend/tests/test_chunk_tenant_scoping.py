@@ -68,6 +68,32 @@ class ChunkingStorageServiceTenantScopingTests(unittest.IsolatedAsyncioTestCase)
         self.assertIn("tenant_id: $tenant_id", chunk_calls[0][0])
         self.assertEqual(chunk_calls[0][1]["tenant_id"], "tenant_a")
 
+    async def test_store_chunks_reports_real_failure_when_chunk_creates_match_nothing(self):
+        """Real, confirmed bug found live: the per-chunk write is `MATCH
+        (d:Document {id: $document_id, tenant_id: $tenant_id}) CREATE
+        (c:Chunk {...}) CREATE (d)-[:HAS_CHUNK]->(c)`. Whenever a caller's
+        tenant_id ends up None (PolicyChunkingAgent.execute used to pass
+        it inside a metadata dict instead of this method's own tenant_id
+        parameter), `d.tenant_id: $tenant_id` becomes `d.tenant_id = null`
+        - Cypher's three-valued logic always evaluates that to null, never
+        true, even against a node whose tenant_id really was set to null.
+        The MATCH silently found zero rows, so CREATE never ran for any
+        chunk - no exception, no partial result - while store_chunks still
+        returned {'success': True, 'chunks_stored': len(chunks)}, a real
+        false-positive. This test's FakeGraph (query always returns [])
+        reproduces that exact "MATCH finds nothing" condition regardless
+        of which parameter caused it; store_chunks must now report the
+        real failure instead of claiming success."""
+        service, fake_graph = _storage_service()
+
+        result = await service.store_chunks(
+            "doc1", [{"content": "Either party may terminate with notice.", "chunk_index": 0}],
+            tenant_id=None,
+        )
+
+        self.assertFalse(result["success"], f"expected a real failure, got: {result}")
+        self.assertEqual(result["chunks_stored"], 0)
+
     async def test_link_document_to_contract_writes_the_real_contract_id(self):
         service, fake_graph = _storage_service()
 

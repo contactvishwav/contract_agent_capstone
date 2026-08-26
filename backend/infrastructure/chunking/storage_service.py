@@ -66,7 +66,23 @@ class ChunkingStorageService:
                 'tenant_id': tenant_id
             })
                 
-            # Store each chunk with enhanced properties
+            # Store each chunk with enhanced properties.
+            #
+            # Real, confirmed bug found live: this MATCH...CREATE silently
+            # created nothing, for every chunk, whenever a caller's
+            # tenant_id ended up None (e.g. PolicyChunkingAgent.execute
+            # used to pass it inside the metadata dict instead of this
+            # method's own tenant_id parameter) - `d.tenant_id: $tenant_id`
+            # with $tenant_id=None becomes `d.tenant_id = null`, which
+            # Cypher's three-valued logic always evaluates to null, never
+            # true, even against a node whose tenant_id really was set to
+            # null. The MATCH found zero rows, so CREATE never ran - no
+            # exception, no partial result, chunks_stored still reported
+            # len(chunks) regardless. RETURN c.id here and counting real
+            # creates against the attempted count is what turns that
+            # silent no-op into a real, surfaced failure instead of a
+            # false-positive success.
+            created_count = 0
             for chunk in chunks:
                 chunk_query = """
                 MATCH (d:Document {id: $document_id, tenant_id: $tenant_id})
@@ -87,8 +103,9 @@ class ChunkingStorageService:
                     clause_count: $clause_count
                 })
                 CREATE (d)-[:HAS_CHUNK {index: $chunk_index}]->(c)
+                RETURN c.id AS created_id
                 """
-                
+
                 chunk_id = f"{document_id}_chunk_{chunk.get('chunk_index', 0)}"
 
                 # Redact-then-encrypt before persistence, matching
@@ -97,7 +114,7 @@ class ChunkingStorageService:
                 redacted_content = PIIEngine.redact(chunk['content'])
                 encrypted_content = field_encryptor.encrypt(redacted_content)
 
-                self.graph.query(chunk_query, {
+                chunk_result = self.graph.query(chunk_query, {
                     'document_id': document_id,
                     'tenant_id': tenant_id,
                     'chunk_id': chunk_id,
@@ -114,7 +131,23 @@ class ChunkingStorageService:
                     'parent_section': chunk.get('parent_section', ''),
                     'clause_count': chunk.get('clause_count', 0)
                 })
-            
+                if chunk_result:
+                    created_count += 1
+
+            if created_count != len(chunks):
+                message = (
+                    f"Document node for {document_id} (tenant_id={tenant_id!r}) not found or "
+                    f"mismatched - only {created_count}/{len(chunks)} chunks were actually created"
+                )
+                logger.error(message)
+                return {
+                    'success': False,
+                    'error': message,
+                    'document_id': document_id,
+                    'chunks_stored': created_count,
+                    'message': message,
+                }
+
             return {
                 'success': True,
                 'document_id': document_id,
