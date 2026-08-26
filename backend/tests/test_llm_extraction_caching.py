@@ -116,6 +116,27 @@ class ClauseExtractionCachingTests(unittest.TestCase):
 
         self.assertEqual(llm.call_count, 2, "different contract text must not share a cache entry")
 
+    def test_default_candidate_types_cache_key_matches_the_real_full_type_list(self):
+        """Real, confirmed bug found live: _cache_key's `candidate_types or
+        []` collapsed to an empty types_part whenever candidate_types was
+        the default None (every real extract_clauses(text) call, with no
+        explicit override) - so the cache key never actually reflected
+        which categories were in the prompt for the single most common
+        call shape. _build_prompt's own default is `candidate_types or
+        list(CUADClauseType)`; _cache_key must mirror that exactly, or a
+        stale cache entry survives a taxonomy change indefinitely (the
+        same contract text keeps serving pre-change results forever,
+        since PROMPT_VERSION doesn't change just because CUADClauseType's
+        membership does - this exact scenario broke a real production
+        verification of a new clause type being added)."""
+        llm = CountingFakeLLM([])
+        service = LLMExtractionService(llm)
+
+        self.assertEqual(
+            service._cache_key("some contract text", None),
+            service._cache_key("some contract text", list(CUADClauseType)),
+        )
+
     def test_different_candidate_types_is_not_a_cache_hit(self):
         llm = CountingFakeLLM([self._clause_response(), self._clause_response()])
         service = LLMExtractionService(llm)

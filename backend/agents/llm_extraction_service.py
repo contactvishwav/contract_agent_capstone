@@ -658,7 +658,20 @@ class LLMExtractionService:
         candidate_types: Optional[List[CUADClauseType]],
         enable_fallback: bool = True,
     ) -> str:
-        types_part = ",".join(sorted(t.value for t in (candidate_types or [])))
+        # Real, confirmed bug found live: `candidate_types or []` collapsed
+        # to an empty types_part whenever the default (all-types) path was
+        # used - candidate_types=None is the common case, every real caller
+        # of extract_clauses(text) hits it. _build_prompt's own default
+        # ("candidate_types or list(CUADClauseType)") is what actually
+        # decides which categories go in the prompt; mirroring that exact
+        # logic here (instead of the bare parameter) is what makes the
+        # cache key genuinely reflect what was asked. Without this, a
+        # stale cache entry survives a taxonomy change indefinitely - the
+        # exact same contract text keeps serving pre-change results
+        # forever, since PROMPT_VERSION doesn't change just because
+        # CUADClauseType's membership does.
+        types = candidate_types or list(CUADClauseType)
+        types_part = ",".join(sorted(t.value for t in types))
         raw = f"clause_extraction:{PROMPT_VERSION}:{self._model_name}:{types_part}:{enable_fallback}:{text}"
         return hashlib.sha256(raw.encode()).hexdigest()
 
