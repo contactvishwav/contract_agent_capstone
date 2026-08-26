@@ -23,7 +23,15 @@ logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
-RESULTS_PATH = Path(__file__).resolve().parents[1] / "tests" / "evals" / "latest_results.json"
+# Real, confirmed bug found live: this used to point under backend/tests/,
+# which the production Dockerfile's production-build stage deletes
+# entirely (`rm -rf ./backend/tests` - test code has no business shipping
+# in a production image). This endpoint always reported "no evaluation
+# has been run yet" in production, regardless of how many times the
+# script ran or the backend redeployed, since the artifact never
+# survived the image build. backend/evals/ is a real output directory,
+# not test code - it survives.
+RESULTS_PATH = Path(__file__).resolve().parents[1] / "evals" / "latest_results.json"
 
 
 @router.get("/evaluations")

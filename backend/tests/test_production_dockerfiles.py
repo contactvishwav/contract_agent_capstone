@@ -79,6 +79,79 @@ class BackendDockerfileTests(unittest.TestCase):
         self.assertIn("rm -rf ./backend/tests", self.text)
 
 
+class EvalArtifactSurvivesTestCodeStripTests(unittest.TestCase):
+    """Real, confirmed bug found live: backend/api/admin_evaluations_api.py's
+    RESULTS_PATH used to resolve under backend/tests/ - which the assertion
+    right above (test_production_stage_excludes_test_code) confirms this
+    same Dockerfile deletes entirely in every production build. GET /api/
+    admin/evaluations always reported "no evaluation has been run yet" in
+    production regardless of how many times evaluate_retrieval.py ran or
+    the backend redeployed, since the artifact never survived the image
+    build - only caught by live production verification, not by any test,
+    since local dev's `dev` Dockerfile target never strips backend/tests/
+    at all. This test parses the real `rm -rf` target from the Dockerfile
+    text (not a hardcoded assumption of what it strips) and cross-checks
+    it against the *real* RESULTS_PATH both the writer (evaluate_retrieval.
+    py) and the reader (admin_evaluations_api.py) actually use - so a
+    future edit reintroducing this exact bug class, on either side, fails
+    fast without needing a real Docker build to catch it."""
+
+    def _stripped_prefix(self) -> str:
+        dockerfile_text = read(BACKEND_DOCKERFILE)
+        match = re.search(r"RUN rm -rf \./(\S+)", dockerfile_text)
+        self.assertIsNotNone(match, "expected a real `RUN rm -rf ./<path>` line in the production Dockerfile")
+        # e.g. "backend/tests" -> the real repo-relative prefix this stage deletes.
+        return match.group(1)
+
+    def test_admin_evaluations_results_path_survives_the_real_strip(self):
+        from backend.api import admin_evaluations_api
+
+        stripped_prefix = self._stripped_prefix()
+        repo_relative = os.path.relpath(admin_evaluations_api.RESULTS_PATH, REPO_ROOT)
+        self.assertFalse(
+            repo_relative.replace(os.sep, "/").startswith(stripped_prefix + "/"),
+            f"admin_evaluations_api.RESULTS_PATH ({repo_relative}) resolves under "
+            f"'{stripped_prefix}/', which the production Dockerfile deletes entirely - "
+            "this artifact would always be missing in production.",
+        )
+
+    def test_evaluate_retrieval_results_path_survives_the_real_strip(self):
+        import importlib.util
+
+        stripped_prefix = self._stripped_prefix()
+        script_path = os.path.join(REPO_ROOT, "backend", "scripts", "evaluate_retrieval.py")
+        spec = importlib.util.spec_from_file_location("evaluate_retrieval", script_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        repo_relative = os.path.relpath(module.RESULTS_PATH, REPO_ROOT)
+        self.assertFalse(
+            repo_relative.replace(os.sep, "/").startswith(stripped_prefix + "/"),
+            f"evaluate_retrieval.RESULTS_PATH ({repo_relative}) resolves under "
+            f"'{stripped_prefix}/', which the production Dockerfile deletes entirely - "
+            "the script would be writing an artifact production can never serve.",
+        )
+
+    def test_both_writer_and_reader_agree_on_the_same_real_path(self):
+        """The two real halves of this feature (the batch writer, the
+        read-only API) must point at the exact same file - a drift here
+        would silently reintroduce "ran the script, dashboard still empty"
+        even with both paths individually outside backend/tests/."""
+        import importlib.util
+
+        from backend.api import admin_evaluations_api
+
+        script_path = os.path.join(REPO_ROOT, "backend", "scripts", "evaluate_retrieval.py")
+        spec = importlib.util.spec_from_file_location("evaluate_retrieval", script_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        self.assertEqual(
+            os.path.realpath(module.RESULTS_PATH),
+            os.path.realpath(admin_evaluations_api.RESULTS_PATH),
+        )
+
+
 class FrontendDockerfileTests(unittest.TestCase):
     def setUp(self):
         self.text = read(FRONTEND_DOCKERFILE)

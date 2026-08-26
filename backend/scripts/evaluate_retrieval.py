@@ -37,7 +37,16 @@ import requests
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GOLDEN_DATASET_PATH = REPO_ROOT / "backend" / "tests" / "evals" / "golden_dataset.json"
-RESULTS_PATH = REPO_ROOT / "backend" / "tests" / "evals" / "latest_results.json"
+# Deliberately NOT under backend/tests/: the production Dockerfile's
+# production-build stage runs `rm -rf ./backend/tests` (test code has no
+# business shipping in a production image) - a real, confirmed bug found
+# live meant this results artifact was being silently deleted on every
+# production build, so GET /api/admin/evaluations always reported
+# "no evaluation has been run yet" in production regardless of how many
+# times this script ran or the backend redeployed. golden_dataset.json
+# (the script's INPUT, never read at runtime in production) correctly
+# stays under backend/tests/; only the OUTPUT artifact needed to move.
+RESULTS_PATH = REPO_ROOT / "backend" / "evals" / "latest_results.json"
 FIXTURES_DIR = REPO_ROOT / "data"
 
 DEFAULT_API_BASE_URL = os.environ.get("EVAL_API_BASE_URL", "http://localhost:8001")
