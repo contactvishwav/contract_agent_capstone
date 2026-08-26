@@ -98,17 +98,5 @@ class TaskStatusBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(caught.exception.status_code, 503)
         async_result.assert_not_called()
 
-    async def test_supervisor_status_rejects_other_tenant_before_celery_lookup(self):
-        import backend.api.supervisor_api as api
-
-        identity = TokenIdentity(tenant_id="tenant_b", role="ADMIN")
-        with patch.object(api.task_ownership_store, "is_owner", return_value=False), \
-             patch("celery.result.AsyncResult") as async_result:
-            with self.assertRaises(HTTPException) as caught:
-                await api.get_workflow_status("tenant-a-task", identity=identity)
-        self.assertEqual(caught.exception.status_code, 404)
-        async_result.assert_not_called()
-
-
 if __name__ == "__main__":
     unittest.main()

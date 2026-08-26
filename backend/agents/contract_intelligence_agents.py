@@ -10,8 +10,6 @@ from backend.agents.intelligence_tools import (
 from backend.agents.agent_workflow_tracker import workflow_tracker
 from backend.infrastructure.audit_logger import AuditLogger, AuditEventType
 from backend.agents.run_quality_grader import grade_run
-from backend.agents.planning.planning_agent import PlanningAgentFactory
-from backend.agents.planning.execution_engine import PlanExecutionEngine
 import json
 import logging
 import os
@@ -49,7 +47,6 @@ class IntelligenceOrchestrator:
     def __init__(self, llm):
         self.llm = llm
         self.workflow = self._build_workflow()
-        self.planning_agent = PlanningAgentFactory.create_planning_agent()
         # Real, confirmed bug found live: self.llm (the model the user
         # actually selected, resolved from the "AI Model" dropdown all the
         # way up in contract_intelligence_service.py's _get_llm_for_model)
@@ -57,14 +54,8 @@ class IntelligenceOrchestrator:
         # analysis used ClauseDetectorTool()/PolicyCheckerTool() with no
         # llm argument, which (per the LLM fallback build) falls back to
         # the Gemini->OpenAI->Anthropic chain regardless of what the
-        # dropdown said. Threaded through to both real orchestration paths
-        # below (this one and the planning/PlanExecutionEngine one - the
-        # production default until Phase 4's HITL gate needed real
-        # analyses to go through the traditional graph instead; see
-        # analyze_contract's use_planning=False default and api/
-        # contract_intelligence.py's route docstring).
-        self.execution_engine = PlanExecutionEngine(llm)
-    
+        # dropdown said. Threaded through to every tool constructed below.
+
     def _build_workflow(self) -> StateGraph:
         """Build workflow with proper state management"""
         
@@ -553,41 +544,29 @@ class IntelligenceOrchestrator:
             }
     
     def analyze_contract(self, contract_text: str, use_planning: bool = False, contract_id: Optional[str] = None, tenant_id: Optional[str] = None, contract_type: Optional[str] = None) -> dict:
-        """Run analysis with optional autonomous planning"""
+        """Run analysis via the traditional LangGraph workflow.
+
+        use_planning is accepted (not removed) purely for signature
+        compatibility with real callers up the stack (contract_
+        intelligence_service.py, backend/tasks.py, the /analyze route's
+        query param) - none of which this task's scope touches. It's
+        inert now: PlanExecutionEngine, the autonomous-planning path it
+        used to select, was retired (see git history) - it never
+        completed a single real analysis in production (a genuine bug in
+        _analyze_with_planning meant every attempted run silently fell
+        back to this same traditional path anyway), had zero real
+        callers anywhere in the frontend, and every configured provider's
+        analysis has run through here exclusively since commit 112506b
+        added the human_review_gate safety pause planning lacked.
+        """
         try:
-            if use_planning:
-                try:
-                    # Use asyncio.run with proper event loop handling
-                    import asyncio
-                    try:
-                        # Try to get current loop
-                        loop = asyncio.get_running_loop()
-                        # If we're in an event loop, create a task
-                        import concurrent.futures
-                        with concurrent.futures.ThreadPoolExecutor() as executor:
-                            future = executor.submit(asyncio.run, self._analyze_with_planning(contract_text, contract_id, tenant_id, contract_type))
-                            return future.result()
-                    except RuntimeError:
-                        # No event loop running, safe to use asyncio.run
-                        return asyncio.run(self._analyze_with_planning(contract_text, contract_id, tenant_id, contract_type))
-                except Exception as planning_error:
-                    logger.error(f"Planning agent failed: {planning_error}, falling back to traditional workflow")
-                    return self._analyze_traditional(
-                        contract_text,
-                        contract_id,
-                        tenant_id,
-                        contract_type,
-                        execution_path="langgraph_traditional_fallback",
-                    )
-            else:
-                return self._analyze_traditional(
-                    contract_text,
-                    contract_id,
-                    tenant_id,
-                    contract_type,
-                    execution_path="langgraph_traditional_explicit",
-                )
-            
+            return self._analyze_traditional(
+                contract_text,
+                contract_id,
+                tenant_id,
+                contract_type,
+                execution_path="langgraph_traditional_explicit",
+            )
         except Exception as e:
             logger.error(f"Analysis failed: {e}")
             return {
@@ -599,74 +578,7 @@ class IntelligenceOrchestrator:
                 "planned_execution": None,
                 "execution_path": "analysis_failed",
             }
-    
-    async def _analyze_with_planning(self, contract_text: str, contract_id: Optional[str] = None, tenant_id: Optional[str] = None, contract_type: Optional[str] = None) -> dict:
-        """Analyze contract using autonomous planning agent"""
-        logger.info("🧠 STEP 1: Starting Planning Agent Analysis")
 
-        # Real bug found live: execute_plan's own comment claims "planning
-        # agent already started it" and unconditionally calls workflow_
-        # tracker.complete_workflow() at the end - but nothing in this
-        # method (or PlanningAgent) ever called start_workflow(). Every
-        # planning-path run raised "unsupported operand type(s) for -:
-        # 'datetime.datetime' and 'NoneType'" inside complete_workflow()
-        # (workflow_start_time was still None), which the outer except
-        # here silently converted into a full fallback to the traditional
-        # workflow - so the planning path (the documented default,
-        # use_planning=True everywhere) had never actually completed a
-        # single real analysis; every result looked plausible only because
-        # the fallback produces a structurally valid one. start_agent/
-        # complete_agent (used throughout this method) track individual
-        # agents, not the overall workflow timer - a different pair of
-        # methods on the same tracker, confused here.
-        workflow_tracker.start_workflow()
-
-        try:
-            # Step 1: Track planning agent
-            planning_execution = workflow_tracker.start_agent(
-                "Autonomous Planning Agent",
-                "Analyze query and create optimal execution plan",
-                "Contract analysis requirements"
-            )
-            
-            # Step 2: Create execution plan
-            logger.info("🧠 STEP 2: Creating execution plan")
-            query = "Perform comprehensive contract analysis including clause extraction, policy compliance, risk assessment, and redline generation"
-            execution_plan = self.planning_agent.create_execution_plan(query)
-            logger.info(f"🧠 STEP 3: Plan created with {len(execution_plan.steps)} steps")
-            
-            # Complete planning agent tracking with detailed plan info
-            step_details = " → ".join([f"{step.step_type.value.replace('_', ' ').title()}" for step in execution_plan.steps])
-            workflow_tracker.complete_agent(
-                planning_execution, 
-                f"Created {execution_plan.strategy} plan: {step_details} (Est: {execution_plan.estimated_duration}s)"
-            )
-            
-            # Step 2: Execute the planned workflow
-            logger.info("🧠 STEP 4: Starting plan execution")
-            results = await self.execution_engine.execute_plan(execution_plan, contract_text, contract_id=contract_id, tenant_id=tenant_id, contract_type=contract_type)
-            logger.info(f"🧠 STEP 5: Plan execution completed: {results.get('processing_complete')}")
-            
-            # Step 3: Provide feedback
-            logger.info("🧠 STEP 6: Providing feedback to planning agent")
-            success_rate = 1.0 if results.get("processing_complete") else 0.0
-            self.planning_agent.adapt_plan_from_feedback(execution_plan.plan_id, {"success_rate": success_rate})
-            
-            logger.info("🧠 STEP 7: Planning agent analysis completed successfully")
-            return results
-            
-        except Exception as e:
-            # Mark planning agent as failed if we have the execution reference
-            try:
-                workflow_tracker.error_agent(planning_execution, f"Planning failed: {str(e)}")
-            except:
-                pass  # planning_execution might not be defined if error occurred early
-            
-            logger.error(f"🧠 PLANNING AGENT ERROR at step: {e}")
-            import traceback
-            logger.error(f"🧠 Full traceback: {traceback.format_exc()}")
-            raise e
-    
     def _analyze_traditional(
         self,
         contract_text: str,

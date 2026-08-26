@@ -1,11 +1,15 @@
 """
 Regression tests for item 13 in docs/ENTERPRISE_READINESS.md's punch list:
 zero rate limiting/concurrency control existed around LLM extraction calls,
-and StepExecutor's retry loop would blindly retry a rate-limit (429) error
-up to max_retries times, each attempt re-sending the full contract text/
-clause set - silently tripling cost on a single transient failure with no
-realistic chance of success (especially for a per-day quota wall, which
-cannot be waited out within one request's lifetime).
+and (formerly) PlanExecutionEngine's StepExecutor retry loop would blindly
+retry a rate-limit (429) error up to max_retries times, each attempt
+re-sending the full contract text/clause set - silently tripling cost on a
+single transient failure with no realistic chance of success (especially
+for a per-day quota wall, which cannot be waited out within one request's
+lifetime). StepExecutor itself is gone (PlanExecutionEngine was retired -
+see git history), but the underlying quota-detection helper (_is_quota_
+exhausted, now in llm_fallback_service.py) and the semaphore/timeout/
+retry-cap concerns below are real, independent, and still current.
 
 Reuses the same asyncio.Semaphore *concept* already established elsewhere
 in this codebase (optimized_cuad_tools.py, embedding_optimizer.py) - here as
@@ -25,8 +29,7 @@ with patch("langchain_neo4j.Neo4jGraph"), \
     from backend.agents.llm_extraction_service import LLMExtractionService, _LLMExtractionResponse, get_default_llm
     from backend.agents.policy_evaluation_service import PolicyEvaluationService, _LLMPolicyEvaluationResponse
     from backend.domain.policies.entities import PolicyRule
-    from backend.agents.planning.execution_engine import StepExecutor, ExecutionResult, _is_quota_exhausted
-    from backend.agents.planning.planning_agent import ExecutionStep, StepType
+    from backend.agents.llm_fallback_service import _is_quota_exhausted
 
 # This file tests concurrency/retry behavior, not caching - disable the P3-
 # item-20 content-hash cache so repeated identical inputs across tests
@@ -129,51 +132,6 @@ class RealSemaphoreLimitsConcurrencyTests(unittest.TestCase):
         self.assertFalse(overlap_detected.is_set(), "Semaphore of 1 should have serialized all calls - none should overlap")
 
 
-class RateLimitAwareRetryTests(unittest.TestCase):
-    """StepExecutor must not blindly retry a rate-limit (429) error the way
-    it retries ordinary transient failures."""
-
-    def _make_step(self, step_type):
-        return ExecutionStep(step_id="s1", step_type=step_type, description="test step")
-
-    def test_resource_exhausted_fails_immediately_without_retry(self):
-        from google.api_core.exceptions import ResourceExhausted
-
-        executor = StepExecutor()
-        call_count = {"n": 0}
-
-        async def fake_execute_clause_extraction(step, context):
-            call_count["n"] += 1
-            raise ResourceExhausted("quota exceeded")
-
-        executor._execute_clause_extraction = fake_execute_clause_extraction
-
-        import asyncio
-        result = asyncio.run(executor._execute_step_with_retry(self._make_step(StepType.EXTRACT_CLAUSES), {}))
-
-        self.assertFalse(result.success)
-        self.assertEqual(call_count["n"], 1, "Should attempt exactly once - no retry into a rate limit")
-        self.assertIn("Rate limit", result.error_message)
-
-    def test_ordinary_exception_still_retries_as_before(self):
-        executor = StepExecutor()
-        call_count = {"n": 0}
-
-        async def flaky_then_succeeds(step, context):
-            call_count["n"] += 1
-            if call_count["n"] < 2:
-                raise RuntimeError("transient network blip")
-            return []
-
-        executor._execute_clause_extraction = flaky_then_succeeds
-
-        import asyncio
-        result = asyncio.run(executor._execute_step_with_retry(self._make_step(StepType.EXTRACT_CLAUSES), {}))
-
-        self.assertTrue(result.success)
-        self.assertEqual(call_count["n"], 2, "Ordinary (non-rate-limit) failures should still retry as before")
-
-
 class RealHangDetectedWithinConfiguredTimeoutTests(unittest.TestCase):
     """
     Regression test for a genuine ~3-hour hang observed during an overnight
@@ -271,8 +229,8 @@ class SDKLevelRetryCapTests(unittest.TestCase):
     google.genai.types.HttpRetryOptions(attempts=6)), retrying every single
     LLM call - including each per-clause policy-evaluation call - with
     growing exponential backoff before ever raising, independent of (and
-    happening well before) execution_engine.py's StepExecutor-level fail-
-    fast handling ever gets a chance to run.
+    happening well before) _is_quota_exhausted's own fail-fast handling
+    (llm_fallback_service.py) ever gets a chance to run.
     """
 
     def test_get_default_llm_caps_sdk_level_retries(self):
@@ -290,12 +248,11 @@ class QuotaExhaustedDetectionTests(unittest.TestCase):
     """
     The real Gemini client (langchain_google_genai) wraps a real 429 into
     its own ChatGoogleGenerativeAIError (see chat_models._handle_client_
-    error), NOT google.api_core.exceptions.ResourceExhausted - so
-    StepExecutor's `except ResourceExhausted` fail-fast branch never
-    actually matched a real quota-exhaustion error from this app's actual
-    client, despite test_resource_exhausted_fails_immediately_without_retry
-    (above) passing, since that test injects ResourceExhausted directly
-    rather than the real exception type.
+    error), NOT google.api_core.exceptions.ResourceExhausted - so a plain
+    `except ResourceExhausted` fail-fast branch alone never actually
+    matches a real quota-exhaustion error from this app's actual client;
+    _is_quota_exhausted's message-based fallback is what makes real
+    detection work.
     """
 
     def test_detects_real_resource_exhausted_instance(self):
@@ -313,30 +270,6 @@ class QuotaExhaustedDetectionTests(unittest.TestCase):
 
     def test_ordinary_error_not_misdetected_as_quota_exhausted(self):
         self.assertFalse(_is_quota_exhausted(RuntimeError("transient network blip")))
-
-    def test_step_executor_fails_fast_on_real_sdk_exception_type(self):
-        """End-to-end proof at the StepExecutor layer: a
-        ChatGoogleGenerativeAIError-shaped failure (message-based, not
-        isinstance-based) must still fail fast without retrying, matching
-        test_resource_exhausted_fails_immediately_without_retry's assertions
-        but for the exception type actually raised in production."""
-        executor = StepExecutor()
-        call_count = {"n": 0}
-
-        async def fake_execute_clause_extraction(step, context):
-            call_count["n"] += 1
-            raise RuntimeError("429 RESOURCE_EXHAUSTED: quota exceeded for generate_content_free_tier_requests")
-
-        executor._execute_clause_extraction = fake_execute_clause_extraction
-
-        import asyncio
-        result = asyncio.run(executor._execute_step_with_retry(
-            ExecutionStep(step_id="s1", step_type=StepType.EXTRACT_CLAUSES, description="test step"), {}
-        ))
-
-        self.assertFalse(result.success)
-        self.assertEqual(call_count["n"], 1, "Should attempt exactly once - no retry into a rate limit")
-        self.assertIn("Rate limit", result.error_message)
 
 
 if __name__ == "__main__":

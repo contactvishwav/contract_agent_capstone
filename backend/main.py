@@ -307,11 +307,6 @@ app.include_router(sso_router)
 from backend.api.policy_api import router as policy_router
 app.include_router(policy_router)
 
-# Supervisor Agent API - real rebuild, not the deleted dead-code path
-# (docs/CAPSTONE_SUMMARY.md §8)
-from backend.api.supervisor_api import router as supervisor_router
-app.include_router(supervisor_router)
-
 # Persistent Contract Chat sessions (list/create/detail) - /api/run/ below
 # is where messages actually get appended as a conversation happens.
 from backend.api.chat_sessions import (
@@ -329,26 +324,6 @@ conditionally_include_router(app, debug_router, is_development())
 async def get_workflow_status():
     """Get current multi-agent workflow status for executive dashboard"""
     return get_current_workflow_status()
-
-@app.get("/api/planning/status", dependencies=[Depends(requires_permission(Permission.VIEW_REPORTS))])
-async def get_planning_status():
-    """Get autonomous planning agent status"""
-    from backend.agents.planning.planning_agent import PlanningAgentFactory
-    
-    planning_agent = PlanningAgentFactory.create_planning_agent()
-    return {
-        "agent_type": "Autonomous Planning & Reasoning Agent",
-        "capabilities": [
-            "Query Analysis & Decomposition",
-            "Execution Plan Generation", 
-            "Self-Reflection & Validation",
-            "Adaptive Strategy Selection",
-            "Performance Learning"
-        ],
-        "available_strategies": ["simple", "complex", "risk_focused", "compliance_focused"],
-        "execution_history_count": len(planning_agent.execution_history)
-    }
-
 
 @app.get("/")
 async def root():

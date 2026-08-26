@@ -132,6 +132,29 @@ class AllProvidersExhaustedError(Exception):
     error for this specific call."""
 
 
+def _is_quota_exhausted(e: Exception) -> bool:
+    """True for google.api_core.exceptions.ResourceExhausted directly (kept
+    for any client that does raise it), and also for the real exception
+    this app's actual Gemini client raises: langchain_google_genai wraps a
+    real 429 RESOURCE_EXHAUSTED into its own ChatGoogleGenerativeAIError
+    (see langchain_google_genai.chat_models._handle_client_error), which is
+    not a ResourceExhausted subclass - so `except ResourceExhausted` alone
+    never actually matches it. Confirmed via live end-to-end testing
+    against the real API (not a mock).
+
+    Relocated here (was backend/agents/planning/execution_engine.py,
+    removed with the rest of PlanExecutionEngine) - genuinely reusable,
+    provider-error-classification logic with no dependency on that
+    subsystem; research/benchmark/evaluate_extraction.py and this
+    module's own quota-detection concerns both need it.
+    """
+    from google.api_core.exceptions import ResourceExhausted
+    if isinstance(e, ResourceExhausted):
+        return True
+    message = str(e)
+    return "RESOURCE_EXHAUSTED" in message or "429" in message
+
+
 def _is_fallback_worthy(exc: Exception) -> bool:
     """True only for errors that look like the provider itself failed to
     serve this request (quota exhaustion, rate limiting, timeout) - never

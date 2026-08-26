@@ -7,10 +7,7 @@ or total node failure as a plausible-looking success:
    indistinguishable from a real MEDIUM-risk result.
 2. IntelligenceOrchestrator._generate_redlines's except path set
    "is_complete": True even though redline generation had just failed.
-3. PlanExecutionEngine always returned "processing_complete": True
-   regardless of whether individual steps failed - per-step
-   success/failure was tracked in step_results but never surfaced.
-4. ContractIntelligence (and the API route) always reported
+3. ContractIntelligence (and the API route) always reported
    analysis_complete as True/omitted node status entirely, so a caller had
    no way to tell a genuine result from one produced despite a failure.
 """
@@ -23,8 +20,6 @@ with patch("langchain_neo4j.Neo4jGraph"), \
      patch("backend.shared.utils.gemini_embedding_service.embedding"):
     from backend.agents.intelligence_tools import RiskCalculatorTool
     from backend.agents.contract_intelligence_agents import IntelligenceOrchestrator
-    from backend.agents.planning.execution_engine import PlanExecutionEngine, StepExecutor, ExecutionResult
-    from backend.agents.planning.planning_agent import ExecutionPlan, ExecutionStep, StepType, PlanningStrategy
     from backend.application.services.contract_intelligence_service import ContractIntelligenceService
 
 _audit_logger_patcher = patch("backend.agents.intelligence_tools.AuditLogger", return_value=MagicMock())
@@ -57,44 +52,6 @@ class RedlineNodeFailureTests(unittest.TestCase):
 
         self.assertFalse(result_state["is_complete"])
         self.assertEqual(result_state["node_status"]["redline_generation"], "error")
-
-
-class PlanExecutionEngineFailureTests(unittest.TestCase):
-    def test_step_failure_reported_honestly_in_final_results(self):
-        engine = PlanExecutionEngine()
-
-        async def fake_execute_step(step, context):
-            if step.step_type == StepType.ASSESS_RISK:
-                return ExecutionResult(
-                    step_id=step.step_id, success=False, output_data=None,
-                    execution_time_ms=1, confidence_score=0.0, error_message="boom",
-                )
-            return ExecutionResult(
-                step_id=step.step_id, success=True,
-                output_data=[] if step.step_type == StepType.EXTRACT_CLAUSES else {},
-                execution_time_ms=1, confidence_score=0.9,
-            )
-
-        engine.step_executor.execute_step = fake_execute_step
-
-        from backend.agents.agent_workflow_tracker import workflow_tracker
-        workflow_tracker.start_workflow()
-
-        plan = ExecutionPlan(
-            plan_id="p1", query="analyze", strategy=PlanningStrategy.SIMPLE,
-            steps=[
-                ExecutionStep(step_id="s1", step_type=StepType.EXTRACT_CLAUSES, description="extract"),
-                ExecutionStep(step_id="s2", step_type=StepType.ASSESS_RISK, description="assess"),
-            ],
-            estimated_duration=1, confidence_score=1.0,
-        )
-
-        import asyncio
-        result = asyncio.run(engine.execute_plan(plan, "contract text", contract_id="c1", tenant_id="t1"))
-
-        self.assertFalse(result["processing_complete"])
-        self.assertEqual(result["node_status"]["assess_risk"], "failed")
-        self.assertEqual(result["node_status"]["extract_clauses"], "success")
 
 
 class EndToEndPartialFailureTests(unittest.TestCase):

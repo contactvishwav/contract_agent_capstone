@@ -60,13 +60,13 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(os.path.join(REPO_ROOT, "backend", ".env"))
 
 from backend.agents.llm_extraction_service import LLMExtractionService, CUADClauseType, get_default_llm  # noqa: E402
-from backend.agents.planning.execution_engine import _is_quota_exhausted  # noqa: E402
+from backend.agents.llm_fallback_service import _is_quota_exhausted  # noqa: E402
 
 
 def _extract_with_transient_retry(service, text, filename, max_attempts=3, backoff_seconds=8.0):
     """
     A real per-DAY quota exhaustion (_is_quota_exhausted, same helper
-    execution_engine.py uses to fail fast rather than retry into a 429)
+    llm_fallback_service.py uses to fail fast rather than retry into a 429)
     still stops this script's run immediately - that fail-fast behavior is
     intentional (retrying a per-day quota wall within one run's lifetime
     cannot succeed).

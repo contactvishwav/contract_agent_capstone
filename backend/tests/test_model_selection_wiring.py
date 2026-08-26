@@ -15,17 +15,16 @@ value just never arrived. Fixed by binding it via Form(...) instead.
 Bug B - analyze path resolved the selection, then discarded it: contract_
 intelligence_service.py's analyze_contract_intelligence correctly resolves
 model -> a real llm instance (_get_llm_for_model) and passes it into
-IntelligenceOrchestrator(llm). But both real orchestration paths then
-constructed ClauseDetectorTool()/PolicyCheckerTool() with *no* llm
-argument - IntelligenceOrchestrator._extract_clauses/_check_policies (the
-traditional LangGraph path) and StepExecutor.__init__ (the planning/
-PlanExecutionEngine path, which is the actual production default,
-use_planning=True in the /analyze route). Per the LLM multi-provider
-fallback build, a tool constructed with no explicit llm falls back to the
-Gemini->OpenAI->Anthropic chain - so every real analysis used the fallback
-chain's primary (Gemini) regardless of the user's real selection. Fixed by
-threading llm through IntelligenceOrchestrator -> PlanExecutionEngine ->
-StepExecutor -> ClauseDetectorTool/PolicyCheckerTool (RiskCalculatorTool/
+IntelligenceOrchestrator(llm), which then constructed ClauseDetectorTool()/
+PolicyCheckerTool() with *no* llm argument in _extract_clauses/
+_check_policies (the traditional LangGraph path - the sole real
+orchestration path; the planning/PlanExecutionEngine path this bug
+originally also affected was retired later, see git history). Per the LLM
+multi-provider fallback build, a tool constructed with no explicit llm
+falls back to the Gemini->OpenAI->Anthropic chain - so every real analysis
+used the fallback chain's primary (Gemini) regardless of the user's real
+selection. Fixed by threading llm through IntelligenceOrchestrator ->
+ClauseDetectorTool/PolicyCheckerTool (RiskCalculatorTool/
 RedlineGeneratorTool are deterministic, no LLM involved, nothing to fix).
 
 Proven here via LLMUsageTracker's own model dimension (record_call's
@@ -150,59 +149,14 @@ def _fake_llm(model_name: str, clauses_response):
     return fake
 
 
-class StepExecutorModelSelectionTests(unittest.TestCase):
-    """The planning path (StepExecutor) - the real production default,
-    use_planning=True in the /analyze route."""
-
-    def _extract_with(self, model_name: str):
-        with patch("langchain_neo4j.Neo4jGraph"), \
-             patch("backend.shared.utils.gemini_embedding_service.embedding"):
-            from backend.agents.llm_extraction_service import _LLMExtractionResponse
-            from backend.agents.planning.execution_engine import StepExecutor
-            from backend.agents.planning.planning_agent import StepType
-
-        fake_llm = _fake_llm(model_name, _LLMExtractionResponse(clauses=[]))
-        executor = StepExecutor(fake_llm)
-        tool = executor.tools[StepType.EXTRACT_CLAUSES]
-
-        with patch("backend.agents.intelligence_tools.AuditLogger", return_value=MagicMock()), \
-             patch("backend.shared.config.phase3_config.Phase3Config.CACHE_ENABLED", False), \
-             patch("backend.agents.llm_extraction_service.llm_usage_tracker") as fake_tracker:
-            tool._run("Some contract text about payment and liability.", contract_id="c1", tenant_id="t1")
-
-        record_calls = fake_tracker.record_call.call_args_list
-        self.assertTrue(record_calls, "LLMExtractionService must record real usage via llm_usage_tracker")
-        # record_call("clause_extraction", model_used, cache_hit=..., ...) -
-        # model is the second positional arg.
-        return record_calls[-1].args[1]
-
-    def test_first_model_selection_is_the_one_actually_recorded(self):
-        model_used = self._extract_with("gpt-4o")
-        self.assertEqual(model_used, "gpt-4o")
-
-    def test_a_different_model_selection_is_reflected_too(self):
-        """Regression for the real bug: before the fix, StepExecutor built
-        ClauseDetectorTool() with no llm at all, so this would always
-        route through the fallback chain (Gemini first) - two different
-        selections would never actually differ in what got recorded."""
-        model_a = self._extract_with("gpt-4o")
-        model_b = self._extract_with("claude-sonnet-5")
-
-        self.assertEqual(model_a, "gpt-4o")
-        self.assertEqual(model_b, "claude-sonnet-5")
-        self.assertNotEqual(model_a, model_b)
-
-
 class OrchestratorThreadsLlmToBothPathsTests(unittest.TestCase):
-    """Wiring-level proof for both real orchestration paths at once -
-    IntelligenceOrchestrator must pass the same resolved llm to its own
-    traditional-path tools AND to PlanExecutionEngine/StepExecutor,
-    not just store it on self.llm and never read it again."""
+    """Wiring-level proof: IntelligenceOrchestrator must pass the same
+    resolved llm to its own traditional-path tools, not just store it on
+    self.llm and never read it again."""
 
     def test_traditional_path_tools_receive_the_resolved_llm(self):
         with patch("langchain_neo4j.Neo4jGraph"), \
-             patch("backend.shared.utils.gemini_embedding_service.embedding"), \
-             patch("backend.agents.planning.planning_agent.PlanningAgentFactory.create_planning_agent"):
+             patch("backend.shared.utils.gemini_embedding_service.embedding"):
             from backend.agents.contract_intelligence_agents import IntelligenceOrchestrator
 
         fake_llm = _fake_llm("gpt-4o", None)
@@ -215,20 +169,6 @@ class OrchestratorThreadsLlmToBothPathsTests(unittest.TestCase):
             orchestrator._extract_clauses({"contract_text": "x", "node_status": {}})
 
         MockClauseTool.assert_called_once_with(fake_llm)
-
-    def test_planning_path_execution_engine_receives_the_resolved_llm(self):
-        with patch("langchain_neo4j.Neo4jGraph"), \
-             patch("backend.shared.utils.gemini_embedding_service.embedding"):
-            from backend.agents.contract_intelligence_agents import IntelligenceOrchestrator
-
-        fake_llm = _fake_llm("claude-sonnet-5", None)
-
-        with patch("backend.agents.planning.planning_agent.PlanningAgentFactory.create_planning_agent"), \
-             patch("backend.agents.contract_intelligence_agents.PlanExecutionEngine") as MockEngine, \
-             patch("backend.agents.contract_intelligence_agents._get_redis_checkpointer", return_value=None):
-            IntelligenceOrchestrator(fake_llm)
-
-        MockEngine.assert_called_once_with(fake_llm)
 
 
 # ---------------------------------------------------------------------------

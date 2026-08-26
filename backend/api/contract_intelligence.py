@@ -33,17 +33,20 @@ def get_llm_manager(request: Request):
 async def analyze_contract_intelligence(
     contract_id: str,
     model: str = Query(default="gemini-2.5-flash", description="LLM model to use for analysis"),
-    # Phase 4 (HITL): defaults to False, not True - the autonomous planning
-    # agent (PlanExecutionEngine) is a separate, non-LangGraph orchestrator
-    # that never touches IntelligenceOrchestrator.workflow, so a HIGH/
-    # CRITICAL-risk analysis run through it silently skips human_review_
-    # gate entirely (confirmed live: a real analysis completed in ~1s with
-    # no pause). The traditional graph is what actually has the Redis-
-    # backed interrupt/resume machinery - real analyses must go through it
-    # by default for HITL to mean anything; still explicitly overridable
-    # per-call for a caller that deliberately wants PlanExecutionEngine's
-    # quality_grade/escalation extras and doesn't need HITL for that run.
-    use_planning: bool = Query(default=False, description="Use autonomous planning agent (skips human-review gating - see Phase 4 HITL)"),
+    # Accepted for backward compatibility (real existing callers still
+    # pass it), but inert: PlanExecutionEngine, the autonomous-planning
+    # orchestrator this flag used to select, was retired (see git
+    # history) - it never touched IntelligenceOrchestrator.workflow, so a
+    # HIGH/CRITICAL-risk analysis run through it silently skipped
+    # human_review_gate entirely (confirmed live: a real analysis
+    # completed in ~1s with no pause), and it had zero real callers
+    # anywhere in the frontend. Every real analysis runs the traditional
+    # LangGraph path unconditionally now - the one with the real Redis-
+    # backed interrupt/resume machinery HITL actually depends on. The
+    # quality_grade this flag used to be the only way to get is now real
+    # on the traditional path too (run_quality_grader.py), so there's no
+    # remaining reason to pass this at all.
+    use_planning: bool = Query(default=False, description="Deprecated, inert - the traditional LangGraph path always runs regardless of this value"),
     identity: TokenIdentity = Depends(requires_permission(Permission.ANALYZE)),
 ):
     """

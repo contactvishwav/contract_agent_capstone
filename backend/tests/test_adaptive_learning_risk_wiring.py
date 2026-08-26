@@ -4,10 +4,13 @@ scoring, closing three breaks confirmed during verification (none of
 which a mocked-per-component suite had caught, since each piece worked
 "correctly" in isolation):
 
-1. PlanExecutionEngine (the actual default path, use_planning=True)
-   computed enhanced_clauses via AdaptiveAnalyzer.enhance_analysis inside
-   _execute_cuad_mitigation, but _update_context_with_result's
-   CUAD_MITIGATION branch never captured it - discarded every time.
+1. The default LangGraph path's IntelligenceOrchestrator._cuad_mitigation
+   computes enhanced_clauses via AdaptiveAnalyzer.enhance_analysis for
+   real, on every real analysis - originally verified end-to-end through
+   PlanExecutionEngine's now-retired equivalent (_execute_cuad_mitigation
+   + _update_context_with_result), which had an identical break at the
+   time (the enhanced_clauses result was computed but discarded). Now
+   exercised directly against the real, sole surviving path.
 
 2. AdaptiveAnalyzer._apply_risk_pattern wrote its result under a sibling
    "learned_risk_adjustment" key instead of the "risk_level" key every
@@ -25,9 +28,9 @@ _convert_to_domain_entities's default fallback - there was no real
 baseline for a learned pattern to override. Fixed via
 feedback_learning_system.compute_baseline_risk_level: primarily derived
 from the max severity of any policy violations already found for that
-clause (CHECK_POLICIES always runs before CUAD_MITIGATION in both plan
-templates), falling back to a clause-type inherent-risk category
-(Uncapped Liability, Non-Compete, etc.) when no violation matches.
+clause (_check_policies always runs before _cuad_mitigation in the real
+graph), falling back to a clause-type inherent-risk category (Uncapped
+Liability, Non-Compete, etc.) when no violation matches.
 
 The end-to-end test below proves the real chain - feedback submission
 via FeedbackCollector.collect_decision -> PatternLearner.learn_from_
@@ -37,19 +40,14 @@ tested alone, which is exactly the kind of gap that missed this the
 first time.
 """
 
-import asyncio
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 with patch("langchain_neo4j.Neo4jGraph"), \
      patch("backend.shared.utils.gemini_embedding_service.embedding"):
     from backend.agents.feedback_learning_system import (
         compute_baseline_risk_level, FeedbackCollector, LegalDecision, AdaptiveAnalyzer,
     )
-    from backend.agents.planning.execution_engine import (
-        PlanExecutionEngine, ExecutionResult,
-    )
-    from backend.agents.planning.planning_agent import ExecutionStep, StepType
     from backend.agents.contract_intelligence_agents import IntelligenceOrchestrator
 
 
@@ -131,31 +129,35 @@ def _submit_decision(graph, i, clause_type, original_risk, override_risk):
 
 class AdaptiveLearningEndToEndTests(unittest.TestCase):
     """The real round trip: feedback submission -> pattern learned ->
-    next analysis reflects it - exercised through the actual default
-    (PlanExecutionEngine) path's _execute_cuad_mitigation +
-    _update_context_with_result, not a mock of either."""
+    next analysis reflects it - exercised through the real, sole
+    surviving path's IntelligenceOrchestrator._cuad_mitigation, not a
+    mock of it. Deviation/jurisdiction/precedent tools are mocked (same
+    pattern as test_cuad_mitigation_observability.py) since this test is
+    about the adaptive-learning wiring specifically, not those tools."""
 
     def _run_cuad_mitigation(self, graph, clauses, violations, contract_text="Sample contract text."):
-        with patch("langchain_neo4j.Neo4jGraph"), \
-             patch("backend.shared.utils.gemini_embedding_service.embedding"):
-            engine = PlanExecutionEngine()
-
-        step = ExecutionStep(step_id="s1", step_type=StepType.CUAD_MITIGATION, description="cuad mitigation")
-        context = {
+        orchestrator = IntelligenceOrchestrator.__new__(IntelligenceOrchestrator)
+        orchestrator.llm = None
+        state = {
             "extracted_clauses": clauses, "policy_violations": violations,
             "contract_text": contract_text, "contract_id": "contract_1", "tenant_id": "tenant_1",
+            "risk_data": {}, "node_status": {},
         }
 
-        with patch("backend.infrastructure.contract_repository.graph", graph):
-            output_data = asyncio.run(engine.step_executor._execute_cuad_mitigation(step, context))
+        with patch("backend.agents.optimized_cuad_tools.OptimizedDeviationDetectorTool") as MockDev, \
+             patch("backend.agents.optimized_cuad_tools.OptimizedJurisdictionAdapterTool") as MockJur, \
+             patch("backend.agents.optimized_cuad_tools.OptimizedPrecedentMatcherTool") as MockPrec, \
+             patch("backend.validation.cuad_validator.validate_cuad_analysis") as mock_validate, \
+             patch("backend.infrastructure.audit_logger.AuditLogger.log_event"), \
+             patch("backend.infrastructure.contract_repository.graph", graph):
+            MockDev.return_value._run.return_value = "[]"
+            MockJur.return_value._run.return_value = '{"jurisdiction": "unknown", "industry": "general"}'
+            MockPrec.return_value._run.return_value = "[]"
+            mock_validate.return_value = MagicMock(is_valid=True, confidence_score=0.9)
 
-        result = ExecutionResult(
-            step_id="s1", success=True, output_data=output_data,
-            execution_time_ms=1, confidence_score=0.9,
-        )
-        engine.execution_context = dict(context)
-        engine._update_context_with_result(step, result)
-        return engine.execution_context["extracted_clauses"]
+            result = orchestrator._cuad_mitigation(state)
+
+        return result["extracted_clauses"]
 
     def test_learned_pattern_changes_next_analysis_risk_level(self):
         graph = FakeDecisionGraph()
@@ -207,55 +209,6 @@ class AdaptiveLearningEndToEndTests(unittest.TestCase):
         # No pattern matched - no adjustment fields populated.
         self.assertNotIn("learned_risk_adjustment", clause)
         self.assertNotIn("original_risk_level", clause)
-
-
-class UpdateContextCapturesEnhancedClausesTests(unittest.TestCase):
-    """Focused regression test for break #1 specifically: a step result
-    whose output_data already contains enhanced_clauses (mocking
-    _execute_cuad_mitigation's own internals, isolating just the
-    _update_context_with_result wiring) must actually reach
-    execution_context["extracted_clauses"], matching how cuad_deviations/
-    jurisdiction_info/precedent_matches already do on the same branch."""
-
-    def test_enhanced_clauses_overwrites_extracted_clauses_in_context(self):
-        with patch("langchain_neo4j.Neo4jGraph"), \
-             patch("backend.shared.utils.gemini_embedding_service.embedding"):
-            engine = PlanExecutionEngine()
-
-        engine.execution_context = {"extracted_clauses": [{"clause_id": "old", "risk_level": "LOW"}]}
-        step = ExecutionStep(step_id="s1", step_type=StepType.CUAD_MITIGATION, description="cuad")
-        result = ExecutionResult(
-            step_id="s1", success=True,
-            output_data={
-                "cuad_deviations": [], "jurisdiction_info": {}, "precedent_matches": [],
-                "enhanced_clauses": [{"clause_id": "new", "risk_level": "HIGH"}],
-            },
-            execution_time_ms=1, confidence_score=0.9,
-        )
-
-        engine._update_context_with_result(step, result)
-
-        self.assertEqual(engine.execution_context["extracted_clauses"], [{"clause_id": "new", "risk_level": "HIGH"}])
-
-    def test_missing_enhanced_clauses_falls_back_to_existing_context_value(self):
-        """A CUAD_MITIGATION result that doesn't produce enhanced_clauses at
-        all (e.g. an error/fallback path) must not wipe out the clauses
-        already in context."""
-        with patch("langchain_neo4j.Neo4jGraph"), \
-             patch("backend.shared.utils.gemini_embedding_service.embedding"):
-            engine = PlanExecutionEngine()
-
-        engine.execution_context = {"extracted_clauses": [{"clause_id": "keep_me"}]}
-        step = ExecutionStep(step_id="s1", step_type=StepType.CUAD_MITIGATION, description="cuad")
-        result = ExecutionResult(
-            step_id="s1", success=True,
-            output_data={"cuad_deviations": [], "jurisdiction_info": {}, "precedent_matches": []},
-            execution_time_ms=1, confidence_score=0.9,
-        )
-
-        engine._update_context_with_result(step, result)
-
-        self.assertEqual(engine.execution_context["extracted_clauses"], [{"clause_id": "keep_me"}])
 
 
 if __name__ == "__main__":

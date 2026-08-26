@@ -124,17 +124,18 @@ class ContractIntelligence:
     node_status: Dict[str, str] = None
     processing_complete: bool = True
 
-    # Supervisor rebuild: A-F quality grade (backend/agents/supervisor/
-    # quality_grader.py), whether this analysis needs human review (any
-    # step genuinely "failed", not just "partial"), and which CUAD
-    # mitigation tier actually ran (real Phase3->Phase2->Phase1 "Degrade"
-    # fallback, previously computed and discarded before reaching here).
+    # A-F quality grade (backend/agents/run_quality_grader.py, computed
+    # for real on the traditional LangGraph path), whether this analysis
+    # needs human review (any step genuinely "failed", not just
+    # "partial"), and which CUAD mitigation tier actually ran (real
+    # Phase3->Phase2->Phase1 fallback, previously computed and discarded
+    # before reaching here).
     quality_grade: Dict[str, Any] = None
     escalated: bool = False
     analysis_method: Optional[str] = None
-    # Identity of the top-level analysis route.  This is deliberately
-    # separate from analysis_method, which describes the CUAD mitigation
-    # tier inside a route and cannot prove PlanExecutionEngine ran.
+    # Identity of the top-level analysis route - separate from
+    # analysis_method, which describes the CUAD mitigation tier inside
+    # a route.
     execution_path: Optional[str] = None
     planned_execution: Optional[bool] = None
 

@@ -15,7 +15,7 @@ Accepted ADRs record real decisions prospectively. Do not retroactively manufact
 
 ## Decision candidates (not yet accepted ADRs)
 
-1. `PlanExecutionEngine` as default analysis and LangGraph as explicit fallback, including externally visible path identity.
+1. ~~`PlanExecutionEngine` as default analysis and LangGraph as explicit fallback, including externally visible path identity.~~ Resolved by removal, not by ADR: `PlanExecutionEngine` was retired (zero real callers, never completed a real analysis in production due to an unrelated bug, and lacked the `human_review_gate` safety pause the real LangGraph path has) - see `docs/CAPSTONE_SUMMARY.md`. The LangGraph `StateGraph` is now the sole analysis path, not one of two candidates.
 2. Neo4j as both graph and native vector store.
 3. Small-document full-context versus hierarchical/chunk retrieval.
 4. Permanent separation or deliberate convergence plan for the two enhanced-search implementations.

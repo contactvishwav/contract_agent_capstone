@@ -9,36 +9,6 @@ import os
 # Add backend to path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'backend'))
 
-def test_planning_engine_phase3_integration():
-    """Test planning engine uses Phase 3 tools"""
-    print("Testing Planning Engine Phase 3 Integration...")
-    
-    try:
-        from backend.agents.planning.execution_engine import PlanExecutionEngine
-        
-        # Check if planning engine has Phase 3 integration
-        engine = PlanExecutionEngine()
-        
-        # Verify the _execute_cuad_mitigation method exists and uses Phase 3 tools
-        import inspect
-        source = inspect.getsource(engine.step_executor._execute_cuad_mitigation)
-        
-        has_phase3_tools = "OptimizedDeviationDetectorTool" in source
-        has_fallback_chain = "enhanced_phase2_fallback" in source
-        
-        print(f"  - Phase 3 tools integration: {has_phase3_tools}")
-        print(f"  - Multi-level fallback chain: {has_fallback_chain}")
-        
-        assert has_phase3_tools, "Planning engine should use Phase 3 optimized tools"
-        assert has_fallback_chain, "Planning engine should have proper fallback chain"
-        
-        print("✓ Planning engine Phase 3 integration working\n")
-        return True
-        
-    except Exception as e:
-        print(f"❌ Planning engine integration failed: {e}")
-        return False
-
 def test_api_performance_indicators():
     """Test API includes performance indicators"""
     print("Testing API Performance Indicators...")
@@ -234,7 +204,6 @@ if __name__ == "__main__":
     print("=" * 60)
     
     tests = [
-        test_planning_engine_phase3_integration,
         test_api_performance_indicators,
         test_database_schema_migration,
         test_configuration_system,

@@ -1,6 +1,6 @@
 # Agentic GraphRAG on Commercial Contracts
 
-This repository implements a **Multi-Agent Contract Intelligence Platform** using Neo4j and Gemini, with LangGraph powering several of its agents (the traditional analysis workflow, PDF processing, Contract Chat) alongside a custom async step executor (`PlanExecutionEngine`) that runs the real *default* analysis pipeline. It automates legal review, policy compliance checking, and risk assessment for commercial contracts (CUAD).
+This repository implements a **Multi-Agent Contract Intelligence Platform** using Neo4j and Gemini, with a LangGraph `StateGraph` orchestrating the real, sole analysis pipeline: clause extraction → policy checking → risk assessment → a human-review gate for HIGH/CRITICAL-risk contracts (real Redis-backed pause/resume, not a UI-only warning) → CUAD mitigation (deviation detection, jurisdiction adaptation, precedent matching, self-validation) → redline generation. Every stage is independently tracked (`node_status`, a queryable audit trail, real per-run timing) and the completed run gets a real, computed A-F quality grade. It automates legal review, policy compliance checking, and risk assessment for commercial contracts (CUAD).
 
 ## ⚠️ The Problem
 
@@ -13,7 +13,7 @@ Enterprise contract review is traditionally a slow, manual, and error-prone proc
 ## 💡 The Solution
 
 This platform solves these challenges by combining **Graph Databases** with **Agentic AI** to create a system that thinks and reasons like a legal expert:
-- **Autonomous Review**: real, specialized agents/tools work together to extract, validate, and risk-rate clauses automatically - clause extraction, policy checking, risk calculation, and redline generation, orchestrated by `PlanExecutionEngine` (see `docs/DEMO_UNDERSTANDING.md` §4/§6 for the exact call chain).
+- **Autonomous Review**: real, specialized agents/tools work together to extract, validate, and risk-rate clauses automatically - clause extraction, policy checking, risk calculation, CUAD mitigation, and redline generation, orchestrated as a real LangGraph `StateGraph` with a genuine human-in-the-loop pause for HIGH/CRITICAL risk (see `docs/DEMO_UNDERSTANDING.md` §4/§6 for the exact call chain).
 - **Graph-Based Intelligence**: Neo4j stores multi-level relationships (Contract → Section → Clause), enabling the system to understand context, not just keywords.
 - **Explainable AI**: Every clause carries a grounding badge (verified against the source text, not hallucinated), a stable `clause_id` for traceability, and - when a learned pattern applies - a plain-language explanation of how historical review outcomes adjusted its risk level and by how much confidence.
 - **Advanced RAG**: Beyond simple search, the system performs precedent lookup and historical analysis to ensure consistency across the entire contract repository.
@@ -24,10 +24,9 @@ See blog for more: [Agentic GraphRAG for Commercial Contracts](https://towardsda
 
 ## 🚀 Enterprise Features
 
-- **Multi-Agent System Design**: Orchestrates specialized agents including PDF Processing, Planning, Clause Extraction, Policy Checking, and Risk Assessment.
-- **Autonomous Execution Engine**: `PlanExecutionEngine` runs the real default analysis pipeline with honest, per-step `node_status` reporting - a failed step surfaces as `processing_complete: false` with the specific failing stage identified, not a fabricated clean result.
-- **Supervisor Agent** (`POST /api/supervisor/workflow/execute`): a separate, explicitly-invoked path (not the default) offering a real Redis-backed circuit breaker, deterministic A-F quality grading (`grounded_rate`/`avg_confidence`/step status), and a live SSE progress stream (`GET /api/supervisor/workflow/{id}/stream`) over the same real Celery task the default endpoint uses. An earlier version of this pattern existed only as disconnected, never-wired dead code and was removed; it was later rebuilt for real, not resurrected - see `docs/CAPSTONE_SUMMARY.md` §8/§13.
-- **Autonomous Planning**: Dynamically generates and adopts execution strategies based on query complexity.
+- **Multi-Agent System Design**: Orchestrates specialized agents including PDF Processing, Chunking, Clause Extraction, Policy Checking, Risk Assessment, CUAD Mitigation, and Redline Generation.
+- **Real LangGraph Orchestration**: the analysis pipeline is a genuine `StateGraph`, not a linear script - honest, per-step `node_status` reporting (a failed step surfaces as `processing_complete: false` with the specific failing stage identified, never a fabricated clean result), a real Redis-backed pause/resume at a `human_review_gate` node for HIGH/CRITICAL-risk contracts (an admin must explicitly approve before redlines are generated), and a deterministic A-F quality grade computed once per completed run from that run's own real telemetry (`node_status`, per-clause grounding/confidence, and CUAD Mitigation's own self-validation confidence) - see `backend/agents/run_quality_grader.py`.
+- **CUAD Mitigation with self-validation**: a real Phase3→Phase2→Phase1 fallback cascade (deviation detection, jurisdiction adaptation, precedent matching) where every tier runs its own output back through a validator, surfaced in the real audit trail - not just "did the step run," but "does this step's own output look internally consistent."
 - **Multi-Level Semantic Search**: Contextual retrieval at document, section, clause, and relationship levels.
 - **Policy Compliance Engine**: Automated violation detection against custom policy playbooks.
 - **Model Context Protocol (MCP)**: Authenticated in-process tools for Contract Chat, plus an explicitly local-only standalone development server. External production MCP authentication is not implemented.
@@ -50,13 +49,13 @@ This repository includes the same MCP tools in Contract Chat through an authenti
 ## 🧠 Advanced AI Patterns
 
 - **Advanced RAG**: Sophisticated retrieval with precedent lookup and multi-level embedding matching.
-- **Plan validation**: `PlanningAgent._validate_and_refine_plan` checks a generated plan's step dependencies for gaps, lowers its confidence score for very-complex queries, and inserts an extra validation step for risk-focused queries - real, deterministic post-processing of a single agent's own plan, not inter-agent validation or recursive refinement (no other agent is consulted, and refinement runs exactly once, not in a loop). `adapt_plan_from_feedback` is called after execution but today only logs the result - no strategy weights are actually updated by it yet.
+- **Adaptive learning**: historical review decisions (`FeedbackCollector` → `PatternLearner` → `AdaptiveAnalyzer`) genuinely adjust a clause's risk level on later analyses, applied live inside the real CUAD Mitigation stage of the analysis graph.
 
-(A ReACT/Chain-of-Thought pattern-analysis step existed earlier but was removed - confirmed unreachable in real usage, deterministic f-string templating rather than real reasoning, and its output never influenced any downstream field even when manually triggered. See `docs/CAPSTONE_SUMMARY.md`.)
+(A ReACT/Chain-of-Thought pattern-analysis step, and later an autonomous-planning orchestrator (`PlanExecutionEngine`) that briefly ran as the default analysis path, both existed earlier and were removed - the former confirmed unreachable/non-reasoning dead code, the latter retired once the real LangGraph path's `human_review_gate` safety pause made it the only path with a genuine reason to be the default; PlanExecutionEngine had zero real callers anywhere in the frontend and never completed a single real analysis in production due to an unrelated bug. See `docs/CAPSTONE_SUMMARY.md`.)
 
 ## 🛠️ Technical Stack
 
-- **AI Framework**: LangChain throughout; LangGraph orchestrates the traditional analysis workflow (the fallback path), the PDF-processing agents, and Contract Chat. The real *default* analysis pipeline (`use_planning=True` everywhere, including the frontend) runs on a custom async step executor, `PlanExecutionEngine`, not LangGraph - see `docs/DEMO_UNDERSTANDING.md` §6.
+- **AI Framework**: LangChain throughout; LangGraph orchestrates the real analysis pipeline (the sole path - see `docs/DEMO_UNDERSTANDING.md` §6), the PDF-processing agents, and Contract Chat.
 - **Database**: Neo4j Aura with vector indexing for graph-based knowledge storage.
 - **Embeddings**: **Gemini 1536-dimensional** high-precision vectors (`gemini-embedding-001`).
 - **LLM Providers**: the authenticated server registry exposes only configured, workflow-compatible choices. Google Gemini (`gemini-2.5-pro`/`gemini-2.5-flash`, the production default), OpenAI (`gpt-4o`), Anthropic (`claude-sonnet-5`), and Mistral (`mistral-large-latest`, chat-only and development-only) are wired in `backend/llm_manager.py`; legal chat/analysis failures do not silently cross providers. See [`ADR-006`](docs/adr/006-server-model-registry-and-explicit-legal-failure.md).
