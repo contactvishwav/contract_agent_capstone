@@ -110,6 +110,54 @@ class PolicyChunkingStrategyTests(unittest.TestCase):
         for chunk in prohibited_chunks:
             self.assertIn(chunk["severity"], {"HIGH", "CRITICAL"})
 
+    def test_real_rule_sentences_survive_intact_not_misidentified_as_headers(self):
+        """Real, confirmed bug found live during a production verification:
+        _identify_policy_sections's SHALL/MUST/REQUIRED/MANDATORY pattern
+        matched ANY line starting with a capital letter containing one of
+        those words anywhere before the first period - which describes
+        nearly every real policy RULE sentence, not just headers. A real
+        tenant-uploaded playbook (Contract_Policy_Playbook.pdf) lost
+        almost all of its actual rule content this way: each real rule
+        sentence immediately following a short header line was itself
+        misidentified as the start of a NEW section, silently discarding
+        the genuine header (empty content never gets appended to
+        `sections`) and losing the rule's own text as an orphaned,
+        content-less section title. Only 1 of ~10 real rules survived in
+        the live reproduction. This uses the same shape as that real
+        document: short "N. Title Standard" headers immediately followed
+        (no blank line) by full rule sentences containing shall/must -
+        the exact structure that triggered the bug."""
+        text = (
+            "1. Payment Terms Standard\n"
+            "Payment terms shall be Net 30 or Net 45 days.\n"
+            "Net 90 payment terms are prohibited, and payment must not be made contingent on Client satisfaction.\n"
+            "2. Termination Notice Standard\n"
+            "Termination for convenience shall require 30 to 60 days written notice from both parties.\n"
+        )
+        chunks = self.strategy.chunk_document(text)
+        contents = [c["content"] for c in chunks]
+
+        net_90_rule = next(
+            (c for c in contents if "Net 90 payment terms are prohibited" in c), None
+        )
+        self.assertIsNotNone(
+            net_90_rule,
+            f"the real Net-90-prohibited rule sentence must survive as real chunk content, got: {contents}",
+        )
+        # The regression: this exact sentence used to become a section
+        # TITLE with no content of its own (silently dropped, since only
+        # non-empty-content sections get appended) because it starts with
+        # a capital letter and contains "must" - the assertion above is
+        # what actually catches that.
+
+        termination_rule = next(
+            (c for c in contents if "shall require 30 to 60 days written notice" in c), None
+        )
+        self.assertIsNotNone(
+            termination_rule,
+            f"the real termination-notice rule sentence must survive as real chunk content, got: {contents}",
+        )
+
     def test_empty_document_produces_no_chunks(self):
         self.assertEqual(self.strategy.chunk_document(""), [])
 

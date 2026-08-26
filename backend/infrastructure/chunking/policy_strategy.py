@@ -72,24 +72,42 @@ class PolicyChunkingStrategy(IChunkingStrategy):
             line = line.strip()
             if not line:
                 continue
-            
+
+            # Real, confirmed bug found live: section_patterns[1]
+            # (SHALL|MUST|REQUIRED|MANDATORY) matches ANY line starting
+            # with a capital letter that contains one of those words
+            # anywhere before the first period - which describes nearly
+            # every real policy RULE sentence, not just headers (that's
+            # what makes it policy language in the first place). Every
+            # real rule sentence that happened to follow a genuine header
+            # was itself misidentified as the START of a new section,
+            # scattering real rule content into orphaned title-only
+            # fragments and destroying the actual rule text. Headers are
+            # short labels, not full sentences - gating all 4 patterns on
+            # "looks like a title" (short, not sentence-terminated) before
+            # even attempting them fixes this without weakening real
+            # header detection (SECTION 3:, N.N headings, etc. are still
+            # short and still match).
+            looks_like_header = len(line) <= 100 and not line.endswith(('.', '!', '?'))
+
             # Check if line matches section pattern
             is_section_header = False
-            for pattern in section_patterns:
-                if re.match(pattern, line):
-                    # Save previous section
-                    if current_section['content']:
-                        sections.append(current_section)
-                    
-                    # Start new section
-                    current_section = {
-                        'title': line,
-                        'content': '',
-                        'start_line': i
-                    }
-                    is_section_header = True
-                    break
-            
+            if looks_like_header:
+                for pattern in section_patterns:
+                    if re.match(pattern, line):
+                        # Save previous section
+                        if current_section['content']:
+                            sections.append(current_section)
+
+                        # Start new section
+                        current_section = {
+                            'title': line,
+                            'content': '',
+                            'start_line': i
+                        }
+                        is_section_header = True
+                        break
+
             if not is_section_header:
                 current_section['content'] += line + '\n'
         
