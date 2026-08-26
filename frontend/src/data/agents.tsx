@@ -1,4 +1,4 @@
-import { Bot, FileText, Shield, AlertTriangle, Edit3, Brain, Users, CheckCircle, BarChart3 } from 'lucide-react';
+import { Bot, FileText, Shield, AlertTriangle, Edit3, Users, CheckCircle, BarChart3 } from 'lucide-react';
 import React from 'react';
 
 export interface Agent {
@@ -24,28 +24,6 @@ export const agents: Agent[] = [
     input: 'Raw PDF files',
     output: 'Structured contract text + metadata + embeddings',
     color: 'bg-blue-500'
-  },
-  {
-    id: 'supervisor',
-    name: 'Supervisor Agent',
-    icon: <Brain className="w-6 h-6" />,
-    role: 'Multi-Agent Coordination',
-    description: 'Coordinates and supervises all contract analysis agents, manages workflow execution and error handling',
-    capabilities: ['Agent coordination', 'Error recovery', 'Quality validation', 'Resource management', 'Dynamic routing'],
-    input: 'Contract analysis request',
-    output: 'Coordinated multi-agent results',
-    color: 'bg-purple-600'
-  },
-  {
-    id: 'planning',
-    name: 'Autonomous Planning Agent',
-    icon: <Brain className="w-6 h-6" />,
-    role: 'Workflow Orchestration',
-    description: 'Analyzes queries and creates optimal execution plans for contract analysis',
-    capabilities: ['Query complexity analysis', 'Strategy selection', 'Execution planning', 'Self-reflection'],
-    input: 'Analysis requirements',
-    output: 'Optimized execution plan',
-    color: 'bg-purple-500'
   },
   {
     id: 'document-embedding',
@@ -148,12 +126,6 @@ export interface AgentPattern {
 
 export const agentPatterns: AgentPattern[] = [
   {
-    name: 'Planning & Reasoning Pattern',
-    status: 'implemented',
-    description: 'Autonomous planning with query analysis and strategy selection',
-    location: 'backend/agents/planning/planning_agent.py'
-  },
-  {
     name: 'Tool-Using Agent Pattern',
     status: 'implemented',
     description: 'Specialized tools for contract analysis tasks',
@@ -162,14 +134,8 @@ export const agentPatterns: AgentPattern[] = [
   {
     name: 'Multi-Agent Orchestration',
     status: 'implemented',
-    description: 'Coordinated workflow execution across multiple agents',
+    description: 'Coordinated workflow execution across multiple agents via a real LangGraph StateGraph, with a Redis-backed human-review pause/resume gate for HIGH/CRITICAL-risk contracts',
     location: 'backend/agents/contract_intelligence_agents.py'
-  },
-  {
-    name: 'Supervisor Pattern',
-    status: 'implemented',
-    description: 'Enterprise-grade coordination with quality gates and error recovery',
-    location: 'backend/agents/supervisor/supervisor_agent.py'
   },
   {
     name: 'State Management Pattern',
@@ -179,10 +145,9 @@ export const agentPatterns: AgentPattern[] = [
   },
   {
     name: 'Self-Reflection Pattern',
-    status: 'partial',
-    description: 'Plan validation and feedback adaptation in planning agent',
-    location: 'backend/agents/planning/planning_agent.py',
-    justification: 'Currently limited to plan validation. Could be enhanced with deeper self-assessment across all agents for improved decision-making and error correction.'
+    status: 'missing',
+    description: 'Explicit step-by-step self-assessment of an agent\'s own output before it\'s used downstream',
+    justification: 'An earlier autonomous-planning orchestrator had a limited form of this (plan validation) but was retired - see docs/CAPSTONE_SUMMARY.md. The current CUAD Mitigation cascade validates its own output for structural consistency (validate_cuad_analysis), which is a narrower, single-stage form of this pattern, not a general one.'
   },
   {
     name: 'ReACT Pattern',
@@ -207,9 +172,7 @@ export const agentPatterns: AgentPattern[] = [
 
 export const getAgentTools = (agentId: string): string => {
   const toolMappings: Record<string, string> = {
-    'supervisor': 'SupervisorAgentV2, AgentRegistry, QualityManager, WorkflowEngine',
     'pdf-processing': 'PDFTextExtractorTool, ContractAnalyzerTool, DataValidatorTool',
-    'planning': 'ContractSearchTool, EnhancedContractSearchTool (for analysis planning)',
     'document-embedding': 'GoogleGenerativeAIEmbeddings, DocumentEmbeddingStrategy, Neo4j Vector Storage',
     'clause-extraction': 'ClauseDetectorTool, PolicyCheckerTool, ContractAnalyzerTool',
     'relationship-embedding': 'RelationshipEmbeddingStrategy, Neo4j Graph Queries, Entity Extraction Tools',

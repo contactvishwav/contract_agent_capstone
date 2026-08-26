@@ -24,8 +24,8 @@ def analysis_payload(contract_id="C1"):
         "contract_id": contract_id,
         "analysis_complete": True,
         "model_used": "gemini-2.5-flash",
-        "execution_path": "plan_execution_engine",
-        "planned_execution": True,
+        "execution_path": "langgraph_traditional_explicit",
+        "planned_execution": False,
         "analysis_method": "phase3",
         "node_status": {"extract": "success"},
         "processing_time": 1.2,
@@ -74,8 +74,8 @@ def test_legacy_completed_analysis_returns_honest_summary_without_detail():
         "violations_count": 3,
         "clauses_count": 9,
         "redlines_count": 2,
-        "execution_path": "plan_execution_engine",
-        "planned_execution": True,
+        "execution_path": "langgraph_traditional_explicit",
+        "planned_execution": False,
         "model_used": "gemini-2.5-flash",
         "result_payload": None,
     }]
@@ -108,8 +108,8 @@ def test_analysis_store_writes_complete_payload_and_summary_atomically():
         violations=[],
         risk_assessment=RiskAssessment(12, "LOW", [], []),
         redlines=[],
-        execution_path="plan_execution_engine",
-        planned_execution=True,
+        execution_path="langgraph_traditional_explicit",
+        planned_execution=False,
         analysis_method="phase3",
     )
 
@@ -120,5 +120,5 @@ def test_analysis_store_writes_complete_payload_and_summary_atomically():
     assert "HAS_ANALYSIS" in query
     assert "coalesce(c.lifecycle_status, 'ACTIVE') = 'ACTIVE'" in query
     stored = json.loads(field_encryptor.decrypt(params["result_payload"]))
-    assert stored["execution_path"] == "plan_execution_engine"
+    assert stored["execution_path"] == "langgraph_traditional_explicit"
     assert stored["model_used"] == "gemini-2.5-flash"

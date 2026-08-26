@@ -16,8 +16,7 @@ const persisted = {
   contract_id: 'C1',
   analysis_complete: true,
   model_used: 'gemini-2.5-flash',
-  execution_path: 'plan_execution_engine',
-  planned_execution: true,
+  execution_path: 'langgraph_traditional_explicit',
   results: {
     clauses: [],
     violations: [],
@@ -49,7 +48,7 @@ describe('ContractIntelligence persisted restoration', () => {
 
     expect(await screen.findByText('42/100')).toBeInTheDocument();
     expect(screen.getByText('Clean_MSA.pdf')).toBeInTheDocument();
-    expect(screen.getByText('PlanExecutionEngine')).toBeInTheDocument();
+    expect(screen.getByText('langgraph_traditional_explicit')).toBeInTheDocument();
     expect(mocks.apiFetch).not.toHaveBeenCalled();
   });
 

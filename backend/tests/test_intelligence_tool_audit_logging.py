@@ -1,10 +1,12 @@
 """
 Regression test: the four intelligence-analysis tools (ClauseDetectorTool,
-PolicyCheckerTool, RiskCalculatorTool, RedlineGeneratorTool) - the shared
-layer both the traditional LangGraph workflow AND the default planning
-(PlanExecutionEngine) path call into - never wrote an AuditLogger event.
-A completed analysis had no retrievable record of what was extracted or why
-a violation/risk was flagged, for either orchestration path.
+PolicyCheckerTool, RiskCalculatorTool, RedlineGeneratorTool) - at the time
+of this fix, the shared layer both the traditional LangGraph workflow AND
+the now-retired PlanExecutionEngine path called into - never wrote an
+AuditLogger event. A completed analysis had no retrievable record of what
+was extracted or why a violation/risk was flagged. The traditional LangGraph
+workflow is the sole orchestrator today (see git history), but these tools
+and their audit-logging behavior are unchanged and still exercised here.
 
 Uses the FakeGraph pattern from test_audit_validation_error_tracking.py to
 exercise the real log_event/get_audit_trail round trip deterministically.

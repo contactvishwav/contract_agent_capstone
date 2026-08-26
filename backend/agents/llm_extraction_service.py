@@ -350,9 +350,8 @@ def get_default_llm(model: str = DEFAULT_MODEL):
     """
     Lazily construct the default extraction LLM. Returns None (rather than
     raising) if no GOOGLE_API_KEY is configured, so callers that construct
-    tools eagerly but only call them conditionally (e.g. execution_engine.py's
-    tool dict, built once at engine construction) don't crash just because no
-    key is present yet.
+    tools eagerly but only call them conditionally don't crash just because
+    no key is present yet.
 
     `model` defaults to the production model (gemini-2.5-flash) and exists as
     an override mainly so research/benchmark/evaluate_extraction.py can point
@@ -375,8 +374,8 @@ def get_default_llm(model: str = DEFAULT_MODEL):
     # taking several minutes across a handful of clause/policy evaluations,
     # each independently retrying up to 6 times. A per-day quota wall cannot
     # be waited out within one request's lifetime regardless (see
-    # execution_engine.py's StepExecutor, which already fails fast rather
-    # than retrying on a quota error at its own layer) - attempts=1 ("1 or 0
+    # llm_fallback_service.py's _is_quota_exhausted, which already fails
+    # fast rather than retrying on a quota error at its own layer) - attempts=1 ("1 or 0
     # means no retries" per HttpRetryOptions) means a real quota/rate-limit
     # error surfaces immediately instead of after minutes of internal SDK
     # backoff.

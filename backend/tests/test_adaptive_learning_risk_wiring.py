@@ -46,7 +46,7 @@ from unittest.mock import MagicMock, patch
 with patch("langchain_neo4j.Neo4jGraph"), \
      patch("backend.shared.utils.gemini_embedding_service.embedding"):
     from backend.agents.feedback_learning_system import (
-        compute_baseline_risk_level, FeedbackCollector, LegalDecision, AdaptiveAnalyzer,
+        compute_baseline_risk_level, FeedbackCollector, LegalDecision,
     )
     from backend.agents.contract_intelligence_agents import IntelligenceOrchestrator
 

@@ -33,18 +33,18 @@ export const USPPage: React.FC = () => {
     },
 
     {
-      id: 'autonomous_planning',
-      title: 'Query-Complexity-Based Execution Planning',
+      id: 'cuad_mitigation_tiers',
+      title: 'Self-Validating, Tiered Risk Mitigation',
       icon: <Target className="w-6 h-6" />,
       color: 'bg-green-600',
-      description: 'PlanExecutionEngine scores each query for complexity and intent, then picks one of four step sequences and validates the plan before running it',
+      description: 'A three-tier CUAD mitigation cascade that degrades gracefully instead of failing outright, with every run self-validated and graded on real telemetry',
       differentiators: [
-        { name: 'Query Complexity Scoring', description: 'Keyword-based complexity/intent analysis selects Simple, Complex, Risk-Focused, or Compliance-Focused', icon: <Brain className="w-5 h-5" /> },
-        { name: 'Dependency-Aware Step Execution', description: 'Each step declares its dependencies and runs only once they complete, with per-step timeout and retry', icon: <Zap className="w-5 h-5" /> },
-        { name: 'Plan Self-Validation', description: 'Checks for missing dependencies, lowers confidence for very complex queries, adds an extra validation step for risk-focused ones', icon: <TrendingUp className="w-5 h-5" /> },
-        { name: 'Four Execution Strategies', description: 'Simple/Complex/Risk-Focused/Compliance-Focused plans, each a different step sequence', icon: <Target className="w-5 h-5" /> }
+        { name: 'Three-Tier Fallback Cascade', description: 'Optimized (cached/monitored) deviation detection, jurisdiction adaptation, and precedent matching falls back to Enhanced, then Baseline tools if a tier errors', icon: <Brain className="w-5 h-5" /> },
+        { name: 'Real Self-Validation', description: 'Every tier\'s own output is checked for structural consistency and confidence - degraded results are flagged, not presented as clean', icon: <TrendingUp className="w-5 h-5" /> },
+        { name: 'A-F Run Quality Grade', description: 'Every analysis is graded from real node-level success/failure, grounding rate, and CUAD validation confidence - not a static badge', icon: <Star className="w-5 h-5" /> },
+        { name: 'Adaptive Risk Learning', description: 'Legal team approve/modify/reject decisions are captured and adjust future risk-level scoring for matching clause types', icon: <Target className="w-5 h-5" /> }
       ],
-      competitors: 'Most solutions run the exact same fixed step sequence for every query, regardless of what the query actually asks'
+      competitors: 'Most solutions either fail outright when a tool call errors, or silently present degraded results as if nothing happened - every run here is graded, and low confidence is surfaced, not hidden'
     },
     {
       id: 'cuad_integration',

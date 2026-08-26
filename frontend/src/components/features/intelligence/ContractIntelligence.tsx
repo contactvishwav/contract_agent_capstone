@@ -45,7 +45,6 @@ export interface IntelligenceResults {
 interface AnalysisEnvelope {
   results: IntelligenceResults;
   execution_path?: string;
-  planned_execution?: boolean | null;
   model_used?: string;
   requested_model?: string;
   actual_provider?: string;
@@ -65,7 +64,6 @@ interface ContractIntelligenceProps {
 
 interface ExecutionIdentity {
   executionPath: string;
-  plannedExecution: boolean | null;
   modelUsed: string;
   requestedModel?: string;
   actualProvider?: string;
@@ -130,7 +128,6 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
     setResults(data.results);
     setExecutionIdentity({
       executionPath: data.execution_path || 'unknown',
-      plannedExecution: data.planned_execution ?? null,
       modelUsed: data.model_used || model,
       requestedModel: data.requested_model,
       actualProvider: data.actual_provider,
@@ -372,9 +369,7 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
           {executionIdentity && (
             <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-600">
               <Badge variant="secondary">
-                {executionIdentity.executionPath === 'plan_execution_engine'
-                  ? 'PlanExecutionEngine'
-                  : executionIdentity.executionPath}
+                {executionIdentity.executionPath}
               </Badge>
               <span>
                 Actual: {executionIdentity.actualProvider ? `${executionIdentity.actualProvider} · ` : ''}{executionIdentity.modelUsed}
@@ -386,9 +381,6 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
                 <Badge className="bg-yellow-100 text-yellow-800">
                   Provider fallback{executionIdentity.fallbackReason ? `: ${executionIdentity.fallbackReason}` : ''}
                 </Badge>
-              )}
-              {executionIdentity.plannedExecution === false && (
-                <Badge className="bg-yellow-100 text-yellow-800">Fallback/traditional path</Badge>
               )}
             </div>
           )}
