@@ -9,6 +9,7 @@ from backend.agents.intelligence_tools import (
 )
 from backend.agents.agent_workflow_tracker import workflow_tracker
 from backend.infrastructure.audit_logger import AuditLogger, AuditEventType
+from backend.agents.run_quality_grader import grade_run
 from backend.agents.planning.planning_agent import PlanningAgentFactory
 from backend.agents.planning.execution_engine import PlanExecutionEngine
 import json
@@ -460,6 +461,7 @@ class IntelligenceOrchestrator:
                 "cuad_deviations": deviations,
                 "jurisdiction_info": jurisdiction_info,
                 "precedent_matches": precedent_matches,
+                "validation_result": validation_result,
                 "current_step": "cuad_mitigation",
                 "node_status": {**state.get("node_status", {}), "cuad_mitigation": "success"},
             }
@@ -528,6 +530,7 @@ class IntelligenceOrchestrator:
                 "cuad_deviations": deviations,
                 "jurisdiction_info": jurisdiction_info,
                 "precedent_matches": precedent_matches,
+                "validation_result": validation_result,
                 "current_step": "cuad_mitigation",
                 "node_status": {**state.get("node_status", {}), "cuad_mitigation": "success"},
             }
@@ -744,6 +747,20 @@ class IntelligenceOrchestrator:
         # gaps otherwise.
         processing_complete = bool(final_state["is_complete"]) and not any(v in ("error", "partial") for v in node_status.values())
 
+        # Real A-F run-quality grade, computed once here (the one place
+        # both a normal completion and a resumed-after-human-review-gate
+        # completion both funnel through) from this run's own real
+        # node_status/clause/CUAD-validation data - see run_quality_
+        # grader.py. Threads straight into ContractIntelligence.quality_grade
+        # via contract_intelligence_service.py's existing analysis_result.
+        # get("quality_grade", {}) fallback - no changes needed there.
+        quality_grade = grade_run(
+            node_status,
+            processing_complete,
+            final_state["extracted_clauses"],
+            final_state.get("validation_result"),
+        )
+
         # Return structured results with CUAD data and validation
         return {
             "clauses": final_state["extracted_clauses"],
@@ -754,6 +771,7 @@ class IntelligenceOrchestrator:
             "jurisdiction_info": final_state.get("jurisdiction_info", {}),
             "precedent_matches": final_state.get("precedent_matches", []),
             "validation_result": final_state.get("validation_result"),
+            "quality_grade": quality_grade,
             "node_status": node_status,
             "processing_complete": processing_complete,
             "planned_execution": False,

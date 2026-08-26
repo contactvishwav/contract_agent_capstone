@@ -233,13 +233,13 @@ class ContractIntelligenceService:
         intelligence.node_status = analysis_result.get("node_status", {})
         intelligence.processing_complete = analysis_result.get("processing_complete", True)
 
-        # Supervisor rebuild: quality grade, escalation flag, and which
-        # CUAD mitigation tier actually ran - see PlanExecutionEngine.
-        # _format_final_results for where these are computed. Only the
-        # planning path (PlanExecutionEngine) currently produces these;
-        # the traditional-workflow path's analysis_result simply won't
-        # have these keys, so quality_grade/analysis_method fall back to
-        # their dataclass defaults ({}/None) rather than fabricating one.
+        # quality_grade: real on the traditional path too now (contract_
+        # intelligence_agents.py's _assemble_traditional_result computes it
+        # via run_quality_grader.grade_run, decoupled from
+        # PlanExecutionEngine - see that module's docstring). escalated/
+        # analysis_method aren't populated by the traditional path yet, so
+        # they still fall back to their dataclass defaults (False/None)
+        # rather than fabricating one.
         intelligence.quality_grade = analysis_result.get("quality_grade", {})
         intelligence.escalated = analysis_result.get("escalated", False)
         intelligence.analysis_method = analysis_result.get("analysis_method")

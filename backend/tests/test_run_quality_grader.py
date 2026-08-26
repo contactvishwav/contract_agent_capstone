@@ -1,0 +1,196 @@
+"""
+Regression tests for run_quality_grader.py - the traditional path's
+salvaged, decoupled A-F run-quality grade (extracted from backend/agents/
+supervisor/quality_grader.py before that module and the rest of
+PlanExecutionEngine were retired - see git history).
+
+Two layers:
+1. Unit tests directly against grade_run() - a pure function, no mocking
+   needed, proving the rubric reads real telemetry (node_status/clauses/
+   validation_result), not hardcoded values.
+2. An integration test proving _assemble_traditional_result (contract_
+   intelligence_agents.py) actually calls it and threads a real,
+   non-empty "quality_grade" key into the traditional path's final
+   result - the real wiring point, not just the standalone function.
+"""
+
+import unittest
+from unittest.mock import MagicMock, patch
+
+from backend.agents.run_quality_grader import grade_run
+
+FULL_SUCCESS_NODE_STATUS = {
+    "clause_extraction": "success",
+    "policy_checking": "success",
+    "risk_calculation": "success",
+    "cuad_mitigation": "success",
+    "redline_generation": "success",
+}
+
+HIGH_CONFIDENCE_CLAUSES = [
+    {"clause_id": "c1", "grounded": True, "confidence_score": 0.95},
+    {"clause_id": "c2", "grounded": True, "confidence_score": 0.92},
+]
+
+
+class GradeRunPureFunctionTests(unittest.TestCase):
+    def test_full_success_high_confidence_no_validation_signal_grades_a(self):
+        result = grade_run(FULL_SUCCESS_NODE_STATUS, True, HIGH_CONFIDENCE_CLAUSES, validation_result=None)
+        self.assertEqual(result["grade"], "A")
+        self.assertEqual(result["grounded_rate"], 1.0)
+        self.assertGreaterEqual(result["avg_confidence"], 0.9)
+
+    def test_full_success_with_high_cuad_validation_confidence_grades_a(self):
+        validation_result = MagicMock(is_valid=True, confidence_score=0.9)
+        result = grade_run(FULL_SUCCESS_NODE_STATUS, True, HIGH_CONFIDENCE_CLAUSES, validation_result)
+        self.assertEqual(result["grade"], "A")
+        self.assertEqual(result["validation_confidence"], 0.9)
+
+    def test_low_cuad_validation_confidence_caps_grade_at_b_even_with_perfect_clauses(self):
+        """Real scenario observed live this session: cuad_mitigation
+        reports "success" (it ran, produced a result) but its own
+        validator flagged low confidence (0.28, is_valid varies) - a
+        signal node_status alone can't see. Proves the grader reads
+        CUAD Mitigation's real validation output, not just node_status."""
+        validation_result = MagicMock(is_valid=True, confidence_score=0.28)
+        result = grade_run(FULL_SUCCESS_NODE_STATUS, True, HIGH_CONFIDENCE_CLAUSES, validation_result)
+        self.assertEqual(result["grade"], "B")
+        self.assertEqual(result["validation_confidence"], 0.28)
+
+    def test_cuad_validator_flagging_is_valid_false_demotes_to_c(self):
+        """A stronger signal than merely low confidence: the validator
+        found real structural problems (missing fields, inconsistent risk
+        scores) in an otherwise "successful" cuad_mitigation run."""
+        validation_result = MagicMock(is_valid=False, confidence_score=0.6)
+        result = grade_run(FULL_SUCCESS_NODE_STATUS, True, HIGH_CONFIDENCE_CLAUSES, validation_result)
+        self.assertEqual(result["grade"], "C")
+        self.assertIn("validator flagged", " ".join(result["reasons"]))
+
+    def test_core_step_failure_grades_f_regardless_of_everything_else(self):
+        node_status = {**FULL_SUCCESS_NODE_STATUS, "risk_calculation": "error"}
+        result = grade_run(node_status, False, HIGH_CONFIDENCE_CLAUSES, validation_result=None)
+        self.assertEqual(result["grade"], "F")
+
+    def test_non_core_node_failure_cuad_mitigation_error_demotes_to_c(self):
+        """Real degradation this session's own CUAD-mitigation cascade
+        can produce: all 3 fallback tiers exhausted -> node_status
+        "error", but clause_extraction/policy_checking/risk_calculation
+        (the core trio) still succeeded - not an automatic F."""
+        node_status = {**FULL_SUCCESS_NODE_STATUS, "cuad_mitigation": "error"}
+        result = grade_run(node_status, True, HIGH_CONFIDENCE_CLAUSES, validation_result=None)
+        self.assertEqual(result["grade"], "C")
+
+    def test_policy_checking_partial_demotes_to_c(self):
+        """The traditional path's one node that genuinely supports a
+        3rd state (PolicyCheckerTool._run) - not just success/error."""
+        node_status = {**FULL_SUCCESS_NODE_STATUS, "policy_checking": "partial"}
+        result = grade_run(node_status, True, HIGH_CONFIDENCE_CLAUSES, validation_result=None)
+        self.assertEqual(result["grade"], "C")
+
+    def test_low_grounded_rate_grades_f_even_with_all_nodes_successful(self):
+        ungrounded_clauses = [
+            {"clause_id": "c1", "grounded": False, "confidence_score": 0.9},
+            {"clause_id": "c2", "grounded": False, "confidence_score": 0.9},
+            {"clause_id": "c3", "grounded": True, "confidence_score": 0.9},
+        ]
+        result = grade_run(FULL_SUCCESS_NODE_STATUS, True, ungrounded_clauses, validation_result=None)
+        self.assertEqual(result["grade"], "F")
+
+    def test_no_clauses_defaults_grounded_rate_and_confidence_to_1_not_zero(self):
+        """Absence of data (e.g. a genuinely clause-free contract) must
+        not be scored as if it were a grounding/confidence failure."""
+        result = grade_run(FULL_SUCCESS_NODE_STATUS, True, [], validation_result=None)
+        self.assertEqual(result["grounded_rate"], 1.0)
+        self.assertEqual(result["avg_confidence"], 1.0)
+        self.assertEqual(result["grade"], "A")
+
+
+class TraditionalPathWiringTests(unittest.TestCase):
+    """Proves the real integration point - _assemble_traditional_result -
+    actually calls grade_run and threads a real result into the final
+    dict, not just that the standalone function works in isolation."""
+
+    def test_assemble_traditional_result_includes_real_quality_grade(self):
+        with patch("langchain_neo4j.Neo4jGraph"), \
+             patch("backend.shared.utils.gemini_embedding_service.embedding"):
+            from backend.agents.contract_intelligence_agents import IntelligenceOrchestrator
+
+        final_state = {
+            "is_complete": True,
+            "extracted_clauses": HIGH_CONFIDENCE_CLAUSES,
+            "policy_violations": [],
+            "risk_data": {"overall_risk_score": 20.0, "risk_level": "LOW"},
+            "redline_suggestions": [],
+            "cuad_deviations": [],
+            "jurisdiction_info": {},
+            "precedent_matches": [],
+            "validation_result": MagicMock(is_valid=True, confidence_score=0.95),
+            "node_status": dict(FULL_SUCCESS_NODE_STATUS),
+        }
+
+        result = IntelligenceOrchestrator._assemble_traditional_result(final_state, "langgraph_traditional_explicit")
+
+        self.assertIn("quality_grade", result)
+        self.assertEqual(result["quality_grade"]["grade"], "A")
+
+    def test_assemble_traditional_result_reflects_node_level_degradation_not_hardcoded(self):
+        """Same method, only the input telemetry changes - proves the
+        wired-in grade is computed from this specific run's real data,
+        not a constant. _assemble_traditional_result's own pre-existing
+        logic (unrelated to this grader) already ties processing_complete
+        to "no error/partial anywhere in node_status" - so a node-level
+        failure here correctly reaches grade_run's "not processing_
+        complete" branch (D), not the separate "degraded" branch (C)."""
+        with patch("langchain_neo4j.Neo4jGraph"), \
+             patch("backend.shared.utils.gemini_embedding_service.embedding"):
+            from backend.agents.contract_intelligence_agents import IntelligenceOrchestrator
+
+        degraded_node_status = {**FULL_SUCCESS_NODE_STATUS, "cuad_mitigation": "error"}
+        final_state = {
+            "is_complete": True,
+            "extracted_clauses": HIGH_CONFIDENCE_CLAUSES,
+            "policy_violations": [],
+            "risk_data": {"overall_risk_score": 20.0, "risk_level": "LOW"},
+            "redline_suggestions": [],
+            "cuad_deviations": [],
+            "jurisdiction_info": {},
+            "precedent_matches": [],
+            "validation_result": None,
+            "node_status": degraded_node_status,
+        }
+
+        result = IntelligenceOrchestrator._assemble_traditional_result(final_state, "langgraph_traditional_explicit")
+
+        self.assertEqual(result["quality_grade"]["grade"], "D")
+        self.assertNotEqual(result["quality_grade"]["grade"], "A")
+
+    def test_assemble_traditional_result_reflects_cuad_validation_flag_alone_as_c(self):
+        """The one real path to a C grade through this exact wiring: node_
+        status stays fully clean (cuad_mitigation genuinely succeeded) but
+        its own validator flagged the result - processing_complete stays
+        True, so grade_run's separate "degraded" branch (not the
+        processing_complete one) is what's actually exercised here."""
+        with patch("langchain_neo4j.Neo4jGraph"), \
+             patch("backend.shared.utils.gemini_embedding_service.embedding"):
+            from backend.agents.contract_intelligence_agents import IntelligenceOrchestrator
+
+        final_state = {
+            "is_complete": True,
+            "extracted_clauses": HIGH_CONFIDENCE_CLAUSES,
+            "policy_violations": [],
+            "risk_data": {"overall_risk_score": 20.0, "risk_level": "LOW"},
+            "redline_suggestions": [],
+            "cuad_deviations": [],
+            "jurisdiction_info": {},
+            "precedent_matches": [],
+            "validation_result": MagicMock(is_valid=False, confidence_score=0.5),
+            "node_status": dict(FULL_SUCCESS_NODE_STATUS),
+        }
+
+        result = IntelligenceOrchestrator._assemble_traditional_result(final_state, "langgraph_traditional_explicit")
+
+        self.assertEqual(result["quality_grade"]["grade"], "C")
+
+
+if __name__ == "__main__":
+    unittest.main()
